@@ -439,6 +439,7 @@ class ViewerPage(QWidget):
         self._panel_warm_timer.timeout.connect(self._warm_panel_cache)
 
         self._zoom = 0.5
+        self.auto_skip_enabled = True
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -446,22 +447,38 @@ class ViewerPage(QWidget):
 
         top_bar = QHBoxLayout()
         top_bar.setContentsMargins(6, 6, 6, 6)
+
         self.back_button = QPushButton("Back")
+        self.back_button.setFocusPolicy(Qt.NoFocus)
         self.back_button.clicked.connect(self.go_back)
+
         self.prev_button = QPushButton("Previous Chapter")
+        self.prev_button.setFocusPolicy(Qt.NoFocus)
         self.prev_button.clicked.connect(self.prev_chapter)
+
         self.next_button = QPushButton("Next Chapter")
+        self.next_button.setFocusPolicy(Qt.NoFocus)
         self.next_button.clicked.connect(self.next_chapter)
+
         self.chapter_selector = QComboBox()
+        self.chapter_selector.setFocusPolicy(Qt.NoFocus)
         self.chapter_selector.currentIndexChanged.connect(self.load_selected_chapter)
+
+        self.nav_toggle = QPushButton("Auto Skip")
+        self.nav_toggle.setCheckable(True)
+        self.nav_toggle.setChecked(True)
+        self.nav_toggle.setFocusPolicy(Qt.NoFocus)
+        self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
 
         zoom_out_btn = QPushButton("−")
         zoom_out_btn.setFixedWidth(28)
+        zoom_out_btn.setFocusPolicy(Qt.NoFocus)
         zoom_out_btn.setToolTip("Decrease image width")
         zoom_out_btn.clicked.connect(self._zoom_out)
 
         zoom_in_btn = QPushButton("+")
         zoom_in_btn.setFixedWidth(28)
+        zoom_in_btn.setFocusPolicy(Qt.NoFocus)
         zoom_in_btn.setToolTip("Increase image width")
         zoom_in_btn.clicked.connect(self._zoom_in)
 
@@ -470,6 +487,7 @@ class ViewerPage(QWidget):
         self._zoom_slider.setMinimum(25)
         self._zoom_slider.setMaximum(100)
         self._zoom_slider.setValue(int(self._zoom * 100))
+        self._zoom_slider.setFocusPolicy(Qt.NoFocus)
         self._zoom_slider.setToolTip("Image width")
         self._zoom_slider.valueChanged.connect(self._on_zoom_slider)
 
@@ -482,6 +500,7 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.prev_button)
         top_bar.addWidget(self.next_button)
         top_bar.addWidget(self.chapter_selector)
+        top_bar.addWidget(self.nav_toggle)
         top_bar.addStretch()
         top_bar.addWidget(zoom_out_btn)
         top_bar.addWidget(self._zoom_slider)
@@ -994,6 +1013,14 @@ class ViewerPage(QWidget):
         center = pos + view_h / 2
 
         if key in (Qt.Key_Down, Qt.Key_Up):
+
+            if not self.auto_skip_enabled:
+                if key == Qt.Key_Down:
+                    bar.setValue(pos + int(view_h * 0.9))
+                else:
+                    bar.setValue(max(0, pos - int(view_h * 0.9)))
+                return
+
             targets = self._get_skip_targets()
 
             if not targets:
@@ -1013,8 +1040,6 @@ class ViewerPage(QWidget):
                 )
 
                 if next_target is not None:
-                    # If the next detected target is too close, skip it and move to
-                    # the next meaningful one instead.
                     while next_target is not None and (next_target - pos) < MIN_MOVE:
                         next_target = next(
                             (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
@@ -1145,4 +1170,14 @@ class ViewerPage(QWidget):
         speed = ((abs(dy) - DEADZONE) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
+        self.setFocus()
+
+    def _toggle_navigation_mode(self):
+        self.auto_skip_enabled = self.nav_toggle.isChecked()
+
+        if self.auto_skip_enabled:
+            self.nav_toggle.setText("Auto Skip")
+        else:
+            self.nav_toggle.setText("Standard")
+
         self.setFocus()
