@@ -1,0 +1,630 @@
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlparse
+
+import requests
+from bs4 import BeautifulSoup
+from PySide6.QtCore import QObject, Signal
+
+from scrapers.base import ScraperError
+from scrapers.registry import get_scraper
+from webtoon_settings_store import get_instance as get_webtoon_settings
+
+
+class DownloadCancelled(Exception):
+    pass
+
+
+class DownloadService(QObject):
+    status_changed = Signal(str, str)
+    name_resolved = Signal(str)
+    progress_changed = Signal(str, int, int)
+    thumbnail_resolved = Signal(str, str)
+    download_started = Signal()
+    download_finished = Signal(str, str)
+    library_changed = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.settings_store = get_webtoon_settings()
+        self._process = None
+        self._busy = False
+        self._cancel_requested = False
+        self._active_name = None
+
+        temp_dir = os.path.join("data", "_download_temp")
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+    def is_busy(self) -> bool:
+        return self._busy
+
+    def start_download(self, url: str, output_path: str, preferred_name: str | None = None) -> str | None:
+        url = (url or "").strip().strip("'\"")
+        if not url:
+            return "⚠ Please enter a URL."
+        if self._busy:
+            return "⚠ A download is already in progress."
+
+        self._busy = True
+        self._cancel_requested = False
+        self._active_name = self._sanitize(preferred_name) or None
+        self.download_started.emit()
+
+        thread = threading.Thread(
+            target=self._run_download,
+            args=(url, output_path, preferred_name),
+            daemon=True,
+        )
+        thread.start()
+        return None
+
+    def cancel_download(self):
+        if not self._busy:
+            return
+        self._cancel_requested = True
+        if self._process and self._process.poll() is None:
+            self._process.terminate()
+
+    def _run_download(self, url: str, output_path: str, preferred_name: str | None):
+        name = self._sanitize(preferred_name) or "download"
+        status = "Failed"
+
+        try:
+            temp_dir = os.path.join("data", "_download_temp")
+            if os.path.exists(temp_dir):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            os.makedirs(temp_dir, exist_ok=True)
+
+            if preferred_name:
+                self.name_resolved.emit(name)
+            else:
+                name = self._resolve_name(url)
+                self.name_resolved.emit(name)
+
+            self._active_name = name
+
+            try:
+                scraper = get_scraper(url)
+            except Exception:
+                scraper = None
+
+            if scraper is not None:
+                saved_name = self._custom_download(url, output_path, target_name=preferred_name)
+            else:
+                saved_name = self._gallery_dl_download(url, output_path, name)
+
+            self._save_source_url(saved_name, url)
+            status = "Completed"
+            self.library_changed.emit()
+        except DownloadCancelled:
+            status = "Cancelled"
+        except FileNotFoundError:
+            status = "Failed"
+        except Exception as e:
+            print(f"Download error: {e}")
+            status = "Failed"
+        finally:
+            temp_dir = os.path.join("data", "_download_temp")
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            self._process = None
+            self._busy = False
+            self.status_changed.emit(self._active_name or name, status)
+            self.download_finished.emit(self._active_name or name, status)
+            self._active_name = None
+            self._cancel_requested = False
+
+    def _detect_url_type(self, url: str) -> str:
+        parsed = urlparse(url)
+        qs = parse_qs(parsed.query)
+        if "episode_no" in qs:
+            return "chapter"
+        if "/chapter-" in parsed.path.rstrip("/").lower():
+            return "chapter"
+        return "series"
+
+    def _get_existing_chapters(self, webtoon_dir: str) -> set[int]:
+        existing = set()
+        if not os.path.isdir(webtoon_dir):
+            return existing
+        for folder in os.listdir(webtoon_dir):
+            match = re.match(r"^Chapter (\d+)$", folder)
+            if match:
+                existing.add(int(match.group(1)))
+        return existing
+
+    def _resolve_name(self, url: str) -> str:
+        try:
+            scraper = get_scraper(url)
+            series = scraper.get_series_info(
+                url if self._detect_url_type(url) == "series" else self._series_url_from_chapter_url(url)
+            )
+            return self._sanitize(series.title)
+        except Exception:
+            pass
+
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(response.text, "html.parser")
+
+            og_title = soup.find("meta", property="og:title")
+            if og_title and og_title.get("content"):
+                return self._sanitize(og_title["content"].strip())
+
+            if soup.title and soup.title.string:
+                return self._sanitize(soup.title.string.strip())
+        except Exception as e:
+            print(f"Name resolve error: {e}")
+
+        slug = url.rstrip("/").split("/")[-1]
+        return self._sanitize(slug) or "download"
+
+    def _sanitize(self, name: str | None) -> str:
+        return re.sub(r'[\\/:*?"<>|]', "", name or "").strip()
+
+    def _series_url_from_chapter_url(self, url: str) -> str:
+        parsed = urlparse(url)
+        path = parsed.path.rstrip("/")
+        if "/chapter-" in path:
+            path = path.rsplit("/chapter-", 1)[0]
+        return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+    def _download_file(self, url: str, dest_path: str, headers: dict, retries: int = 2):
+        url = url.strip().rstrip("\\").rstrip("/")
+        last_error = None
+
+        for attempt in range(retries + 1):
+            if self._cancel_requested:
+                raise DownloadCancelled()
+            try:
+                with requests.get(url, headers=headers, stream=True, timeout=30) as response:
+                    response.raise_for_status()
+                    with open(dest_path, "wb") as handle:
+                        for chunk in response.iter_content(chunk_size=1024 * 64):
+                            if self._cancel_requested:
+                                raise DownloadCancelled()
+                            if chunk:
+                                handle.write(chunk)
+                return
+            except DownloadCancelled:
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                raise
+            except Exception as e:
+                last_error = e
+                if os.path.exists(dest_path):
+                    try:
+                        os.remove(dest_path)
+                    except Exception:
+                        pass
+                if attempt < retries:
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+
+        raise last_error
+
+    def _save_source_url(self, webtoon_name: str, source_url: str):
+        if not webtoon_name or not source_url:
+            return
+        try:
+            self.settings_store.set_source_url(webtoon_name, source_url)
+        except Exception as e:
+            print(f"Source URL save failed for '{webtoon_name}': {e}")
+
+    def _custom_download(self, url: str, output_path: str, target_name: str | None = None):
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        scraper = get_scraper(url)
+        headers = scraper.get_request_headers(url)
+        url_type = self._detect_url_type(url)
+
+        if url_type == "chapter":
+            series_url = self._series_url_from_chapter_url(url)
+            series = scraper.get_series_info(series_url)
+            chapter_list = [c for c in series.chapters if c.url.rstrip("/") == url.rstrip("/")]
+            if not chapter_list:
+                raise ScraperError(f"Could not match chapter URL: {url}")
+        else:
+            series = scraper.get_series_info(url)
+            chapter_list = series.chapters
+
+        series_name = self._sanitize(target_name or series.title) or "download"
+        self.name_resolved.emit(series_name)
+
+        if getattr(series, "cover_url", None):
+            ok, result = self.settings_store.set_from_url(series_name, series.cover_url)
+            if ok:
+                self.thumbnail_resolved.emit(series_name, result)
+
+        target_base = os.path.join(output_path, series_name)
+        os.makedirs(target_base, exist_ok=True)
+
+        existing = self._get_existing_chapters(target_base)
+        total_chapters = len(chapter_list)
+        completed_chapters = 0
+        any_chapter_succeeded = False
+
+        if url_type == "series":
+            completed_chapters = sum(
+                1 for chapter in chapter_list
+                if chapter.number is not None and int(chapter.number) in existing
+            )
+
+        self.progress_changed.emit(series_name, completed_chapters, total_chapters)
+
+        for chapter in chapter_list:
+            if self._cancel_requested:
+                raise DownloadCancelled()
+
+            chapter_num = int(chapter.number) if chapter.number is not None else None
+            if chapter_num is not None and chapter_num in existing and url_type == "series":
+                continue
+
+            pages = scraper.get_chapter_pages(chapter.url)
+            if not pages:
+                continue
+
+            if chapter_num is not None:
+                chapter_dir_name = f"Chapter {chapter_num}"
+            else:
+                chapter_dir_name = self._sanitize(chapter.title) or "Chapter"
+
+            chapter_dir = os.path.join(target_base, chapter_dir_name)
+            os.makedirs(chapter_dir, exist_ok=True)
+
+            success_count = 0
+            failure_count = 0
+            max_workers = min(8, max(1, len(pages)))
+
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_page = {}
+                for page in pages:
+                    raw_url = page.image_url.split("?", 1)[0]
+                    ext = raw_url.rsplit(".", 1)[-1].lower() if "." in raw_url else "jpg"
+                    if ext not in {"jpg", "jpeg", "png", "webp", "avif"}:
+                        ext = "jpg"
+
+                    filename = f"{page.index:03d}.{ext}"
+                    dest_path = os.path.join(chapter_dir, filename)
+                    if os.path.exists(dest_path):
+                        success_count += 1
+                        continue
+
+                    future = executor.submit(self._download_file, page.image_url, dest_path, headers)
+                    future_to_page[future] = page.image_url
+
+                for future in as_completed(future_to_page):
+                    try:
+                        future.result()
+                        success_count += 1
+                    except DownloadCancelled:
+                        executor.shutdown(wait=False, cancel_futures=True)
+                        shutil.rmtree(chapter_dir, ignore_errors=True)
+                        raise
+                    except Exception as e:
+                        failure_count += 1
+                        print(f"Skipping page download failed: {future_to_page[future]} -> {e}")
+
+            if success_count == 0:
+                shutil.rmtree(chapter_dir, ignore_errors=True)
+                raise ScraperError(f"Chapter download failed completely: {chapter.title}")
+
+            any_chapter_succeeded = True
+            completed_chapters += 1
+            self.progress_changed.emit(series_name, completed_chapters, total_chapters)
+
+            if failure_count > 0:
+                print(
+                    f"Chapter partially downloaded: {chapter.title} "
+                    f"({success_count} ok, {failure_count} failed)"
+                )
+
+        if self._cancel_requested:
+            raise DownloadCancelled()
+        if not any_chapter_succeeded and completed_chapters == 0:
+            raise ScraperError("No chapters were downloaded")
+
+        thumb_path = self._preferred_thumbnail_for(series_name)
+        if not thumb_path:
+            thumb_path = self._create_auto_thumbnail_from_webtoon_folder(series_name, target_base)
+            if thumb_path:
+                self.thumbnail_resolved.emit(series_name, thumb_path)
+
+        return series_name
+
+    def _gallery_dl_download(self, url: str, output_path: str, name: str):
+        temp_dir = os.path.join("data", "_download_temp")
+        os.makedirs(temp_dir, exist_ok=True)
+
+        url_type = self._detect_url_type(url)
+        target_base = os.path.join(output_path, name)
+        cmd = ["gallery-dl", "--verbose", "-D", temp_dir]
+        missing_chapters = []
+
+        if url_type == "series":
+            existing = self._get_existing_chapters(target_base)
+            if existing:
+                existing_str = ", ".join(str(e) for e in sorted(existing))
+                cmd += ["--filter", f"episode_no not in [{existing_str}]"]
+            guessed_last_chapter = self._guess_gallery_dl_last_chapter(url)
+            if guessed_last_chapter is not None and guessed_last_chapter > 0:
+                missing_chapters = sorted(set(range(1, guessed_last_chapter + 1)) - set(existing))
+                if missing_chapters:
+                    self.progress_changed.emit(name, 0, len(missing_chapters))
+        else:
+            episode_no = None
+            qs = parse_qs(urlparse(url).query)
+            if "episode_no" in qs:
+                try:
+                    episode_no = int(qs["episode_no"][0])
+                except Exception:
+                    episode_no = None
+            if episode_no is None:
+                match = re.search(r"chapter[-/ ]?(\d+)", url, re.IGNORECASE)
+                if match:
+                    episode_no = int(match.group(1))
+            missing_chapters = [episode_no] if episode_no is not None else [1]
+            self.progress_changed.emit(name, 0, 1)
+
+        cmd.append(url)
+
+        self._process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+        )
+
+        def watch_progress():
+            last_current = -1
+            last_total = -1
+
+            while self._process and self._process.poll() is None:
+                try:
+                    if missing_chapters:
+                        total = len(missing_chapters)
+                        temp_numbers = self._chapter_numbers_in_temp_dir(temp_dir)
+                        current = sum(1 for chapter in missing_chapters if chapter in temp_numbers)
+                        if current != last_current or total != last_total:
+                            self.progress_changed.emit(name, current, total)
+                            last_current = current
+                            last_total = total
+                except Exception as e:
+                    print(f"Progress watcher error: {e}")
+                time.sleep(0.4)
+
+        watcher_thread = threading.Thread(target=watch_progress, daemon=True)
+        watcher_thread.start()
+
+        if self._process.stdout is not None:
+            for line in self._process.stdout:
+                print(line.strip())
+
+        self._process.wait()
+
+        if self._cancel_requested:
+            raise DownloadCancelled()
+        if self._process.returncode != 0:
+            raise RuntimeError("gallery-dl exited with a non-zero status")
+
+        all_files = sorted(
+            f for f in os.listdir(temp_dir)
+            if os.path.isfile(os.path.join(temp_dir, f))
+        )
+
+        if not all_files:
+            return name
+
+        os.makedirs(target_base, exist_ok=True)
+        completed_now = set()
+
+        if url_type == "chapter":
+            episode_no = None
+            qs = parse_qs(urlparse(url).query)
+            if "episode_no" in qs:
+                try:
+                    episode_no = int(qs["episode_no"][0])
+                except Exception:
+                    episode_no = None
+            if episode_no is None:
+                match = re.search(r"chapter[-/ ]?(\d+)", url, re.IGNORECASE)
+                if match:
+                    episode_no = int(match.group(1))
+            if episode_no is None:
+                episode_no = 1
+
+            chapter_dir = os.path.join(target_base, f"Chapter {episode_no}")
+            os.makedirs(chapter_dir, exist_ok=True)
+            for filename in all_files:
+                src = os.path.join(temp_dir, filename)
+                if os.path.isfile(src):
+                    shutil.move(src, os.path.join(chapter_dir, filename))
+            completed_now.add(episode_no)
+        else:
+            for filename in all_files:
+                match = re.match(r"^(\d+)", filename)
+                if not match:
+                    continue
+                chapter_num = int(match.group(1))
+                chapter_dir = os.path.join(target_base, f"Chapter {chapter_num}")
+                os.makedirs(chapter_dir, exist_ok=True)
+                src = os.path.join(temp_dir, filename)
+                if os.path.isfile(src):
+                    shutil.move(src, os.path.join(chapter_dir, filename))
+                completed_now.add(chapter_num)
+
+        if missing_chapters:
+            final_current = sum(1 for chapter in missing_chapters if chapter in completed_now)
+            self.progress_changed.emit(name, final_current, len(missing_chapters))
+
+        thumb_path = self._create_auto_thumbnail_from_webtoon_folder(name, target_base)
+        if thumb_path:
+            self.thumbnail_resolved.emit(name, thumb_path)
+
+        return name
+
+    def _preferred_thumbnail_for(self, webtoon_name: str) -> str | None:
+        custom = self.settings_store.get(webtoon_name)
+        if custom and os.path.exists(custom):
+            return custom
+
+        auto_path = os.path.join("data", "thumbnails", f"{webtoon_name}.jpg")
+        if os.path.exists(auto_path):
+            return auto_path
+        return None
+
+    def _auto_thumbnail_path(self, webtoon_name: str) -> str:
+        os.makedirs(os.path.join("data", "thumbnails"), exist_ok=True)
+        return os.path.join("data", "thumbnails", f"{webtoon_name}.jpg")
+
+    def _create_auto_thumbnail_from_webtoon_folder(self, webtoon_name: str, webtoon_dir: str) -> str | None:
+        try:
+            from PIL import Image
+
+            if not os.path.isdir(webtoon_dir):
+                return None
+
+            chapter_dirs = [
+                os.path.join(webtoon_dir, folder)
+                for folder in os.listdir(webtoon_dir)
+                if os.path.isdir(os.path.join(webtoon_dir, folder))
+            ]
+            if not chapter_dirs:
+                return None
+
+            def chapter_sort_key(path: str):
+                folder_name = os.path.basename(path)
+                match = re.search(r"(\d+(?:\.\d+)?)", folder_name)
+                if match:
+                    try:
+                        return (0, float(match.group(1)), folder_name.lower())
+                    except Exception:
+                        pass
+                return (1, float("inf"), folder_name.lower())
+
+            chapter_dirs.sort(key=chapter_sort_key)
+            first_chapter = chapter_dirs[0]
+            image_files = [
+                os.path.join(first_chapter, filename)
+                for filename in sorted(os.listdir(first_chapter))
+                if os.path.isfile(os.path.join(first_chapter, filename))
+                and filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".avif"))
+            ]
+            if not image_files:
+                return None
+
+            src = image_files[0]
+            dest = self._auto_thumbnail_path(webtoon_name)
+            with Image.open(src) as image:
+                rgb = image.convert("RGB")
+                rgb.thumbnail((360, 540))
+                canvas = Image.new("RGB", (360, 540), (18, 18, 18))
+                x = (360 - rgb.width) // 2
+                y = (540 - rgb.height) // 2
+                canvas.paste(rgb, (x, y))
+                canvas.save(dest, "JPEG", quality=90)
+            return dest if os.path.exists(dest) else None
+        except Exception as e:
+            print(f"Auto thumbnail generation failed for '{webtoon_name}': {e}")
+            return None
+
+    def build_webtoon_from_folder(self, library_path: str, webtoon_name: str):
+        webtoon_dir = os.path.join(library_path, webtoon_name)
+        if not os.path.isdir(webtoon_dir):
+            return None
+
+        chapter_dirs = [
+            folder for folder in os.listdir(webtoon_dir)
+            if os.path.isdir(os.path.join(webtoon_dir, folder))
+        ]
+
+        def chapter_sort_key(name: str):
+            match = re.search(r"(\d+(?:\.\d+)?)", name)
+            if match:
+                try:
+                    return (0, float(match.group(1)), name.lower())
+                except Exception:
+                    pass
+            return (1, float("inf"), name.lower())
+
+        chapter_dirs.sort(key=chapter_sort_key)
+        thumb = self._preferred_thumbnail_for(webtoon_name)
+        if not thumb:
+            thumb = self._create_auto_thumbnail_from_webtoon_folder(webtoon_name, webtoon_dir)
+
+        return SimpleNamespace(
+            name=webtoon_name,
+            path=webtoon_dir,
+            thumbnail=thumb or "",
+            chapters=chapter_dirs,
+        )
+
+    def preferred_thumbnail_for(self, webtoon_name: str) -> str | None:
+        return self._preferred_thumbnail_for(webtoon_name)
+
+    def _guess_gallery_dl_last_chapter(self, url: str) -> int | None:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            html = response.text
+
+            candidates = []
+            for match in re.finditer(r'episode[_\- ]?no["\':\s=]+(\d+)', html, re.IGNORECASE):
+                candidates.append(int(match.group(1)))
+            for match in re.finditer(r"chapter[_\- ]?(\d+)", html, re.IGNORECASE):
+                candidates.append(int(match.group(1)))
+            for match in re.finditer(r"/chapter[-/ ]?(\d+)", html, re.IGNORECASE):
+                candidates.append(int(match.group(1)))
+
+            og_url = re.search(
+                r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
+                html,
+                re.IGNORECASE,
+            )
+            if og_url:
+                for match in re.finditer(r"chapter[-/ ]?(\d+)", og_url.group(1), re.IGNORECASE):
+                    candidates.append(int(match.group(1)))
+
+            if candidates:
+                return max(candidates)
+        except Exception as e:
+            print(f"Last chapter guess failed from HTML: {e}")
+
+        try:
+            parsed = urlparse(url)
+            qs = parse_qs(parsed.query)
+            if "episode_no" in qs:
+                return int(qs["episode_no"][0])
+
+            path_matches = re.findall(r"chapter[-/ ]?(\d+)", parsed.path, re.IGNORECASE)
+            if path_matches:
+                return max(int(value) for value in path_matches)
+        except Exception as e:
+            print(f"Last chapter guess failed from URL: {e}")
+
+        return None
+
+    def _chapter_numbers_in_temp_dir(self, temp_dir: str) -> set[int]:
+        found = set()
+        if not os.path.isdir(temp_dir):
+            return found
+
+        for filename in os.listdir(temp_dir):
+            full = os.path.join(temp_dir, filename)
+            if not os.path.isfile(full):
+                continue
+            match = re.match(r"^(\d+)", filename)
+            if match:
+                found.add(int(match.group(1)))
+
+        return found

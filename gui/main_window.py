@@ -16,6 +16,7 @@ from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
 from gui.downloader.downloader_page import DownloaderPage
+from gui.downloader.update_page import UpdatePage
 
 class GlobalSearch(QDialog):
 
@@ -174,7 +175,9 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addWidget(self.btn_library)
         self.downloader = DownloaderPage(self)
+        self.updates = UpdatePage(self)
         self.stack.addWidget(self.downloader)
+        self.stack.addWidget(self.updates)
         self.btn_downloader = QPushButton()
         self.btn_downloader.setIcon(qta.icon("fa5s.download", color=icon_color))
         self.btn_downloader.setIconSize(QSize(16, 16))
@@ -183,6 +186,13 @@ class MainWindow(QMainWindow):
             lambda: self.stack.setCurrentWidget(self.downloader)
         )
         sidebar_layout.addWidget(self.btn_downloader)
+
+        self.btn_updates = QPushButton()
+        self.btn_updates.setIcon(qta.icon("fa5s.sync", color=icon_color))
+        self.btn_updates.setIconSize(QSize(16, 16))
+        self.btn_updates.setStyleSheet(button_style)
+        self.btn_updates.clicked.connect(self.open_updates)
+        sidebar_layout.addWidget(self.btn_updates)
 
         sidebar_layout.addStretch()
 
@@ -243,6 +253,10 @@ class MainWindow(QMainWindow):
     def open_viewer(self, webtoon):
         """Legacy: open viewer from chapter 0."""
         self.open_chapter(webtoon, 0)
+
+    def open_updates(self):
+        self.updates.refresh_entries()
+        self.stack.setCurrentWidget(self.updates)
     
     def toggle_sidebar(self):
         icon_color = "#cccccc"
@@ -251,10 +265,12 @@ class MainWindow(QMainWindow):
             self.btn_library.setText("")
             self.btn_settings.setText("")
             self.btn_downloader.setText("")
+            self.btn_updates.setText("")
             self.sidebar_open = False
         else:
             self.sidebar.setFixedWidth(self.sidebar_expanded_width)
             self.btn_library.setText("  Library")
             self.btn_settings.setText("  Settings")
             self.btn_downloader.setText("  Download")
+            self.btn_updates.setText("  Updates")
             self.sidebar_open = True
