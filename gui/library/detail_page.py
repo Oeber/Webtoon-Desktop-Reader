@@ -73,10 +73,12 @@ class DetailPage(QWidget):
         info_layout.setSpacing(10)
         info_layout.setAlignment(Qt.AlignTop)
 
+        #title
         self.title_label = QLabel()
-        self.title_label.setWordWrap(True)
-        self.title_label.setStyleSheet("color: #fff; font-size: 22px; font-weight: 700;")
-        self.title_label.setFont(QFont("Segoe UI", 16, QFont.Bold))
+        self.title_label.setWordWrap(False)
+        self.title_label.setStyleSheet("color: #fff; font-size: 28px; font-weight: 700;")
+        self.title_label.setFont(QFont("Segoe UI", 24, QFont.Bold))
+        self.title_label.setMinimumHeight(36)
 
         self.last_read_label = QLabel()
         self.last_read_label.setStyleSheet("color: #aaa; font-size: 13px;")
@@ -84,6 +86,7 @@ class DetailPage(QWidget):
         self.chapter_count_label = QLabel()
         self.chapter_count_label.setStyleSheet("color: #888; font-size: 12px;")
 
+        #Continue Reading button
         self.continue_btn = QPushButton("▶  Continue reading")
         self.continue_btn.setCursor(Qt.PointingHandCursor)
         self.continue_btn.setFixedHeight(36)
@@ -96,11 +99,28 @@ class DetailPage(QWidget):
         self.continue_btn.clicked.connect(self._continue_reading)
         self.continue_btn.hide()
 
+        self.start_btn = QPushButton("Start from beginning")
+        self.start_btn.setCursor(Qt.PointingHandCursor)
+        self.start_btn.setFixedHeight(36)
+        self.start_btn.setFixedWidth(200)
+        self.start_btn.setStyleSheet("""
+            QPushButton { background: #2979ff; color: #fff; border: none; border-radius: 6px;
+                        font-size: 13px; font-weight: 600; }
+            QPushButton:hover { background: #448aff; }
+        """)
+        self.start_btn.clicked.connect(self._start_from_beginning)
+
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.last_read_label)
         info_layout.addWidget(self.chapter_count_label)
         info_layout.addSpacing(12)
-        info_layout.addWidget(self.continue_btn)
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        btn_row.addWidget(self.continue_btn)
+        btn_row.addWidget(self.start_btn)
+
+        info_layout.addLayout(btn_row)
 
         hero_layout.addWidget(self.thumb_label)
         hero_layout.addWidget(info_widget, 1)
@@ -109,13 +129,40 @@ class DetailPage(QWidget):
         # ── Section header ───────────────────────────────────────────────
         section_header = QWidget()
         section_header.setStyleSheet("background: #121212;")
+
         sh_layout = QHBoxLayout(section_header)
         sh_layout.setContentsMargins(32, 20, 32, 8)
+
         chapters_lbl = QLabel("CHAPTERS")
         chapters_lbl.setStyleSheet(
             "color: #555; font-size: 11px; font-weight: 700; letter-spacing: 2px;"
         )
+
+        self.sort_btn = QPushButton("Latest ↓")
+        self.sort_btn.setCursor(Qt.PointingHandCursor)
+        self.sort_btn.setFixedHeight(24)
+        self.sort_btn.setStyleSheet("""
+        QPushButton {
+            background: transparent;
+            color: #888;
+            border: 1px solid #2a2a2a;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        QPushButton:hover {
+            background: #1a1a1a;
+            color: #fff;
+        }
+        """)
+        self.sort_latest_first = True
+
+        self.sort_btn.clicked.connect(self._toggle_sort)
+
         sh_layout.addWidget(chapters_lbl)
+        sh_layout.addStretch()
+        sh_layout.addWidget(self.sort_btn)
+
         root.addWidget(section_header)
 
         # ── Chapter list ─────────────────────────────────────────────────
@@ -191,8 +238,12 @@ class DetailPage(QWidget):
                 item.widget().setParent(None)
 
         last_read_chapter = progress["chapter"] if progress else None
+        chapters = self.webtoon.chapters
 
-        for chapter in reversed(self.webtoon.chapters):
+        if self.sort_latest_first:
+            chapters = list(reversed(chapters))
+
+        for chapter in chapters:
             row = self._make_chapter_row(chapter, is_last_read=(chapter == last_read_chapter))
             self.chapter_list_layout.addWidget(row)
 
@@ -253,3 +304,18 @@ class DetailPage(QWidget):
 
     def _go_back(self):
         self.main_window.stack.setCurrentWidget(self.main_window.library)
+
+    def _toggle_sort(self):
+
+        self.sort_latest_first = not self.sort_latest_first
+
+        if self.sort_latest_first:
+            self.sort_btn.setText("Latest ↓")
+        else:
+            self.sort_btn.setText("Oldest ↑")
+
+        progress = self.progress_store.get(self.webtoon.name)
+        self._build_chapter_list(progress)
+
+    def _start_from_beginning(self): 
+        self.main_window.open_chapter(self.webtoon, 0)
