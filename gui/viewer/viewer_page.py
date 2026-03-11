@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication, QSlider
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 
 from progress_store import get_instance as get_progress_store
@@ -19,8 +19,8 @@ TILE_PADDING  = 2
 TILE_MIN_H    = 14
 TILE_MAX_H    = 120
 
-LAZY_WINDOW   = 2000    # px above/below viewport to keep loaded
-BATCH_MS      = 50      # flush decoded images to UI every N ms
+LAZY_WINDOW   = 2000
+BATCH_MS      = 16
 NUM_WORKERS   = 8
 
 
@@ -63,12 +63,13 @@ class ContinueDialog(QDialog):
 
 class ImageLoader(QObject):
     image_ready = Signal(int, QPixmap)
+    panel_starts_ready = Signal(int, list)
 
     def __init__(self):
         super().__init__()
-        self.executor   = ThreadPoolExecutor(max_workers=NUM_WORKERS)
+        self.executor = ThreadPoolExecutor(max_workers=NUM_WORKERS)
         self._cancelled = False
-        self._queued    = set()   # track which indices are in-flight
+        self._queued = set()
 
     def cancel(self):
         self._cancelled = True
@@ -92,17 +93,89 @@ class ImageLoader(QObject):
         if not self._cancelled:
             self.image_ready.emit(index, pixmap)
 
+    def build_panel_starts(self, generation: int, payload: list):
+        self.executor.submit(self._panel_task, generation, payload)
+
+    def _panel_task(self, generation: int, payload: list):
+        MIN_BLANK = 18
+        ROW_STEP = 4
+
+        starts = [0]
+        cumulative = 0
+
+        for item in payload:
+            h = item["height"]
+            path = item["path"]
+
+            if not path or h <= 0:
+                cumulative += max(0, h)
+                continue
+
+            img = QImage(path)
+            if img.isNull():
+                cumulative += h
+                continue
+
+            ih = img.height()
+            if ih <= 0:
+                cumulative += h
+                continue
+
+            scale = ih / h
+
+            in_blank = self._is_blank_row(img, 0)
+            blank_run = 0
+
+            for doc_y in range(ROW_STEP, h, ROW_STEP):
+                src_y = min(ih - 1, int(doc_y * scale))
+                is_blank = self._is_blank_row(img, src_y)
+
+                if is_blank:
+                    blank_run += ROW_STEP
+                else:
+                    if in_blank and blank_run >= MIN_BLANK:
+                        starts.append(cumulative + doc_y)
+                    blank_run = 0
+
+                in_blank = is_blank
+
+            cumulative += h
+
+        if not self._cancelled:
+            self.panel_starts_ready.emit(generation, sorted(set(starts)))
+
+    def _is_blank_row(self, image: QImage, y: int, sample_step: int = 12) -> bool:
+        w = image.width()
+        if w <= 0:
+            return True
+
+        lums = []
+        for x in range(0, w, sample_step):
+            c = image.pixelColor(x, y)
+            lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
+            lums.append(lum)
+
+        if not lums:
+            return True
+
+        avg = sum(lums) / len(lums)
+        variance = sum((l - avg) ** 2 for l in lums) / len(lums)
+
+        is_extreme = avg < 0.12 or avg > 0.88
+        is_uniform = variance < 0.003
+        return is_extreme and is_uniform
+
 
 class ChapterPreview(QWidget):
 
     def __init__(self, scroll_area: QScrollArea, parent=None):
         super().__init__(parent)
-        self.scroll_area  = scroll_area
+        self.scroll_area = scroll_area
         self.image_labels = []
         self.setFixedWidth(PREVIEW_W)
         self.setCursor(Qt.PointingHandCursor)
         self._dragging = False
-        self._zoom     = 1.0   # kept in sync by ViewerPage
+        self._zoom = 1.0
 
     def set_zoom(self, zoom: float):
         self._zoom = zoom
@@ -131,7 +204,7 @@ class ChapterPreview(QWidget):
             return None
         tile_h = self._tile_height()
         stride = tile_h + TILE_GAP
-        index  = pos.y() // stride
+        index = pos.y() // stride
         if index < 0 or index >= len(self.image_labels):
             return None
         if pos.y() > index * stride + tile_h:
@@ -149,26 +222,11 @@ class ChapterPreview(QWidget):
             cumulative += label.height()
         return len(self.image_labels) - 1
 
-    def _offset_within_current(self, idx: int) -> float:
-        if not self.image_labels or idx >= len(self.image_labels):
-            return 0.0
-        scroll_top = self.scroll_area.verticalScrollBar().value()
-        cumulative = sum(self.image_labels[i].height() for i in range(idx))
-        h          = self.image_labels[idx].height()
-        return max(0.0, min(1.0, (scroll_top - cumulative) / h)) if h > 0 else 0.0
-
-    def _viewport_fraction_of_image(self, idx: int) -> float:
-        if not self.image_labels or idx >= len(self.image_labels):
-            return 1.0
-        img_h  = self.image_labels[idx].height()
-        view_h = self.scroll_area.viewport().height()
-        return min(1.0, view_h / img_h) if img_h > 0 else 1.0
-
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(QRect(0, 0, FILMSTRIP_W, self.height()),            QColor("#1a1a1a"))
+        painter.fillRect(QRect(0, 0, FILMSTRIP_W, self.height()), QColor("#1a1a1a"))
         painter.fillRect(QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height()), QColor("#141414"))
         if not self.image_labels:
             return
@@ -181,12 +239,12 @@ class ChapterPreview(QWidget):
         tile_w = FILMSTRIP_W - TILE_PADDING * 2
         for i, label in enumerate(self.image_labels):
             rect = self._tile_rect(i, tile_h)
-            src  = getattr(label, '_original_pixmap', None)
+            src = getattr(label, '_original_pixmap', None)
             if src and not src.isNull():
-                sw, sh   = src.width(), src.height()
-                scale    = max(tile_w / sw, tile_h / sh)
-                dw, dh   = int(sw * scale), int(sh * scale)
-                cx, cy   = (dw - tile_w) // 2, (dh - tile_h) // 2
+                sw, sh = src.width(), src.height()
+                scale = max(tile_w / sw, tile_h / sh)
+                dw, dh = int(sw * scale), int(sh * scale)
+                cx, cy = (dw - tile_w) // 2, (dh - tile_h) // 2
                 src_crop = QRect(
                     int(cx / scale), int(cy / scale),
                     int(tile_w / scale), int(tile_h / scale)
@@ -202,8 +260,7 @@ class ChapterPreview(QWidget):
                 painter.drawRect(rect.adjusted(0, 0, -1, -1))
             else:
                 painter.setPen(QColor("#0e0e0e"))
-                painter.drawLine(rect.left(), rect.bottom() + 1,
-                                 rect.right(), rect.bottom() + 1)
+                painter.drawLine(rect.left(), rect.bottom() + 1, rect.right(), rect.bottom() + 1)
 
     def _paint_image_strip(self, painter: QPainter, current_idx: int):
         strip_x = FILMSTRIP_W
@@ -217,16 +274,15 @@ class ChapterPreview(QWidget):
             return
 
         scroll_top = self.scroll_area.verticalScrollBar().value()
-        view_h     = self.scroll_area.viewport().height()
+        view_h = self.scroll_area.viewport().height()
         scroll_max = max(1, self.scroll_area.verticalScrollBar().maximum())
 
         viewport_content_frac = view_h / (total_content_h + view_h)
-        MIN_COVERAGE = 0.20
-        coverage = max(MIN_COVERAGE, viewport_content_frac)
+        coverage = max(0.20, viewport_content_frac)
 
-        scroll_frac      = scroll_top / scroll_max
-        window_top_frac  = scroll_frac * (1.0 - coverage)
-        window_bot_frac  = window_top_frac + coverage
+        scroll_frac = scroll_top / scroll_max
+        window_top_frac = scroll_frac * (1.0 - coverage)
+        window_bot_frac = window_top_frac + coverage
 
         if window_bot_frac > 1.0:
             window_bot_frac = 1.0
@@ -241,7 +297,7 @@ class ChapterPreview(QWidget):
 
         cumulative = 0
         for lbl in self.image_labels:
-            img_h   = lbl.height()
+            img_h = lbl.height()
             img_top = cumulative
             img_bot = cumulative + img_h
             cumulative += img_h
@@ -262,12 +318,6 @@ class ChapterPreview(QWidget):
 
             if src and not src.isNull():
                 sw, sh = src.width(), src.height()
-                # Horizontal crop: the image is center-aligned and scaled to
-                # _zoom * viewport_width. Compute what fraction of the original
-                # pixmap is actually visible so the strip mirrors it exactly.
-                # _original_pixmap is already scaled to _zoom * viewport_width,
-                # so sw == image_width already — just use full width.
-                # But when zoom < 1 the pixmap IS the zoomed width, so no crop needed.
                 src_rect = QRect(
                     0,
                     int(src_frac_top * sh),
@@ -281,7 +331,7 @@ class ChapterPreview(QWidget):
         painter.restore()
 
         indicator_top = int(((scroll_top / total_content_h) - window_top_frac) / coverage * strip_h)
-        indicator_h   = max(3, int((view_h / total_content_h) / coverage * strip_h))
+        indicator_h = max(3, int((view_h / total_content_h) / coverage * strip_h))
         indicator_top = max(0, min(strip_h - indicator_h, indicator_top))
 
         vp_rect = QRect(strip_x, indicator_top, strip_w, indicator_h)
@@ -305,15 +355,14 @@ class ChapterPreview(QWidget):
         if total_content_h == 0:
             return
 
-        bar    = self.scroll_area.verticalScrollBar()
+        bar = self.scroll_area.verticalScrollBar()
         view_h = self.scroll_area.viewport().height()
         scroll_max = max(1, bar.maximum())
 
-        # Reproduce the exact same window calculation used in _paint_image_strip
         viewport_content_frac = view_h / (total_content_h + view_h)
         coverage = max(0.20, viewport_content_frac)
 
-        scroll_frac     = bar.value() / scroll_max
+        scroll_frac = bar.value() / scroll_max
         window_top_frac = scroll_frac * (1.0 - coverage)
         window_bot_frac = window_top_frac + coverage
         if window_bot_frac > 1.0:
@@ -321,10 +370,9 @@ class ChapterPreview(QWidget):
             window_top_frac = 1.0 - coverage
         window_top_frac = max(0.0, window_top_frac)
 
-        # Map the click position back to a content fraction inside the window
-        click_frac    = max(0.0, min(1.0, widget_y / self.height()))
-        content_frac  = window_top_frac + click_frac * coverage
-        target        = int(content_frac * total_content_h) - view_h // 2
+        click_frac = max(0.0, min(1.0, widget_y / self.height()))
+        content_frac = window_top_frac + click_frac * coverage
+        target = int(content_frac * total_content_h) - view_h // 2
         bar.setValue(max(0, min(target, bar.maximum())))
 
     def mousePressEvent(self, event):
@@ -358,26 +406,38 @@ class ViewerPage(QWidget):
 
     def __init__(self, main_window):
         super().__init__()
-        self.main_window           = main_window
-        self.webtoon               = None
-        self.current_chapter_index = 0
-        self.progress_store        = get_progress_store()
+        self.setFocusPolicy(Qt.StrongFocus)
 
-        self._restore_image_index  = None
+        self.main_window = main_window
+        self.webtoon = None
+        self.current_chapter_index = 0
+        self.progress_store = get_progress_store()
+
+        self._restore_image_index = None
         self._restore_image_offset = 0.0
-        self._resize_packed        = None   # saved position across resize/zoom reloads
+        self._resize_packed = None
 
         self._pending_batch: dict[int, QPixmap] = {}
 
         self.loader = ImageLoader()
         self.loader.image_ready.connect(self._on_image_ready)
+        self.loader.panel_starts_ready.connect(self._on_panel_starts_ready)
 
         self._batch_timer = QTimer()
         self._batch_timer.setSingleShot(True)
         self._batch_timer.setInterval(BATCH_MS)
         self._batch_timer.timeout.connect(self._flush_batch)
 
-        # zoom: fraction of viewport width used for images (0.25 – 1.0)
+        self._panel_starts = []
+        self._panel_starts_dirty = True
+        self._panel_build_generation = 0
+        self._panel_build_inflight = False
+
+        self._panel_warm_timer = QTimer()
+        self._panel_warm_timer.setSingleShot(True)
+        self._panel_warm_timer.setInterval(180)
+        self._panel_warm_timer.timeout.connect(self._warm_panel_cache)
+
         self._zoom = 0.5
 
         main_layout = QVBoxLayout(self)
@@ -395,7 +455,6 @@ class ViewerPage(QWidget):
         self.chapter_selector = QComboBox()
         self.chapter_selector.currentIndexChanged.connect(self.load_selected_chapter)
 
-        # ── Zoom controls ──────────────────────────────────────────────
         zoom_out_btn = QPushButton("−")
         zoom_out_btn.setFixedWidth(28)
         zoom_out_btn.setToolTip("Decrease image width")
@@ -408,8 +467,8 @@ class ViewerPage(QWidget):
 
         self._zoom_slider = QSlider(Qt.Horizontal)
         self._zoom_slider.setFixedWidth(100)
-        self._zoom_slider.setMinimum(25)   # 25% of viewport
-        self._zoom_slider.setMaximum(100)  # 100% of viewport
+        self._zoom_slider.setMinimum(25)
+        self._zoom_slider.setMaximum(100)
         self._zoom_slider.setValue(int(self._zoom * 100))
         self._zoom_slider.setToolTip("Image width")
         self._zoom_slider.valueChanged.connect(self._on_zoom_slider)
@@ -445,9 +504,9 @@ class ViewerPage(QWidget):
         content_row.addWidget(self.preview)
         main_layout.addLayout(content_row)
 
-        self.auto_scroll        = False
+        self.auto_scroll = False
         self.auto_scroll_origin = QPoint()
-        self.current_mouse_pos  = QPoint()
+        self.current_mouse_pos = QPoint()
 
         self.scroll_timer = QTimer()
         self.scroll_timer.timeout.connect(self.perform_auto_scroll)
@@ -460,11 +519,14 @@ class ViewerPage(QWidget):
         self.scroll.viewport().installEventFilter(self)
         self.scroll.setMouseTracking(True)
 
-        self.container    = QWidget()
+        self.container = QWidget()
+        self.container.installEventFilter(self)
         self.image_layout = QVBoxLayout(self.container)
         self.image_layout.setSpacing(0)
         self.image_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
+
+        self.preview.installEventFilter(self)
 
         self.image_labels = []
 
@@ -478,10 +540,7 @@ class ViewerPage(QWidget):
         self.scroll.verticalScrollBar().valueChanged.connect(
             lambda: self._progress_save_timer.start()
         )
-
-    # ------------------------------------------------------------------ #
-    #  Public entry points                                                 #
-    # ------------------------------------------------------------------ #
+        self._did_immediate_first_paint = False
 
     def load_webtoon(self, webtoon, start_chapter: int = 0, start_scroll: float = 0.0):
         webtoon.path = os.path.abspath(webtoon.path)
@@ -495,10 +554,6 @@ class ViewerPage(QWidget):
 
         self.current_chapter_index = start_chapter
         self._load_chapter_no_prompt(start_chapter)
-
-    # ------------------------------------------------------------------ #
-    #  Progress save                                                       #
-    # ------------------------------------------------------------------ #
 
     def _current_packed_position(self) -> float:
         if not self.image_labels:
@@ -517,24 +572,20 @@ class ViewerPage(QWidget):
         if not self.webtoon or not self.image_labels:
             return
         chapter = self.webtoon.chapters[self.current_chapter_index]
-        total   = len(self.image_labels)
-        bar     = self.scroll.verticalScrollBar()
+        total = len(self.image_labels)
+        bar = self.scroll.verticalScrollBar()
         if bar.value() >= bar.maximum() and bar.maximum() > 0:
             packed = float(total)
         else:
             packed = self._current_packed_position()
         self.progress_store.save(self.webtoon.name, chapter, packed, total)
 
-    # ------------------------------------------------------------------ #
-    #  Progress restore                                                    #
-    # ------------------------------------------------------------------ #
-
     def _unpack_restore(self, packed: float):
         if packed < 0.005:
-            self._restore_image_index  = None
+            self._restore_image_index = None
             self._restore_image_offset = 0.0
         else:
-            self._restore_image_index  = int(packed)
+            self._restore_image_index = int(packed)
             self._restore_image_offset = packed - int(packed)
 
     def _apply_restore(self):
@@ -550,7 +601,7 @@ class ViewerPage(QWidget):
 
     def _jump_to_packed(self, idx: int, offset_frac: float) -> bool:
         cumulative = sum(self.image_labels[i].height() for i in range(idx))
-        target_px  = cumulative + int(self.image_labels[idx].height() * offset_frac)
+        target_px = cumulative + int(self.image_labels[idx].height() * offset_frac)
 
         QApplication.processEvents()
 
@@ -559,20 +610,30 @@ class ViewerPage(QWidget):
             bar.setMaximum(target_px)
         bar.setValue(target_px)
 
-        if bar.value() < target_px - 5:
-            return False
-        return True
-
-    # ------------------------------------------------------------------ #
-    #  Batch flush                                                       #
-    # ------------------------------------------------------------------ #
+        return not (bar.value() < target_px - 5)
 
     def _on_image_ready(self, index: int, pixmap: QPixmap):
-        """
-        Called from the loader signal (main thread). Instead of immediately
-        updating the label and triggering a layout recalculation, queue the
-        pixmap and let the batch timer flush them all at once.
-        """
+        if index >= len(self.image_labels):
+            return
+
+        # Only do one immediate paint per chapter load.
+        # Everything else should go through the batch path so restore logic runs.
+        if not self._did_immediate_first_paint and not self._pending_batch:
+            label = self.image_labels[index]
+            label._source_pixmap = pixmap
+            label._original_pixmap = pixmap
+            self._apply_pixmap_to_label(label)
+
+            self._did_immediate_first_paint = True
+
+            self.preview.notify_image_loaded()
+            self.check_visible_images()
+            self._panel_warm_timer.start()
+
+            # Restore might already be possible for very small saved positions.
+            self._apply_restore()
+            return
+
         self._pending_batch[index] = pixmap
         if not self._batch_timer.isActive():
             self._batch_timer.start()
@@ -584,14 +645,14 @@ class ViewerPage(QWidget):
         self.container.setUpdatesEnabled(False)
         try:
             needs_restore_check = False
-            restore_idx         = self._restore_image_index
+            restore_idx = self._restore_image_index
 
             for index, pixmap in self._pending_batch.items():
                 if index >= len(self.image_labels):
                     continue
                 label = self.image_labels[index]
-                label._source_pixmap   = pixmap   # full-res, kept for rescaling
-                label._original_pixmap = pixmap   # used by ChapterPreview strip
+                label._source_pixmap = pixmap
+                label._original_pixmap = pixmap
                 self._apply_pixmap_to_label(label)
                 if restore_idx is not None and index <= restore_idx:
                     needs_restore_check = True
@@ -602,23 +663,21 @@ class ViewerPage(QWidget):
         self.preview.notify_image_loaded()
         self._invalidate_panel_cache()
         self.check_visible_images()
-
-        self._build_panel_starts()
+        self._panel_warm_timer.start()
 
         if self._resize_packed is not None:
-            idx  = int(self._resize_packed)
+            idx = int(self._resize_packed)
             frac = self._resize_packed - idx
-            if (self.image_labels and idx < len(self.image_labels)
-                    and getattr(self.image_labels[idx], '_source_pixmap', None) is not None):
+            if (
+                self.image_labels
+                and idx < len(self.image_labels)
+                and getattr(self.image_labels[idx], '_source_pixmap', None) is not None
+            ):
                 self._jump_to_packed(idx, frac)
                 self._resize_packed = None
 
         if needs_restore_check:
             self._apply_restore()
-
-    # ------------------------------------------------------------------ #
-    #  Chapter loading                                                     #
-    # ------------------------------------------------------------------ #
 
     def load_selected_chapter(self, index):
         self._load_chapter_with_prompt(index)
@@ -656,7 +715,9 @@ class ViewerPage(QWidget):
 
     def clear_images(self):
         self._batch_timer.stop()
+        self._panel_warm_timer.stop()
         self._pending_batch.clear()
+        self._did_immediate_first_paint = False
 
         self.loader.cancel()
         self.loader.reset()
@@ -666,26 +727,31 @@ class ViewerPage(QWidget):
             label.deleteLater()
         self.image_labels = []
 
-        self.container    = QWidget()
+        self.container = QWidget()
+        self.container.installEventFilter(self)
         self.image_layout = QVBoxLayout(self.container)
         self.image_layout.setSpacing(0)
         self.image_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
 
         self.preview.set_image_labels([])
-        self._invalidate_panel_cache()
+
+        self._panel_starts = []
+        self._panel_starts_dirty = True
+        self._panel_build_generation += 1
+        self._panel_build_inflight = False
 
     def _load_chapter_images(self, chapter):
         self.clear_images()
 
         chapter_path = os.path.join(self.webtoon.path, chapter)
-        image_files  = sorted(
+        image_files = sorted(
             f for f in os.listdir(chapter_path)
             if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
         )
 
         for img_file in image_files:
-            label          = QLabel()
+            label = QLabel()
             label.img_path = os.path.join(chapter_path, img_file)
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumHeight(400)
@@ -694,10 +760,13 @@ class ViewerPage(QWidget):
 
         self.preview.set_image_labels(self.image_labels)
 
-        QTimer.singleShot(50, self.check_visible_images)
+        self.check_visible_images()
+        QTimer.singleShot(0, self.check_visible_images)
 
         if self._restore_image_index is not None:
-            QTimer.singleShot(50, self._preload_restore_target)
+            self._preload_restore_target()
+
+        self.setFocus()
 
     def _preload_restore_target(self):
         idx = self._restore_image_index
@@ -707,17 +776,13 @@ class ViewerPage(QWidget):
         for i in range(end):
             self.loader.load(i, self.image_labels[i].img_path, 0)
 
-    # ------------------------------------------------------------------ #
-    #  Lazy loading                                                        #
-    # ------------------------------------------------------------------ #
-
     def check_visible_images(self):
-        viewport_top    = self.scroll.verticalScrollBar().value()
+        viewport_top = self.scroll.verticalScrollBar().value()
         viewport_bottom = viewport_top + self.scroll.viewport().height()
 
         cumulative = 0
         for i, label in enumerate(self.image_labels):
-            h   = label.height()
+            h = label.height()
             pos = cumulative
             cumulative += h
 
@@ -729,10 +794,6 @@ class ViewerPage(QWidget):
                 continue
 
             self.loader.load(i, label.img_path, 0)
-
-    # ------------------------------------------------------------------ #
-    #  Zoom                                                                #
-    # ------------------------------------------------------------------ #
 
     def _zoom_out(self):
         self._set_zoom(self._zoom - 0.05)
@@ -753,10 +814,6 @@ class ViewerPage(QWidget):
         self.preview.set_zoom(self._zoom)
         self.rescale_images()
 
-    # ------------------------------------------------------------------ #
-    #  Image scaling                                                       #
-    # ------------------------------------------------------------------ #
-
     def _image_width(self) -> int:
         return max(1, int(self.scroll.viewport().width() * self._zoom))
 
@@ -765,7 +822,7 @@ class ViewerPage(QWidget):
         if src is None or src.isNull():
             return
         scaled = src.scaledToWidth(self._image_width(), Qt.SmoothTransformation)
-        label._original_pixmap = scaled   # strip preview uses this
+        label._original_pixmap = scaled
         label.setPixmap(scaled)
         label.setFixedHeight(scaled.height())
 
@@ -779,17 +836,15 @@ class ViewerPage(QWidget):
         finally:
             self.container.setUpdatesEnabled(True)
 
-        idx  = int(packed)
+        idx = int(packed)
         frac = packed - idx
         if self.image_labels and idx < len(self.image_labels):
             QApplication.processEvents()
             self._jump_to_packed(idx, frac)
 
         self.preview.update()
-
-    # ------------------------------------------------------------------ #
-    #  Navigation                                                          #
-    # ------------------------------------------------------------------ #
+        self._invalidate_panel_cache()
+        self._panel_warm_timer.start()
 
     def next_chapter(self):
         if self.current_chapter_index < len(self.webtoon.chapters) - 1:
@@ -814,142 +869,197 @@ class ViewerPage(QWidget):
         self.main_window.library.refresh_progress()
         self.main_window.open_detail(self.webtoon)
 
-    # ------------------------------------------------------------------ #
-    #  Resize                                                              #
-    # ------------------------------------------------------------------ #
-
     def resizeEvent(self, event):
         self._resize_timer.start()
         super().resizeEvent(event)
 
-    # ------------------------------------------------------------------ #
-    #  Keyboard navigation                                                 #
-    # ------------------------------------------------------------------ #
-
-    _panel_starts: list[int] = []
-    _panel_starts_dirty: bool = True
-
     def _invalidate_panel_cache(self):
         self._panel_starts_dirty = True
+        self._panel_build_generation += 1
 
-    def _is_blank_row(self, image, y: int, sample_step: int = 10) -> bool:
-        """
-        A row is blank if it has very low luminance variance AND is near
-        uniform white or black. Speech bubbles and dialogue text have
-        high variance even on white backgrounds, so they read as content.
-        """
-        w = image.width()
-        if w == 0:
-            return True
-        lums = []
-        for x in range(0, w, sample_step):
-            c   = image.pixelColor(x, y)
-            lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
-            lums.append(lum)
-        if not lums:
-            return True
-        avg      = sum(lums) / len(lums)
-        variance = sum((l - avg) ** 2 for l in lums) / len(lums)
-        # Must be near-white or near-black AND have very low variance
-        is_extreme = avg < 0.12 or avg > 0.88
-        is_uniform = variance < 0.003
-        return is_extreme and is_uniform
+    def _warm_panel_cache(self):
+        if self._panel_build_inflight:
+            return
 
-    def _build_panel_starts(self):
-        """
-        Build a sorted list of doc-y positions where content begins after
-        a blank gap. Cached until images change.
-        """
-        MIN_BLANK = 18
-        ROW_STEP  = 3
-
-        starts     = [0]
-        cumulative = 0
+        payload = []
+        any_loaded = False
 
         for label in self.image_labels:
-            h   = label.height()
             src = getattr(label, '_source_pixmap', None)
+            h = label.height()
+            path = getattr(label, 'img_path', None)
 
-            if src is None or src.isNull() or h == 0:
-                cumulative += h
+            if src is None or src.isNull() or h <= 0 or not path:
+                payload.append({"height": h, "path": None})
                 continue
 
-            img   = src.toImage()
-            ih    = img.height()
-            scale = ih / h
+            any_loaded = True
+            payload.append({"height": h, "path": path})
 
-            in_blank  = self._is_blank_row(img, 0)
-            blank_run = 0
+        if not any_loaded:
+            return
 
-            for doc_y in range(ROW_STEP, h, ROW_STEP):
-                src_y    = min(ih - 1, int(doc_y * scale))
-                is_blank = self._is_blank_row(img, src_y)
+        self._panel_build_inflight = True
+        generation = self._panel_build_generation
+        self.loader.build_panel_starts(generation, payload)
 
-                if is_blank:
-                    blank_run += ROW_STEP
-                else:
-                    if in_blank and blank_run >= MIN_BLANK:
-                        starts.append(cumulative + doc_y)
-                    blank_run = 0
+    def _on_panel_starts_ready(self, generation: int, starts: list):
+        self._panel_build_inflight = False
 
-                in_blank = is_blank
+        if generation != self._panel_build_generation:
+            return
 
-            cumulative += h
-
-        self._panel_starts       = sorted(set(starts))
+        self._panel_starts = starts
         self._panel_starts_dirty = False
 
     def _get_panel_starts(self) -> list[int]:
         if self._panel_starts_dirty:
-            self._build_panel_starts()
+            return []
         return self._panel_starts
-  
-    def _jump_to_panel(self, panel_y: int):
-        """Scroll so panel_y sits near the top of the viewport with a small margin."""
-        MARGIN = 12
-        self.scroll.verticalScrollBar().setValue(max(0, panel_y - MARGIN))
+
+    def _total_content_height(self) -> int:
+        return sum(label.height() for label in self.image_labels)
+
+    def _merge_close_targets(self, targets: list[int], min_gap: int) -> list[int]:
+        if not targets:
+            return []
+
+        merged = [targets[0]]
+        for t in targets[1:]:
+            if t - merged[-1] < min_gap:
+                continue
+            merged.append(t)
+        return merged
+
+    def _get_skip_targets(self) -> list[int]:
+        starts = self._get_panel_starts()
+        if not starts:
+            return []
+
+        total_h = self._total_content_height()
+        view_h = self.scroll.viewport().height()
+        if total_h <= 0 or view_h <= 0:
+            return []
+
+        panels = []
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else total_h
+            if end > start:
+                panels.append((start, end))
+
+        targets = []
+
+        # Tunables
+        SHORT_PANEL_MAX = int(view_h * 0.95)
+        TALL_STEP = int(view_h * 0.78)
+        FIRST_PAD = int(view_h * 0.16)      # don't land exactly on panel start
+        LAST_PAD = int(view_h * 0.20)       # keep some of panel bottom in view
+        MIN_TARGET_GAP = max(90, int(view_h * 0.18))
+
+        for start, end in panels:
+            panel_h = end - start
+
+            if panel_h <= SHORT_PANEL_MAX:
+                # For shorter panels, bias slightly downward so you don't land
+                # with the new dialogue barely starting at the bottom/top edge.
+                target = start - FIRST_PAD
+                targets.append(max(0, target))
+                continue
+
+            # Tall panels get multiple stops.
+            first_target = max(0, start - FIRST_PAD)
+            last_target = max(first_target, end - int(view_h * 0.80))
+
+            t = first_target
+            while t < last_target - 8:
+                targets.append(max(0, t))
+                t += TALL_STEP
+
+            targets.append(max(0, last_target))
+
+        max_scroll = self.scroll.verticalScrollBar().maximum()
+        targets = [max(0, min(t, max_scroll)) for t in sorted(set(targets))]
+        targets = self._merge_close_targets(targets, MIN_TARGET_GAP)
+        return targets
+
+    def _jump_to_target(self, target_y: int):
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(max(0, min(target_y, bar.maximum())))
 
     def keyPressEvent(self, event):
-        key    = event.key()
-        bar    = self.scroll.verticalScrollBar()
+        key = event.key()
+        bar = self.scroll.verticalScrollBar()
         view_h = self.scroll.viewport().height()
-        pos    = bar.value()
+        pos = bar.value()
+        center = pos + view_h / 2
 
         if key in (Qt.Key_Down, Qt.Key_Up):
-            starts = self._get_panel_starts()
-            if not starts:
-                super().keyPressEvent(event)
+            targets = self._get_skip_targets()
+
+            if not targets:
+                if key == Qt.Key_Down:
+                    bar.setValue(pos + int(view_h * 0.9))
+                else:
+                    bar.setValue(max(0, pos - int(view_h * 0.9)))
                 return
 
-            if key == Qt.Key_Down:
-                # Find the very next panel start after current position
-                next_panel = next((s for s in starts if s > pos), None)
-                # Only skip if the blank gap is meaningful (>40% of viewport)
-                if next_panel is not None and next_panel - pos > view_h * 0.4:
-                    self._jump_to_panel(next_panel)
-                else:
-                    bar.setValue(pos + view_h)          # normal page scroll
+            SNAP = max(32, int(view_h * 0.07))
+            MIN_MOVE = max(80, int(view_h * 0.16))
 
-            else:  # Key_Up
-                # Find the previous panel start
-                prev_panel = next((s for s in reversed(starts) if s < pos), None)
-                if prev_panel is not None and pos - prev_panel > view_h * 0.4:
-                    self._jump_to_panel(prev_panel)
+            if key == Qt.Key_Down:
+                next_target = next(
+                    (t for t in targets if (t + view_h / 2) > center + SNAP),
+                    None
+                )
+
+                if next_target is not None:
+                    # If the next detected target is too close, skip it and move to
+                    # the next meaningful one instead.
+                    while next_target is not None and (next_target - pos) < MIN_MOVE:
+                        next_target = next(
+                            (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
+                            None
+                        )
+
+                if next_target is not None:
+                    self._jump_to_target(next_target)
                 else:
-                    bar.setValue(max(0, pos - view_h))
+                    bar.setValue(pos + int(view_h * 0.9))
+
+            else:  # Qt.Key_Up
+                prev_target = next(
+                    (t for t in reversed(targets) if (t + view_h / 2) < center - SNAP),
+                    None
+                )
+
+                if prev_target is not None:
+                    while prev_target is not None and (pos - prev_target) < MIN_MOVE:
+                        prev_target = next(
+                            (t for t in reversed(targets) if t < prev_target - 1 and (pos - t) >= MIN_MOVE),
+                            None
+                        )
+
+                if prev_target is not None:
+                    self._jump_to_target(prev_target)
+                else:
+                    bar.setValue(max(0, pos - int(view_h * 0.9)))
 
         elif key == Qt.Key_Right:
             if self.current_chapter_index < len(self.webtoon.chapters) - 1:
                 self._progress_save_timer.stop()
                 self._save_progress()
+                self._restore_image_index = None
                 self._load_chapter_with_prompt(self.current_chapter_index + 1)
                 self.setFocus()
+
         elif key == Qt.Key_Left:
             if self.current_chapter_index > 0:
                 self._progress_save_timer.stop()
                 self._save_progress()
+                self._restore_image_index = None
                 self._load_chapter_with_prompt(self.current_chapter_index - 1)
                 self.setFocus()
+
         else:
             super().keyPressEvent(event)
 
@@ -957,65 +1067,73 @@ class ViewerPage(QWidget):
         super().showEvent(event)
         self.setFocus()
 
-    # ------------------------------------------------------------------ #
-    #  Middle-click auto scroll                                            #
-    # ------------------------------------------------------------------ #
-
     def eventFilter(self, obj, event):
-        if obj == self.scroll.viewport():
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
-                if self.auto_scroll:
+        container = getattr(self, "container", None)
+        preview = getattr(self, "preview", None)
+        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+
+        watched = tuple(x for x in (viewport, container, preview) if x is not None)
+
+        if obj in watched:
+            if event.type() == QEvent.MouseButtonPress:
+                self.setFocus()
+
+            if viewport is not None and obj == viewport:
+                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                    if self.auto_scroll:
+                        self.auto_scroll = False
+                        self.scroll_timer.stop()
+                        self.scroll.viewport().unsetCursor()
+                        self.scroll.viewport().update()
+                    else:
+                        self.auto_scroll = True
+                        self.auto_scroll_origin = event.pos()
+                        self.current_mouse_pos = event.pos()
+                        self.scroll.viewport().setCursor(Qt.SizeAllCursor)
+                        self.scroll_timer.start(16)
+                    self.setFocus()
+                    return True
+
+                if event.type() == QEvent.MouseMove and self.auto_scroll:
+                    self.current_mouse_pos = event.pos()
+                    self.scroll.viewport().update()
+                    return True
+
+                if (
+                    event.type() == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton
+                    and self.auto_scroll
+                ):
                     self.auto_scroll = False
                     self.scroll_timer.stop()
                     self.scroll.viewport().unsetCursor()
                     self.scroll.viewport().update()
-                else:
-                    self.auto_scroll = True
-                    self.auto_scroll_origin = event.pos()
-                    self.current_mouse_pos  = event.pos()
-                    self.scroll.viewport().setCursor(Qt.SizeAllCursor)
-                    self.scroll_timer.start(16)
-                self.setFocus()
-                return True
+                    self.setFocus()
 
-            if event.type() == QEvent.MouseMove and self.auto_scroll:
-                self.current_mouse_pos = event.pos()
-                self.scroll.viewport().update()
-                return True
+                if event.type() == QEvent.Paint and self.auto_scroll:
+                    painter = QPainter(self.scroll.viewport())
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    ox = self.auto_scroll_origin.x()
+                    oy = self.auto_scroll_origin.y()
+                    dy = self.current_mouse_pos.y() - oy
 
-            if (event.type() == QEvent.MouseButtonPress
-                    and event.button() == Qt.LeftButton
-                    and self.auto_scroll):
-                self.auto_scroll = False
-                self.scroll_timer.stop()
-                self.scroll.viewport().unsetCursor()
-                self.scroll.viewport().update()
-                self.setFocus()
+                    DEADZONE = 8
+                    painter.setPen(QPen(QColor(255, 255, 255, 160), 1))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawEllipse(QPoint(ox, oy), DEADZONE, DEADZONE)
 
-            if event.type() == QEvent.Paint and self.auto_scroll:
-                painter = QPainter(self.scroll.viewport())
-                painter.setRenderHint(QPainter.Antialiasing)
-                ox = self.auto_scroll_origin.x()
-                oy = self.auto_scroll_origin.y()
-                dy = self.current_mouse_pos.y() - oy
-
-                DEADZONE = 8
-                painter.setPen(QPen(QColor(255, 255, 255, 160), 1))
-                painter.setBrush(Qt.NoBrush)
-                painter.drawEllipse(QPoint(ox, oy), DEADZONE, DEADZONE)
-
-                if abs(dy) > DEADZONE:
-                    arrow_y = oy + (DEADZONE if dy > 0 else -DEADZONE)
-                    tip_y   = oy + (DEADZONE + 6 if dy > 0 else -DEADZONE - 6)
-                    painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
-                    painter.drawLine(ox, arrow_y, ox, tip_y)
-                    if dy > 0:
-                        painter.drawLine(ox, tip_y, ox - 4, tip_y - 5)
-                        painter.drawLine(ox, tip_y, ox + 4, tip_y - 5)
-                    else:
-                        painter.drawLine(ox, tip_y, ox - 4, tip_y + 5)
-                        painter.drawLine(ox, tip_y, ox + 4, tip_y + 5)
-                return False
+                    if abs(dy) > DEADZONE:
+                        arrow_y = oy + (DEADZONE if dy > 0 else -DEADZONE)
+                        tip_y = oy + (DEADZONE + 6 if dy > 0 else -DEADZONE - 6)
+                        painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
+                        painter.drawLine(ox, arrow_y, ox, tip_y)
+                        if dy > 0:
+                            painter.drawLine(ox, tip_y, ox - 4, tip_y - 5)
+                            painter.drawLine(ox, tip_y, ox + 4, tip_y - 5)
+                        else:
+                            painter.drawLine(ox, tip_y, ox - 4, tip_y + 5)
+                            painter.drawLine(ox, tip_y, ox + 4, tip_y + 5)
+                    return False
 
         return super().eventFilter(obj, event)
 
@@ -1025,6 +1143,6 @@ class ViewerPage(QWidget):
         if abs(dy) <= DEADZONE:
             return
         speed = ((abs(dy) - DEADZONE) ** 1.4) * (0.08 if dy > 0 else -0.08)
-        bar   = self.scroll.verticalScrollBar()
+        bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
         self.setFocus()
