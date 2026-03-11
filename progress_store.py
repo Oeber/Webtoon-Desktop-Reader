@@ -3,6 +3,14 @@ import os
 
 PROGRESS_JSON = "data/progress.json"
 
+_instance = None
+
+def get_instance():
+    global _instance
+    if _instance is None:
+        _instance = ProgressStore()
+    return _instance
+
 
 class ProgressStore:
 
@@ -25,13 +33,10 @@ class ProgressStore:
             json.dump(self._data, f, indent=2, ensure_ascii=False)
 
     def get(self, webtoon_name: str) -> dict | None:
-        """Return { chapter, scroll } or None if never read."""
         return self._data.get(webtoon_name)
 
-    def save(self, webtoon_name: str, chapter: str, scroll_pct: float):
-        """Save progress. scroll_pct is 0.0–1.0."""
-        scroll_pct = max(0.0, min(1.0, scroll_pct))
-        self._data[webtoon_name] = {"chapter": chapter, "scroll": scroll_pct}
+    def save(self, webtoon_name: str, chapter: str, scroll: float):
+        self._data[webtoon_name] = {"chapter": chapter, "scroll": scroll}
         self._save()
 
     def clear(self, webtoon_name: str):

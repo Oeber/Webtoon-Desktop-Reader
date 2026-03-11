@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt
 
 from library_manager import scan_library
 from thumbnail_store import ThumbnailStore
-from progress_store import ProgressStore
+from progress_store import get_instance as get_progress_store
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 
 
@@ -26,7 +26,7 @@ class LibraryPage(QWidget):
 
         self.main_window   = main_window
         self.thumb_store   = ThumbnailStore()
-        self.progress_store = ProgressStore()
+        self.progress_store = get_progress_store()
         self._webtoons     = []
         self._cards        = []
         self._current_cols = 0

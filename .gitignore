@@ -1,6 +1,7 @@
 
 *.pyc
 *.docx
+*.md
 
 webtoons/*
 data/*
