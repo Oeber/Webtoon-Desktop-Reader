@@ -5,17 +5,23 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QBrush
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 
 from progress_store import get_instance as get_progress_store
 
-PREVIEW_WIDTH  = 80     # total width of the filmstrip panel
-SCRUBBER_WIDTH = 6      # width of the position line column on the right
-TILE_AREA_W    = PREVIEW_WIDTH - SCRUBBER_WIDTH  # width available for tiles
-TILE_HEIGHT    = 100    # fixed height of each tile
-TILE_GAP       = 3      # gap between tiles
-TILE_PADDING   = 3      # horizontal inset for tiles within the tile area
+FILMSTRIP_W   = 25
+IMAGE_STRIP_W = 50
+PREVIEW_W     = FILMSTRIP_W + IMAGE_STRIP_W
+
+TILE_GAP      = 2
+TILE_PADDING  = 2
+TILE_MIN_H    = 14
+TILE_MAX_H    = 120
+
+LAZY_WINDOW   = 2000    # px above/below viewport to keep loaded
+BATCH_MS      = 50      # flush decoded images to UI every N ms
+NUM_WORKERS   = 8
 
 
 class ContinueDialog(QDialog):
@@ -60,16 +66,24 @@ class ImageLoader(QObject):
 
     def __init__(self):
         super().__init__()
-        self.executor   = ThreadPoolExecutor(max_workers=4)
+        self.executor   = ThreadPoolExecutor(max_workers=NUM_WORKERS)
+        self._cancelled = False
+        self._queued    = set()   # track which indices are in-flight
+
+    def cancel(self):
+        self._cancelled = True
+        self._queued.clear()
+
+    def reset(self):
         self._cancelled = False
 
-    def cancel(self): self._cancelled = True
-    def reset(self):  self._cancelled = False
-
-    def load(self, index, path, width):
+    def load(self, index: int, path: str, width: int):
+        if index in self._queued:
+            return
+        self._queued.add(index)
         self.executor.submit(self._load_task, index, path, width)
 
-    def _load_task(self, index, path, width):
+    def _load_task(self, index: int, path: str, width: int):
         if self._cancelled:
             return
         pixmap = QPixmap(path)
@@ -81,29 +95,14 @@ class ImageLoader(QObject):
 
 
 class ChapterPreview(QWidget):
-    """
-    Filmstrip panel on the right side of the viewer.
-
-    Left column (TILE_AREA_W px): one fixed-height tile per image.
-      - Loaded images show a center-cropped thumbnail.
-      - Unloaded images show a dark placeholder.
-      - The tile containing the viewport top is highlighted.
-
-    Right column (SCRUBBER_WIDTH px): thin position line.
-      - Shows exact proportional scroll position within the chapter.
-      - Small handle indicates current position.
-      - Click or drag to scrub.
-
-    Clicking a tile jumps to that image.
-    """
 
     def __init__(self, scroll_area: QScrollArea, parent=None):
         super().__init__(parent)
         self.scroll_area  = scroll_area
         self.image_labels = []
-        self.setFixedWidth(PREVIEW_WIDTH)
+        self.setFixedWidth(PREVIEW_W)
         self.setCursor(Qt.PointingHandCursor)
-        self._dragging_scrubber = False
+        self._dragging = False
 
     def set_image_labels(self, labels: list):
         self.image_labels = labels
@@ -112,178 +111,158 @@ class ChapterPreview(QWidget):
     def notify_image_loaded(self):
         self.update()
 
-    # ------------------------------------------------------------------ #
-    #  Geometry helpers                                                    #
-    # ------------------------------------------------------------------ #
-
-    def _tile_rect(self, index: int) -> QRect:
-        """Returns the rect for tile[index] in widget coordinates."""
-        y = index * (TILE_HEIGHT + TILE_GAP)
-        return QRect(TILE_PADDING, y, TILE_AREA_W - TILE_PADDING * 2, TILE_HEIGHT)
-
-    def _total_tile_height(self) -> int:
+    def _tile_height(self) -> int:
         n = len(self.image_labels)
-        return n * TILE_HEIGHT + max(0, n - 1) * TILE_GAP
+        if n == 0:
+            return TILE_MAX_H
+        available = self.height() - (n - 1) * TILE_GAP
+        return int(max(TILE_MIN_H, min(TILE_MAX_H, available / n)))
+
+    def _tile_rect(self, index: int, tile_h: int) -> QRect:
+        y = index * (tile_h + TILE_GAP)
+        return QRect(TILE_PADDING, y, FILMSTRIP_W - TILE_PADDING * 2, tile_h)
+
+    def _tile_index_at(self, pos: QPoint) -> int | None:
+        if pos.x() >= FILMSTRIP_W:
+            return None
+        tile_h = self._tile_height()
+        stride = tile_h + TILE_GAP
+        index  = pos.y() // stride
+        if index < 0 or index >= len(self.image_labels):
+            return None
+        if pos.y() > index * stride + tile_h:
+            return None
+        return index
 
     def _current_image_index(self) -> int:
-        """Which image contains the viewport top."""
         if not self.image_labels:
             return 0
-        bar        = self.scroll_area.verticalScrollBar()
-        scroll_top = bar.value()
+        scroll_top = self.scroll_area.verticalScrollBar().value()
         cumulative = 0
         for i, label in enumerate(self.image_labels):
-            h = label.height()
-            if cumulative + h > scroll_top:
+            if cumulative + label.height() > scroll_top:
                 return i
-            cumulative += h
+            cumulative += label.height()
         return len(self.image_labels) - 1
 
-    def _scroll_fraction(self) -> float:
-        """Current scroll position as 0.0–1.0 fraction of total content."""
-        bar = self.scroll_area.verticalScrollBar()
-        max_val = bar.maximum()
-        return bar.value() / max_val if max_val > 0 else 0.0
+    def _offset_within_current(self, idx: int) -> float:
+        if not self.image_labels or idx >= len(self.image_labels):
+            return 0.0
+        scroll_top = self.scroll_area.verticalScrollBar().value()
+        cumulative = sum(self.image_labels[i].height() for i in range(idx))
+        h          = self.image_labels[idx].height()
+        return max(0.0, min(1.0, (scroll_top - cumulative) / h)) if h > 0 else 0.0
 
-    def _scrubber_rect(self) -> QRect:
-        """The thin column on the right used for the position line."""
-        return QRect(TILE_AREA_W, 0, SCRUBBER_WIDTH, self.height())
-
-    def _handle_y(self) -> int:
-        frac = self._scroll_fraction()
-        return int(frac * self.height())
-
-    # ------------------------------------------------------------------ #
-    #  Paint                                                               #
-    # ------------------------------------------------------------------ #
+    def _viewport_fraction_of_image(self, idx: int) -> float:
+        if not self.image_labels or idx >= len(self.image_labels):
+            return 1.0
+        img_h  = self.image_labels[idx].height()
+        view_h = self.scroll_area.viewport().height()
+        return min(1.0, view_h / img_h) if img_h > 0 else 1.0
 
     def paintEvent(self, event):
-        if not self.image_labels:
-            painter = QPainter(self)
-            painter.fillRect(self.rect(), QColor("#1a1a1a"))
-            return
-
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.Antialiasing)
-
-        # Background
-        painter.fillRect(self.rect(), QColor("#1a1a1a"))
-
+        painter.fillRect(QRect(0, 0, FILMSTRIP_W, self.height()),            QColor("#1a1a1a"))
+        painter.fillRect(QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height()), QColor("#141414"))
+        if not self.image_labels:
+            return
         current_idx = self._current_image_index()
-        tile_w      = TILE_AREA_W - TILE_PADDING * 2
+        self._paint_filmstrip(painter, current_idx)
+        self._paint_image_strip(painter, current_idx)
 
+    def _paint_filmstrip(self, painter: QPainter, current_idx: int):
+        tile_h = self._tile_height()
+        tile_w = FILMSTRIP_W - TILE_PADDING * 2
         for i, label in enumerate(self.image_labels):
-            rect = self._tile_rect(i)
-
-            # Skip tiles entirely outside the visible widget area
-            if rect.bottom() < 0 or rect.top() > self.height():
-                continue
-
-            src = getattr(label, '_original_pixmap', None)
+            rect = self._tile_rect(i, tile_h)
+            src  = getattr(label, '_original_pixmap', None)
             if src and not src.isNull():
-                # Center-crop the source pixmap to fill the tile
-                src_w, src_h = src.width(), src.height()
-                scale        = max(tile_w / src_w, TILE_HEIGHT / src_h)
-                scaled_w     = int(src_w * scale)
-                scaled_h     = int(src_h * scale)
-                crop_x       = (scaled_w - tile_w) // 2
-                crop_y       = (scaled_h - TILE_HEIGHT) // 2
-                src_crop     = QRect(
-                    int(crop_x / scale), int(crop_y / scale),
-                    int(tile_w / scale), int(TILE_HEIGHT / scale)
+                sw, sh   = src.width(), src.height()
+                scale    = max(tile_w / sw, tile_h / sh)
+                dw, dh   = int(sw * scale), int(sh * scale)
+                cx, cy   = (dw - tile_w) // 2, (dh - tile_h) // 2
+                src_crop = QRect(
+                    int(cx / scale), int(cy / scale),
+                    int(tile_w / scale), int(tile_h / scale)
                 )
                 painter.drawPixmap(rect, src, src_crop)
             else:
                 painter.fillRect(rect, QColor("#2a2a2a"))
-                # Subtle image number hint
-                painter.setPen(QColor("#444"))
-                painter.drawText(rect, Qt.AlignCenter, str(i + 1))
-
-            # Highlight border + tint for current tile
             if i == current_idx:
-                painter.fillRect(rect, QColor(41, 121, 255, 45))
-                pen = QPen(QColor(41, 121, 255, 230))
-                pen.setWidth(2)
+                painter.fillRect(rect, QColor(41, 121, 255, 50))
+                pen = QPen(QColor(41, 121, 255, 220))
+                pen.setWidth(1)
                 painter.setPen(pen)
-                painter.drawRect(rect.adjusted(1, 1, -1, -1))
+                painter.drawRect(rect.adjusted(0, 0, -1, -1))
             else:
-                # Subtle separator
-                painter.setPen(QColor("#111"))
+                painter.setPen(QColor("#0e0e0e"))
                 painter.drawLine(rect.left(), rect.bottom() + 1,
                                  rect.right(), rect.bottom() + 1)
 
-        # ---- Scrubber column ----
-        scrub = self._scrubber_rect()
-        painter.fillRect(scrub, QColor("#111"))
-
-        # Track line
-        track_x = scrub.left() + scrub.width() // 2
-        painter.setPen(QPen(QColor("#333"), 1))
-        painter.drawLine(track_x, 0, track_x, self.height())
-
-        # Handle
-        hy = self._handle_y()
-        handle_rect = QRect(scrub.left() + 1, hy - 5, scrub.width() - 2, 10)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QBrush(QColor(41, 121, 255, 220)))
-        painter.drawRoundedRect(handle_rect, 2, 2)
-
-    # ------------------------------------------------------------------ #
-    #  Scroll helpers                                                      #
-    # ------------------------------------------------------------------ #
+    def _paint_image_strip(self, painter: QPainter, current_idx: int):
+        strip_rect = QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height())
+        src        = getattr(self.image_labels[current_idx], '_original_pixmap', None)
+        if src and not src.isNull():
+            painter.drawPixmap(strip_rect, src, src.rect())
+        else:
+            painter.fillRect(strip_rect, QColor("#2a2a2a"))
+        offset_frac   = self._offset_within_current(current_idx)
+        viewport_frac = self._viewport_fraction_of_image(current_idx)
+        rect_top      = int(offset_frac * self.height())
+        rect_h        = max(3, int(viewport_frac * self.height()))
+        vp_rect       = QRect(FILMSTRIP_W, rect_top, IMAGE_STRIP_W, rect_h)
+        painter.fillRect(vp_rect, QColor(41, 121, 255, 55))
+        pen = QPen(QColor(41, 121, 255, 230))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawRect(vp_rect.adjusted(0, 0, -1, -1))
 
     def _jump_to_image(self, index: int):
-        """Scroll the main view to the top of image[index]."""
         if not self.image_labels or index >= len(self.image_labels):
             return
         cumulative = sum(self.image_labels[i].height() for i in range(index))
         bar = self.scroll_area.verticalScrollBar()
         bar.setValue(max(0, min(cumulative, bar.maximum())))
 
-    def _scrub_to_y(self, widget_y: int):
-        """Set scroll position proportional to widget_y within the scrubber."""
-        frac = max(0.0, min(1.0, widget_y / self.height()))
-        bar  = self.scroll_area.verticalScrollBar()
-        bar.setValue(int(frac * bar.maximum()))
-
-    def _tile_index_at(self, pos: QPoint) -> int | None:
-        """Return the tile index at widget position pos, or None."""
-        x, y = pos.x(), pos.y()
-        if x >= TILE_AREA_W:
-            return None
-        index = y // (TILE_HEIGHT + TILE_GAP)
-        if index < 0 or index >= len(self.image_labels):
-            return None
-        # Make sure click lands inside the tile rect, not in the gap
-        tile_top = index * (TILE_HEIGHT + TILE_GAP)
-        if y > tile_top + TILE_HEIGHT:
-            return None
-        return index
-
-    # ------------------------------------------------------------------ #
-    #  Mouse events                                                        #
-    # ------------------------------------------------------------------ #
+    def _scrub_strip_to_y(self, widget_y: int):
+        idx = self._current_image_index()
+        if not self.image_labels or idx >= len(self.image_labels):
+            return
+        frac       = max(0.0, min(1.0, widget_y / self.height()))
+        img_h      = self.image_labels[idx].height()
+        cumulative = sum(self.image_labels[i].height() for i in range(idx))
+        view_h     = self.scroll_area.viewport().height()
+        target     = cumulative + int(frac * img_h) - view_h // 2
+        bar = self.scroll_area.verticalScrollBar()
+        bar.setValue(max(0, min(target, bar.maximum())))
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
             return
-        pos = event.pos()
-        if pos.x() >= TILE_AREA_W:
-            self._dragging_scrubber = True
-            self._scrub_to_y(pos.y())
-        else:
-            idx = self._tile_index_at(pos)
-            if idx is not None:
-                self._jump_to_image(idx)
+        self._dragging = True
+        self._handle_pos(event.pos())
 
     def mouseMoveEvent(self, event):
-        if self._dragging_scrubber:
-            self._scrub_to_y(event.pos().y())
+        if self._dragging:
+            self._handle_pos(event.pos())
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self._dragging_scrubber = False
+            self._dragging = False
+
+    def _handle_pos(self, pos: QPoint):
+        if pos.x() < FILMSTRIP_W:
+            idx = self._tile_index_at(pos)
+            if idx is not None:
+                self._jump_to_image(idx)
+        else:
+            self._scrub_strip_to_y(pos.y())
+
+    def resizeEvent(self, event):
+        self.update()
+        super().resizeEvent(event)
 
 
 class ViewerPage(QWidget):
@@ -299,8 +278,18 @@ class ViewerPage(QWidget):
         self._restore_image_index  = None
         self._restore_image_offset = 0.0
 
+        # Pending decoded pixmaps waiting to be flushed to labels
+        self._pending_batch: dict[int, QPixmap] = {}
+
         self.loader = ImageLoader()
         self.loader.image_ready.connect(self._on_image_ready)
+
+        # Batch flush timer — collects incoming pixmaps and applies
+        # them all at once to avoid per-image layout recalculations
+        self._batch_timer = QTimer()
+        self._batch_timer.setSingleShot(True)
+        self._batch_timer.setInterval(BATCH_MS)
+        self._batch_timer.timeout.connect(self._flush_batch)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -451,6 +440,55 @@ class ViewerPage(QWidget):
         return True
 
     # ------------------------------------------------------------------ #
+    #  Batch flush                                                         #
+    # ------------------------------------------------------------------ #
+
+    def _on_image_ready(self, index: int, pixmap: QPixmap):
+        """
+        Called from the loader signal (main thread). Instead of immediately
+        updating the label and triggering a layout recalculation, queue the
+        pixmap and let the batch timer flush them all at once.
+        """
+        self._pending_batch[index] = pixmap
+        if not self._batch_timer.isActive():
+            self._batch_timer.start()
+
+    def _flush_batch(self):
+        """
+        Apply all queued pixmaps in one pass. Qt only needs to recalculate
+        the layout once after all setFixedHeight calls settle, rather than
+        once per image.
+        """
+        if not self._pending_batch:
+            return
+
+        # Suspend layout updates while we apply all pixmaps
+        self.container.setUpdatesEnabled(False)
+        try:
+            needs_restore_check = False
+            restore_idx         = self._restore_image_index
+
+            for index, pixmap in self._pending_batch.items():
+                if index >= len(self.image_labels):
+                    continue
+                label = self.image_labels[index]
+                label._original_pixmap = pixmap
+                self._apply_pixmap_to_label(label)
+                if restore_idx is not None and index <= restore_idx:
+                    needs_restore_check = True
+        finally:
+            self._pending_batch.clear()
+            self.container.setUpdatesEnabled(True)
+
+        self.preview.notify_image_loaded()
+
+        # Trigger lazy load in case new heights opened up off-screen content
+        self.check_visible_images()
+
+        if needs_restore_check:
+            self._apply_restore()
+
+    # ------------------------------------------------------------------ #
     #  Chapter loading                                                     #
     # ------------------------------------------------------------------ #
 
@@ -489,6 +527,9 @@ class ViewerPage(QWidget):
             self.scroll.verticalScrollBar().setValue(0)
 
     def clear_images(self):
+        self._batch_timer.stop()
+        self._pending_batch.clear()
+
         self.loader.cancel()
         self.loader.reset()
         self.scroll.takeWidget()
@@ -553,26 +594,14 @@ class ViewerPage(QWidget):
             pos = cumulative
             cumulative += h
 
-            if pos + h < viewport_top - 800:
+            if pos + h < viewport_top - LAZY_WINDOW:
                 continue
-            if pos > viewport_bottom + 800:
+            if pos > viewport_bottom + LAZY_WINDOW:
                 continue
             if label.pixmap() is not None and not label.pixmap().isNull():
                 continue
 
             self.loader.load(i, label.img_path, viewport_width)
-
-    def _on_image_ready(self, index: int, pixmap: QPixmap):
-        if index >= len(self.image_labels):
-            return
-        label = self.image_labels[index]
-        label._original_pixmap = pixmap
-        self._apply_pixmap_to_label(label)
-        self.preview.notify_image_loaded()
-
-        if (self._restore_image_index is not None
-                and index <= self._restore_image_index):
-            self._apply_restore()
 
     # ------------------------------------------------------------------ #
     #  Image scaling                                                       #
@@ -591,8 +620,12 @@ class ViewerPage(QWidget):
         idx    = int(packed)
         frac   = packed - idx
 
-        for label in self.image_labels:
-            self._apply_pixmap_to_label(label)
+        self.container.setUpdatesEnabled(False)
+        try:
+            for label in self.image_labels:
+                self._apply_pixmap_to_label(label)
+        finally:
+            self.container.setUpdatesEnabled(True)
 
         if (self.image_labels
                 and idx < len(self.image_labels)
