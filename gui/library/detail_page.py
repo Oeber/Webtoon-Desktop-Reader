@@ -1,3 +1,5 @@
+import re
+
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea
@@ -6,6 +8,12 @@ from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
 from PySide6.QtCore import Qt, QPoint, QSize
 
 import qtawesome as qta
+
+from webtoon_settings_store import get_instance as get_webtoon_settings
+
+
+# Matches chapter names that contain a decimal sub-number, e.g. "Chapter 1.5", "Ch.10.5"
+_SPECIAL_CHAPTER_RE = re.compile(r'\b\d+\.\d+\b')
 
 
 THUMB_W = 140
@@ -60,6 +68,8 @@ class DetailPage(QWidget):
         self.webtoon        = None
         self.progress_store = None
         self.progress_map   = {}
+        self.hide_specials  = False
+        self.settings_store = get_webtoon_settings()
 
         self.setStyleSheet("background-color: #121212;")
 
@@ -204,8 +214,37 @@ class DetailPage(QWidget):
         self.sort_latest_first = True
         self.sort_btn.clicked.connect(self._toggle_sort)
 
+        self.hide_specials_btn = QPushButton("  Hide Filler")
+        self.hide_specials_btn.setIcon(qta.icon("fa5s.eye-slash", color="#888888"))
+        self.hide_specials_btn.setIconSize(QSize(12, 12))
+        self.hide_specials_btn.setCursor(Qt.PointingHandCursor)
+        self.hide_specials_btn.setCheckable(True)
+        self.hide_specials_btn.setFixedHeight(24)
+        self.hide_specials_btn.setStyleSheet("""
+        QPushButton {
+            background: transparent;
+            color: #888;
+            border: 1px solid #2a2a2a;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        QPushButton:hover {
+            background: #1a1a1a;
+            color: #fff;
+        }
+        QPushButton:checked {
+            background: #1a2a3a;
+            color: #2979ff;
+            border-color: #2979ff;
+        }
+        """)
+        self.hide_specials_btn.clicked.connect(self._toggle_hide_specials)
+
         sh_layout.addWidget(chapters_lbl)
         sh_layout.addStretch()
+        sh_layout.addWidget(self.hide_specials_btn)
+        sh_layout.addSpacing(6)
         sh_layout.addWidget(self.sort_btn)
         root.addWidget(section_header)
 
@@ -240,9 +279,27 @@ class DetailPage(QWidget):
         self.progress_store = progress_store
         self.progress_map   = progress_store.get_progress_map(webtoon.name)
 
+        # Restore per-webtoon hide-filler setting
+        self.hide_specials = self.settings_store.get_hide_filler(webtoon.name)
+        self.hide_specials_btn.setChecked(self.hide_specials)
+        icon_name = "fa5s.eye-slash" if self.hide_specials else "fa5s.eye"
+        self.hide_specials_btn.setIcon(qta.icon(icon_name, color="#888888"))
+        self.hide_specials_btn.setIconSize(QSize(12, 12))
+
         self.bar_title.setText(webtoon.name)
         self.title_label.setText(webtoon.name)
-        self.chapter_count_label.setText(f"{len(webtoon.chapters)} chapters")
+
+        # Count only non-special chapters for the label (respects current toggle)
+        visible_count = self._visible_chapters_count(webtoon.chapters)
+        total_count   = len(webtoon.chapters)
+        if visible_count < total_count:
+            self.chapter_count_label.setText(
+                f"{visible_count} chapters ({total_count - visible_count} special hidden)"
+                if self.hide_specials else
+                f"{total_count} chapters"
+            )
+        else:
+            self.chapter_count_label.setText(f"{total_count} chapters")
 
         # Thumbnail
         pixmap = QPixmap(webtoon.thumbnail)
@@ -296,6 +353,9 @@ class DetailPage(QWidget):
         last_read_chapter = progress["chapter"] if progress else None
         chapters = self.webtoon.chapters
 
+        if self.hide_specials:
+            chapters = [c for c in chapters if not _SPECIAL_CHAPTER_RE.search(c)]
+
         if self.sort_latest_first:
             chapters = list(reversed(chapters))
 
@@ -344,6 +404,30 @@ class DetailPage(QWidget):
     # ------------------------------------------------------------------ #
     #  Actions                                                             #
     # ------------------------------------------------------------------ #
+
+    def _visible_chapters_count(self, chapters: list) -> int:
+        """Count chapters that are not special (.5-style) chapters."""
+        return sum(1 for c in chapters if not _SPECIAL_CHAPTER_RE.search(c))
+
+    def _toggle_hide_specials(self):
+        self.hide_specials = self.hide_specials_btn.isChecked()
+        icon_name = "fa5s.eye-slash" if self.hide_specials else "fa5s.eye"
+        self.hide_specials_btn.setIcon(qta.icon(icon_name, color="#888888"))
+        self.hide_specials_btn.setIconSize(QSize(12, 12))
+
+        if self.webtoon:
+            self.settings_store.set_hide_filler(self.webtoon.name, self.hide_specials)
+            total_count   = len(self.webtoon.chapters)
+            visible_count = self._visible_chapters_count(self.webtoon.chapters)
+            if self.hide_specials and visible_count < total_count:
+                self.chapter_count_label.setText(
+                    f"{visible_count} chapters ({total_count - visible_count} special hidden)"
+                )
+            else:
+                self.chapter_count_label.setText(f"{total_count} chapters")
+
+        progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
+        self._build_chapter_list(progress)
 
     def _open_chapter(self, chapter: str):
         idx = self.webtoon.chapters.index(chapter)

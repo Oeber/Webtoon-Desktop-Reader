@@ -31,8 +31,20 @@ def _init_db() -> sqlite3.Connection:
 
     _create_schema(conn)
     _migrate_json(conn)
+    _migrate_columns(conn)
 
     return conn
+
+
+def _migrate_columns(conn: sqlite3.Connection):
+    """Add columns introduced after the initial schema, if missing."""
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(webtoon_settings)").fetchall()
+    }
+    if "zoom_override" not in existing:
+        conn.execute("ALTER TABLE webtoon_settings ADD COLUMN zoom_override REAL")
+        conn.commit()
 
 
 def _create_schema(conn: sqlite3.Connection):
@@ -49,6 +61,12 @@ def _create_schema(conn: sqlite3.Connection):
             total_images   INTEGER NOT NULL DEFAULT 0,
             updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             PRIMARY KEY (webtoon_name, chapter)
+        );
+
+        CREATE TABLE IF NOT EXISTS webtoon_settings (
+            webtoon_name   TEXT PRIMARY KEY,
+            hide_filler    INTEGER NOT NULL DEFAULT 0,
+            zoom_override  REAL
         );
     """)
     conn.commit()

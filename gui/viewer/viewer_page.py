@@ -1,4 +1,5 @@
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtWidgets import (
@@ -9,11 +10,15 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 
 from progress_store import get_instance as get_progress_store
+from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.settings.settings_page import load_setting, save_setting
 
 FILMSTRIP_W   = 40
 IMAGE_STRIP_W = 50
 PREVIEW_W     = FILMSTRIP_W + IMAGE_STRIP_W
+
+# Matches chapter names that contain a decimal sub-number, e.g. "Chapter 1.5"
+_SPECIAL_CHAPTER_RE = re.compile(r'\b\d+\.\d+\b')
 
 TILE_GAP      = 2
 TILE_PADDING  = 2
@@ -432,6 +437,7 @@ class ViewerPage(QWidget):
         self.webtoon = None
         self.current_chapter_index = 0
         self.progress_store = get_progress_store()
+        self.settings_store = get_webtoon_settings()
 
         self._restore_image_index = None
         self._restore_image_offset = 0.0
@@ -461,6 +467,10 @@ class ViewerPage(QWidget):
 
         self._zoom = load_setting("viewer_zoom", 0.5)
         self.auto_skip_enabled = load_setting("viewer_auto_skip", True)
+        self.skip_specials_enabled = False
+        self._zoom_override_active = False  # True when this webtoon has a saved override
+        # Maps selector combo index → real webtoon.chapters index (used when skip_specials is on)
+        self._chapter_index_map: list[int] = []
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -494,6 +504,13 @@ class ViewerPage(QWidget):
         self.nav_toggle.setFocusPolicy(Qt.NoFocus)
         self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
 
+        self.skip_specials_btn = QPushButton("Hide Filler")
+        self.skip_specials_btn.setCheckable(True)
+        self.skip_specials_btn.setChecked(False)
+        self.skip_specials_btn.setFocusPolicy(Qt.NoFocus)
+        self.skip_specials_btn.setToolTip("Hide special/hiatus chapters (e.g. Chapter 1.5) from the selector and skip them during navigation")
+        self.skip_specials_btn.clicked.connect(self._toggle_skip_specials)
+
         zoom_out_btn = QPushButton("−")
         zoom_out_btn.setFixedWidth(28)
         zoom_out_btn.setFocusPolicy(Qt.NoFocus)
@@ -520,16 +537,38 @@ class ViewerPage(QWidget):
         self._zoom_label.setAlignment(Qt.AlignCenter)
         self._zoom_label.setStyleSheet("color: #aaa; font-size: 12px;")
 
+        _zoom_btn_style = """
+            QPushButton {
+                background: transparent;
+                color: #888;
+                border: 1px solid #333;
+                border-radius: 4px;
+                padding: 2px 6px;
+                font-size: 11px;
+            }
+            QPushButton:hover { background: #2a2a2a; color: #fff; }
+            QPushButton:disabled { color: #444; border-color: #222; }
+        """
+        self._zoom_reset_btn = QPushButton("Reset zoom")
+        self._zoom_reset_btn.setFocusPolicy(Qt.NoFocus)
+        self._zoom_reset_btn.setToolTip("Remove webtoon zoom override and use global default")
+        self._zoom_reset_btn.setStyleSheet(_zoom_btn_style)
+        self._zoom_reset_btn.setEnabled(False)  # enabled only when an override is active
+        self._zoom_reset_btn.clicked.connect(self._clear_zoom_override)
+
         top_bar.addWidget(self.back_button)
         top_bar.addWidget(self.prev_button)
         top_bar.addWidget(self.next_button)
         top_bar.addWidget(self.chapter_selector)
         top_bar.addWidget(self.nav_toggle)
+        top_bar.addWidget(self.skip_specials_btn)
         top_bar.addStretch()
         top_bar.addWidget(zoom_out_btn)
         top_bar.addWidget(self._zoom_slider)
         top_bar.addWidget(zoom_in_btn)
         top_bar.addWidget(self._zoom_label)
+        top_bar.addSpacing(8)
+        top_bar.addWidget(self._zoom_reset_btn)
         main_layout.addLayout(top_bar)
 
         content_row = QHBoxLayout()
@@ -589,14 +628,26 @@ class ViewerPage(QWidget):
         webtoon.path = os.path.abspath(webtoon.path)
         self.webtoon = webtoon
         self._unpack_restore(start_scroll)
-
-        self.chapter_selector.blockSignals(True)
-        self.chapter_selector.clear()
-        self.chapter_selector.addItems(webtoon.chapters)
-        self.chapter_selector.blockSignals(False)
-
+        self._apply_webtoon_settings(webtoon)
+        self._repopulate_chapter_selector()
         self.current_chapter_index = start_chapter
         self._load_chapter_no_prompt(start_chapter)
+
+    def _apply_webtoon_settings(self, webtoon):
+        """Apply per-webtoon settings (zoom, hide filler). Called whenever a webtoon is opened."""
+        # Hide filler
+        self.skip_specials_enabled = self.settings_store.get_hide_filler(webtoon.name)
+        self.skip_specials_btn.setChecked(self.skip_specials_enabled)
+
+        # Zoom override
+        override = self.settings_store.get_zoom_override(webtoon.name)
+        if override is not None:
+            self._zoom_override_active = True
+            self._set_zoom(override)
+        else:
+            self._zoom_override_active = False
+            self._set_zoom(load_setting("viewer_zoom", 0.5))
+        self._zoom_reset_btn.setEnabled(self._zoom_override_active)
 
     def _current_packed_position(self) -> float:
         if not self.image_labels:
@@ -723,7 +774,12 @@ class ViewerPage(QWidget):
             self._apply_restore()
 
     def load_selected_chapter(self, index):
-        self._load_chapter_with_prompt(index)
+        # If skip_specials is on, the combo index must be translated to a real chapter index
+        if self._chapter_index_map and index < len(self._chapter_index_map):
+            real_index = self._chapter_index_map[index]
+        else:
+            real_index = index
+        self._load_chapter_with_prompt(real_index)
 
     def _load_chapter_with_prompt(self, index):
         if not self.webtoon:
@@ -747,7 +803,16 @@ class ViewerPage(QWidget):
         chapter = self.webtoon.chapters[index]
 
         self.chapter_selector.blockSignals(True)
-        self.chapter_selector.setCurrentIndex(index)
+        if self._chapter_index_map:
+            # Find the selector position for this real index
+            selector_pos = next(
+                (i for i, real in enumerate(self._chapter_index_map) if real == index),
+                None
+            )
+            if selector_pos is not None:
+                self.chapter_selector.setCurrentIndex(selector_pos)
+        else:
+            self.chapter_selector.setCurrentIndex(index)
         self.chapter_selector.blockSignals(False)
 
         self._load_chapter_images(chapter)
@@ -845,26 +910,32 @@ class ViewerPage(QWidget):
 
     def _zoom_out(self):
         self._set_zoom(self._zoom - 0.05)
+        self._persist_zoom_override()
 
     def _zoom_in(self):
         self._set_zoom(self._zoom + 0.05)
+        self._persist_zoom_override()
 
     def _on_zoom_slider(self, value: int):
         self._set_zoom(value / 100.0, update_slider=False)
+        self._persist_zoom_override()
+
+    def _persist_zoom_override(self):
+        """Save current zoom as a per-webtoon override. Called only on user interaction."""
+        if not self.webtoon:
+            return
+        self.settings_store.set_zoom_override(self.webtoon.name, self._zoom)
+        self._zoom_override_active = True
+        self._zoom_reset_btn.setEnabled(True)
 
     def _set_zoom(self, zoom: float, update_slider: bool = True):
         self._zoom = max(0.25, min(1.0, zoom))
 
-        if update_slider:
-            self._zoom_slider.blockSignals(True)
-            self._zoom_slider.setValue(int(self._zoom * 100))
-            self._zoom_slider.blockSignals(False)
+        self._zoom_slider.blockSignals(True)
+        self._zoom_slider.setValue(int(self._zoom * 100))
+        self._zoom_slider.blockSignals(False)
 
         self._zoom_label.setText(f"{int(self._zoom * 100)}%")
-
-        save_setting("viewer_zoom", self._zoom)
-
-        self._zoom_slider.setValue(int(self._zoom * 100))
 
         self.preview.set_zoom(self._zoom)
         self.rescale_images()
@@ -908,22 +979,90 @@ class ViewerPage(QWidget):
         self._panel_warm_timer.start()
 
     def next_chapter(self):
-        if self.current_chapter_index < len(self.webtoon.chapters) - 1:
+        next_idx = self._next_chapter_index(self.current_chapter_index)
+        if next_idx is not None:
             self._save_progress()
             self._restore_image_index = None
-            self._load_chapter_no_prompt(self.current_chapter_index + 1)
+            self._load_chapter_no_prompt(next_idx)
 
     def prev_chapter(self):
-        if self.current_chapter_index > 0:
+        prev_idx = self._prev_chapter_index(self.current_chapter_index)
+        if prev_idx is not None:
             self._save_progress()
             self._restore_image_index = None
-            self._load_chapter_no_prompt(self.current_chapter_index - 1)
+            self._load_chapter_no_prompt(prev_idx)
+
+    def _next_chapter_index(self, from_index: int) -> int | None:
+        """Return the next chapter index, skipping specials if the toggle is on."""
+        chapters = self.webtoon.chapters
+        candidates = range(from_index + 1, len(chapters))
+        for i in candidates:
+            if not self.skip_specials_enabled or not _SPECIAL_CHAPTER_RE.search(chapters[i]):
+                return i
+        return None
+
+    def _prev_chapter_index(self, from_index: int) -> int | None:
+        """Return the previous chapter index, skipping specials if the toggle is on."""
+        chapters = self.webtoon.chapters
+        candidates = range(from_index - 1, -1, -1)
+        for i in candidates:
+            if not self.skip_specials_enabled or not _SPECIAL_CHAPTER_RE.search(chapters[i]):
+                return i
+        return None
+
+    def _repopulate_chapter_selector(self):
+        """Fill the chapter selector, hiding special chapters when skip_specials is on."""
+        if not self.webtoon:
+            return
+        self.chapter_selector.blockSignals(True)
+        self.chapter_selector.clear()
+        if self.skip_specials_enabled:
+            self._chapter_index_map = [
+                i for i, c in enumerate(self.webtoon.chapters)
+                if not _SPECIAL_CHAPTER_RE.search(c)
+            ]
+            self.chapter_selector.addItems(
+                [self.webtoon.chapters[i] for i in self._chapter_index_map]
+            )
+        else:
+            self._chapter_index_map = []
+            self.chapter_selector.addItems(self.webtoon.chapters)
+        self.chapter_selector.blockSignals(False)
+
+    def _toggle_skip_specials(self):
+        self.skip_specials_enabled = self.skip_specials_btn.isChecked()
+        if self.webtoon:
+            self.settings_store.set_hide_filler(self.webtoon.name, self.skip_specials_enabled)
+        self._repopulate_chapter_selector()
+        # Sync the selector highlight to the current chapter without reloading images
+        self.chapter_selector.blockSignals(True)
+        if self._chapter_index_map:
+            selector_pos = next(
+                (i for i, real in enumerate(self._chapter_index_map)
+                 if real == self.current_chapter_index),
+                None
+            )
+            if selector_pos is not None:
+                self.chapter_selector.setCurrentIndex(selector_pos)
+        else:
+            self.chapter_selector.setCurrentIndex(self.current_chapter_index)
+        self.chapter_selector.blockSignals(False)
+        self.update_nav_buttons()
+        self.setFocus()
 
     def update_nav_buttons(self):
-        self.prev_button.setEnabled(self.current_chapter_index > 0)
-        self.next_button.setEnabled(
-            self.current_chapter_index < len(self.webtoon.chapters) - 1
-        )
+        self.prev_button.setEnabled(self._prev_chapter_index(self.current_chapter_index) is not None)
+        self.next_button.setEnabled(self._next_chapter_index(self.current_chapter_index) is not None)
+
+    def _clear_zoom_override(self):
+        if not self.webtoon:
+            return
+        self.settings_store.clear_zoom_override(self.webtoon.name)
+        self._zoom_override_active = False
+        self._zoom_reset_btn.setEnabled(False)
+        # Snap back to the global default without saving it as global
+        self._set_zoom(load_setting("viewer_zoom", 0.5))
+        self.setFocus()
 
     def go_back(self):
         self._save_progress()
@@ -1126,19 +1265,21 @@ class ViewerPage(QWidget):
                     bar.setValue(max(0, pos - int(view_h * 0.9)))
 
         elif key == Qt.Key_Right:
-            if self.current_chapter_index < len(self.webtoon.chapters) - 1:
+            next_idx = self._next_chapter_index(self.current_chapter_index)
+            if next_idx is not None:
                 self._progress_save_timer.stop()
                 self._save_progress()
                 self._restore_image_index = None
-                self._load_chapter_with_prompt(self.current_chapter_index + 1)
+                self._load_chapter_with_prompt(next_idx)
                 self.setFocus()
 
         elif key == Qt.Key_Left:
-            if self.current_chapter_index > 0:
+            prev_idx = self._prev_chapter_index(self.current_chapter_index)
+            if prev_idx is not None:
                 self._progress_save_timer.stop()
                 self._save_progress()
                 self._restore_image_index = None
-                self._load_chapter_with_prompt(self.current_chapter_index - 1)
+                self._load_chapter_with_prompt(prev_idx)
                 self.setFocus()
 
         else:

@@ -233,10 +233,8 @@ class MainWindow(QMainWindow):
         """
         webtoon.path = __import__("os").path.abspath(webtoon.path)
         self.viewer.webtoon = webtoon
-        self.viewer.chapter_selector.blockSignals(True)
-        self.viewer.chapter_selector.clear()
-        self.viewer.chapter_selector.addItems(webtoon.chapters)
-        self.viewer.chapter_selector.blockSignals(False)
+        self.viewer._apply_webtoon_settings(webtoon)
+        self.viewer._repopulate_chapter_selector()
         # This path goes through the prompt logic
         self.viewer._pending_scroll_pct = 0.0
         self.viewer._load_chapter_with_prompt(chapter_index)
