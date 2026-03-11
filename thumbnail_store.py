@@ -71,10 +71,10 @@ class ThumbnailStore:
         """Return custom thumbnail path if set, else None."""
         conn = get_connection()
         row = conn.execute(
-            "SELECT path FROM thumbnails WHERE webtoon_name = ?",
+            "SELECT custom_thumbnail FROM webtoon_settings WHERE webtoon_name = ?",
             (webtoon_name,)
         ).fetchone()
-        return row["path"] if row else None
+        return row["custom_thumbnail"] if row and row["custom_thumbnail"] else None
 
     def set(self, webtoon_name: str, image_path: str):
         """
@@ -86,7 +86,6 @@ class ThumbnailStore:
         dest = _custom_thumb_path(webtoon_name)
 
         if not _copy_local_image(image_path, dest):
-            # Fallback: store the original path as-is (old behaviour)
             internal_path = image_path
         else:
             internal_path = str(dest)
@@ -121,7 +120,7 @@ class ThumbnailStore:
 
         conn = get_connection()
         conn.execute(
-            "DELETE FROM thumbnails WHERE webtoon_name = ?",
+            "UPDATE webtoon_settings SET custom_thumbnail = NULL WHERE webtoon_name = ?",
             (webtoon_name,)
         )
         conn.commit()
@@ -133,9 +132,11 @@ class ThumbnailStore:
     def _persist(self, webtoon_name: str, path: str):
         conn = get_connection()
         conn.execute(
-            """INSERT INTO thumbnails (webtoon_name, path)
-               VALUES (?, ?)
-               ON CONFLICT(webtoon_name) DO UPDATE SET path = excluded.path""",
-            (webtoon_name, path)
+            "INSERT OR IGNORE INTO webtoon_settings (webtoon_name) VALUES (?)",
+            (webtoon_name,)
+        )
+        conn.execute(
+            "UPDATE webtoon_settings SET custom_thumbnail = ? WHERE webtoon_name = ?",
+            (path, webtoon_name)
         )
         conn.commit()

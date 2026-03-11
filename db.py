@@ -32,28 +32,13 @@ def _init_db() -> sqlite3.Connection:
     _create_schema(conn)
     _migrate_json(conn)
     _migrate_columns(conn)
+    _migrate_thumbnails_table(conn)
 
     return conn
 
 
-def _migrate_columns(conn: sqlite3.Connection):
-    """Add columns introduced after the initial schema, if missing."""
-    existing = {
-        row[1]
-        for row in conn.execute("PRAGMA table_info(webtoon_settings)").fetchall()
-    }
-    if "zoom_override" not in existing:
-        conn.execute("ALTER TABLE webtoon_settings ADD COLUMN zoom_override REAL")
-        conn.commit()
-
-
 def _create_schema(conn: sqlite3.Connection):
     conn.executescript("""
-        CREATE TABLE IF NOT EXISTS thumbnails (
-            webtoon_name  TEXT PRIMARY KEY,
-            path          TEXT NOT NULL
-        );
-
         CREATE TABLE IF NOT EXISTS progress (
             webtoon_name   TEXT NOT NULL,
             chapter        TEXT NOT NULL,
@@ -64,12 +49,58 @@ def _create_schema(conn: sqlite3.Connection):
         );
 
         CREATE TABLE IF NOT EXISTS webtoon_settings (
-            webtoon_name   TEXT PRIMARY KEY,
-            hide_filler    INTEGER NOT NULL DEFAULT 0,
-            zoom_override  REAL
+            webtoon_name      TEXT PRIMARY KEY,
+            hide_filler       INTEGER NOT NULL DEFAULT 0,
+            zoom_override     REAL,
+            custom_thumbnail  TEXT
         );
     """)
     conn.commit()
+
+
+def _migrate_columns(conn: sqlite3.Connection):
+    """Add columns introduced after the initial schema, if missing."""
+    existing = {
+        row[1]
+        for row in conn.execute("PRAGMA table_info(webtoon_settings)").fetchall()
+    }
+    added = False
+    for col, definition in [
+        ("zoom_override",    "REAL"),
+        ("custom_thumbnail", "TEXT"),
+    ]:
+        if col not in existing:
+            conn.execute(f"ALTER TABLE webtoon_settings ADD COLUMN {col} {definition}")
+            added = True
+    if added:
+        conn.commit()
+
+
+def _migrate_thumbnails_table(conn: sqlite3.Connection):
+    """Move legacy thumbnails table data into webtoon_settings, then drop it."""
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if "thumbnails" not in tables:
+        return
+
+    rows = conn.execute("SELECT webtoon_name, path FROM thumbnails").fetchall()
+    for row in rows:
+        # Ensure a settings row exists, then set the thumbnail
+        conn.execute(
+            "INSERT OR IGNORE INTO webtoon_settings (webtoon_name) VALUES (?)",
+            (row["webtoon_name"],)
+        )
+        conn.execute(
+            "UPDATE webtoon_settings SET custom_thumbnail = ? WHERE webtoon_name = ?",
+            (row["path"], row["webtoon_name"])
+        )
+    conn.execute("DROP TABLE thumbnails")
+    conn.commit()
+    print("[db] Migrated thumbnails table into webtoon_settings and dropped it.")
 
 
 def _migrate_json(conn: sqlite3.Connection):
@@ -78,21 +109,53 @@ def _migrate_json(conn: sqlite3.Connection):
 
 
 def _migrate_thumbnails_json(conn: sqlite3.Connection):
+    """Migrate thumbnails.json — works whether the legacy table still exists or not."""
     if not os.path.exists(THUMBNAILS_JSON):
         return
 
-    row_count = conn.execute("SELECT COUNT(*) FROM thumbnails").fetchone()[0]
-    if row_count > 0:
-        _backup_json(THUMBNAILS_JSON)
-        return
+    tables = {
+        row[0]
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+
+    if "thumbnails" in tables:
+        # Legacy path: migrate into thumbnails table first (will be moved later)
+        row_count = conn.execute("SELECT COUNT(*) FROM thumbnails").fetchone()[0]
+        if row_count > 0:
+            _backup_json(THUMBNAILS_JSON)
+            return
+        insert_sql = "INSERT OR IGNORE INTO thumbnails (webtoon_name, path) VALUES (?, ?)"
+    else:
+        # New path: migrate directly into webtoon_settings
+        row_count = conn.execute(
+            "SELECT COUNT(*) FROM webtoon_settings WHERE custom_thumbnail IS NOT NULL"
+        ).fetchone()[0]
+        if row_count > 0:
+            _backup_json(THUMBNAILS_JSON)
+            return
 
     try:
         with open(THUMBNAILS_JSON, "r", encoding="utf-8") as f:
             data: dict = json.load(f)
-        conn.executemany(
-            "INSERT OR IGNORE INTO thumbnails (webtoon_name, path) VALUES (?, ?)",
-            data.items()
-        )
+
+        if "thumbnails" in tables:
+            conn.executemany(
+                "INSERT OR IGNORE INTO thumbnails (webtoon_name, path) VALUES (?, ?)",
+                data.items()
+            )
+        else:
+            for name, path in data.items():
+                conn.execute(
+                    "INSERT OR IGNORE INTO webtoon_settings (webtoon_name) VALUES (?)",
+                    (name,)
+                )
+                conn.execute(
+                    "UPDATE webtoon_settings SET custom_thumbnail = ? WHERE webtoon_name = ?",
+                    (path, name)
+                )
+
         conn.commit()
         print(f"[db] Migrated {len(data)} thumbnail overrides from JSON.")
     except (json.JSONDecodeError, OSError) as e:

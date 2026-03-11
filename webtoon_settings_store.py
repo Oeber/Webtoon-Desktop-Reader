@@ -20,14 +20,19 @@ class WebtoonSettingsStore:
         ).fetchone()
         return bool(row["hide_filler"]) if row else False
 
+    def _ensure_row(self, conn, webtoon_name: str):
+        """Ensure a settings row exists for this webtoon."""
+        conn.execute(
+            "INSERT OR IGNORE INTO webtoon_settings (webtoon_name) VALUES (?)",
+            (webtoon_name,)
+        )
+
     def set_hide_filler(self, webtoon_name: str, value: bool):
         conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
         conn.execute(
-            """INSERT INTO webtoon_settings (webtoon_name, hide_filler)
-               VALUES (?, ?)
-               ON CONFLICT(webtoon_name) DO UPDATE SET
-                   hide_filler = excluded.hide_filler""",
-            (webtoon_name, int(value))
+            "UPDATE webtoon_settings SET hide_filler = ? WHERE webtoon_name = ?",
+            (int(value), webtoon_name)
         )
         conn.commit()
 
@@ -44,20 +49,17 @@ class WebtoonSettingsStore:
 
     def set_zoom_override(self, webtoon_name: str, zoom: float):
         conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
         conn.execute(
-            """INSERT INTO webtoon_settings (webtoon_name, zoom_override)
-               VALUES (?, ?)
-               ON CONFLICT(webtoon_name) DO UPDATE SET
-                   zoom_override = excluded.zoom_override""",
-            (webtoon_name, zoom)
+            "UPDATE webtoon_settings SET zoom_override = ? WHERE webtoon_name = ?",
+            (zoom, webtoon_name)
         )
         conn.commit()
 
     def clear_zoom_override(self, webtoon_name: str):
         conn = get_connection()
         conn.execute(
-            """UPDATE webtoon_settings SET zoom_override = NULL
-               WHERE webtoon_name = ?""",
+            "UPDATE webtoon_settings SET zoom_override = NULL WHERE webtoon_name = ?",
             (webtoon_name,)
         )
         conn.commit()
