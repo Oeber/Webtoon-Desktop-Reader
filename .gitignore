@@ -2,7 +2,7 @@
 *.pyc
 *.docx
 
-webtoons
-data
-__pycache__/
-__pycache__/library_manager.cpython-311.pyc
+webtoons/*
+data/*
+__pycache__/*
+data/thumbnails/*

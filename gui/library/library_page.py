@@ -1,17 +1,22 @@
-import os
+"""
+gui/library/library_page.py
+Responsive grid. Clicking a card opens the detail page (not the viewer directly).
+"""
 
 from PySide6.QtWidgets import (
-    QWidget,
-    QVBoxLayout,
-    QGridLayout,
-    QScrollArea
+    QWidget, QVBoxLayout, QGridLayout, QScrollArea,
 )
+from PySide6.QtCore import Qt
 
 from library_manager import scan_library
-from gui.library.webtoon_card import WebtoonCard
+from thumbnail_store import ThumbnailStore
+from progress_store import ProgressStore
+from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 
 
-LIBRARY_PATH = "webtoons"
+LIBRARY_PATH  = "webtoons"
+CARD_SPACING  = 16
+PAGE_PADDING  = 24
 
 
 class LibraryPage(QWidget):
@@ -19,45 +24,86 @@ class LibraryPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
 
-        self.main_window = main_window
+        self.main_window   = main_window
+        self.thumb_store   = ThumbnailStore()
+        self.progress_store = ProgressStore()
+        self._webtoons     = []
+        self._cards        = []
+        self._current_cols = 0
 
-        self.layout = QVBoxLayout(self)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
 
-        # scroll container
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setStyleSheet("""
+            QScrollArea { border: none; background-color: #121212; }
+            QScrollBar:vertical {
+                background: #1a1a1a; width: 8px; border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background: #444; border-radius: 4px; min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover { background: #666; }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical { height: 0px; }
+        """)
 
         self.container = QWidget()
+        self.container.setStyleSheet("background-color: #121212;")
+
         self.grid = QGridLayout(self.container)
+        self.grid.setSpacing(CARD_SPACING)
+        self.grid.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, PAGE_PADDING)
+        self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         self.scroll.setWidget(self.container)
-
-        self.layout.addWidget(self.scroll)
+        root_layout.addWidget(self.scroll)
 
         self.load_library()
 
     def load_library(self):
+        self._webtoons = scan_library(LIBRARY_PATH, self.thumb_store)
+        self._rebuild_grid(self._columns_for_width(self.width()))
 
-        webtoons = scan_library(LIBRARY_PATH)
+    def refresh_progress(self):
+        """Call this when returning from the viewer so badges update."""
+        for card in self._cards:
+            card._refresh_badges()
 
-        columns = 4
-        row = 0
-        col = 0
+    def _columns_for_width(self, width: int) -> int:
+        available = max(width - PAGE_PADDING * 2, CARD_WIDTH + 16)
+        return max(1, available // (CARD_WIDTH + 16 + CARD_SPACING))
 
-        for webtoon in webtoons:
+    def _rebuild_grid(self, columns: int):
+        while self.grid.count():
+            item = self.grid.takeAt(0)
+            if item.widget():
+                item.widget().setParent(None)
 
-            card = WebtoonCard(webtoon)
+        self._cards = []
+        self._current_cols = columns
 
-            # click handler
-            card.mousePressEvent = lambda event, w=webtoon: self.open_webtoon(w)
+        for index, webtoon in enumerate(self._webtoons):
+            row = index // columns
+            col = index % columns
 
-            self.grid.addWidget(card, row, col)
+            card = WebtoonCard(
+                webtoon,
+                thumb_store=self.thumb_store,
+                progress_store=self.progress_store,
+                on_open=self._open_detail,
+            )
+            self._cards.append(card)
+            self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
 
-            col += 1
-            if col >= columns:
-                col = 0
-                row += 1
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        new_cols = self._columns_for_width(event.size().width())
+        if new_cols != self._current_cols and self._webtoons:
+            self._rebuild_grid(new_cols)
 
-    def open_webtoon(self, webtoon):
-
-        self.main_window.open_viewer(webtoon)
+    def _open_detail(self, webtoon):
+        self.main_window.open_detail(webtoon)
