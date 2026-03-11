@@ -1,4 +1,6 @@
 import os
+import time
+from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
@@ -10,16 +12,21 @@ from library_manager import scan_library
 from webtoon_settings_store import get_instance as get_webtoon_settings
 
 
+UPDATE_COOLDOWN_SECONDS = 30
+
+
 class UpdateEntry(DownloadEntry):
 
-    def __init__(self, webtoon_name: str, source_url: str, on_update):
+    def __init__(self, webtoon_name: str, source_url: str, last_update_at: int | None, on_update):
         super().__init__(webtoon_name)
         self.source_url = source_url
+        self.last_update_at = last_update_at
         self.on_update = on_update
         self.setProperty("clickable", False)
         self.setCursor(Qt.ArrowCursor)
 
-        self.sub_label.setText(source_url)
+        self.sub_label.setWordWrap(True)
+        self._refresh_sub_label()
         self.sub_label.show()
 
         self.update_btn = QPushButton("Update")
@@ -44,11 +51,25 @@ class UpdateEntry(DownloadEntry):
         self.setCursor(Qt.ArrowCursor)
         self.style().unpolish(self)
         self.style().polish(self)
+        self._refresh_sub_label()
 
-        if status == "Completed":
-            self.sub_label.setText("Up to date")
+    def set_last_update_at(self, timestamp: int):
+        self.last_update_at = int(timestamp)
+        self._refresh_sub_label()
+
+    def cooldown_remaining(self) -> int:
+        if self.last_update_at is None:
+            return 0
+        elapsed = int(time.time()) - int(self.last_update_at)
+        return max(0, UPDATE_COOLDOWN_SECONDS - elapsed)
+
+    def _refresh_sub_label(self):
+        if self.last_update_at is None:
+            last_updated = "Last updated: Never"
         else:
-            self.sub_label.setText(self.source_url)
+            stamp = datetime.fromtimestamp(int(self.last_update_at)).strftime("%Y-%m-%d %H:%M:%S")
+            last_updated = f"Last updated: {stamp}"
+        self.sub_label.setText(f"{self.source_url}\n{last_updated}")
         self.sub_label.show()
 
 
@@ -63,6 +84,9 @@ class UpdatePage(QWidget):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self.refresh_entries)
+        self._cooldown_timer = QTimer(self)
+        self._cooldown_timer.timeout.connect(self._sync_update_buttons)
+        self._cooldown_timer.start(1000)
 
         self.service.status_changed.connect(self._on_status_changed)
         self.service.name_resolved.connect(self._on_name_resolved)
@@ -138,7 +162,7 @@ class UpdatePage(QWidget):
         for webtoon in webtoons:
             source_url = self.settings_store.get_source_url(webtoon.name)
             if source_url:
-                candidates.append((webtoon, source_url))
+                candidates.append((webtoon, source_url, self.settings_store.get_last_update_at(webtoon.name)))
 
         if not candidates:
             empty = QLabel("No comics with a saved source URL yet.")
@@ -148,8 +172,8 @@ class UpdatePage(QWidget):
             return
 
         current_active = None
-        for webtoon, source_url in candidates:
-            entry = UpdateEntry(webtoon.name, source_url, self._start_update)
+        for webtoon, source_url, last_update_at in candidates:
+            entry = UpdateEntry(webtoon.name, source_url, last_update_at, self._start_update)
             if webtoon.thumbnail and os.path.exists(webtoon.thumbnail):
                 entry.set_thumbnail(webtoon.thumbnail)
             if self.service.is_busy() and webtoon.name == active_name:
@@ -163,6 +187,10 @@ class UpdatePage(QWidget):
         self._sync_update_buttons()
 
     def _start_update(self, entry: UpdateEntry):
+        if entry.cooldown_remaining() > 0:
+            self._sync_update_buttons()
+            return
+
         error = self.service.start_download(
             entry.source_url,
             load_library_path(),
@@ -183,23 +211,35 @@ class UpdatePage(QWidget):
             item = self.history_layout.itemAt(index)
             widget = item.widget()
             if isinstance(widget, UpdateEntry):
-                widget.update_btn.setEnabled(not busy)
                 if busy and widget.name == active_name:
+                    widget.update_btn.setEnabled(False)
                     widget.update_btn.setText("Updating...")
-                else:
+                elif busy:
+                    widget.update_btn.setEnabled(False)
                     widget.update_btn.setText("Update")
+                else:
+                    remaining = widget.cooldown_remaining()
+                    widget.update_btn.setEnabled(remaining == 0)
+                    widget.update_btn.setText(f"Wait {remaining}s" if remaining > 0 else "Update")
 
     def _on_download_started(self):
         self._refresh_timer.stop()
         self._sync_update_buttons()
 
     def _on_download_finished(self, name: str, status: str):
+        if status == "Completed":
+            timestamp = int(time.time())
+            self.settings_store.set_last_update_at(name, timestamp)
+            if self._active_entry and self._active_entry.name == name:
+                self._active_entry.set_last_update_at(timestamp)
         self._sync_update_buttons()
         self._active_entry = None
         self._refresh_timer.start(2500)
 
     def _on_library_changed(self):
-        self.main_window.library.load_library()
+        if self.isVisible():
+            self._refresh_timer.stop()
+            self._refresh_timer.start(0)
 
     def _on_status_changed(self, name: str, status: str):
         if self._active_entry and self._active_entry.name == name:

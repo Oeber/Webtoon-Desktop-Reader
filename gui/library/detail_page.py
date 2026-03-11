@@ -1,25 +1,31 @@
+import os
 import re
+import time
 
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QToolButton
+    QPushButton, QScrollArea, QToolButton, QMessageBox
 )
 from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
-from PySide6.QtCore import Qt, QPoint, QSize
+from PySide6.QtCore import Qt, QPoint, QSize, QTimer
 
 import qtawesome as qta
 
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
+from gui.settings.settings_page import load_library_path
 
 
 # Matches chapter names that contain a decimal sub-number, e.g. "Chapter 1.5", "Ch.10.5"
 _SPECIAL_CHAPTER_RE = re.compile(r'\b\d+\.\d+\b')
+UPDATE_COOLDOWN_SECONDS = 30
 
 
 THUMB_W = 140
 THUMB_H = 210
 RADIUS  = 12
+ACTION_BTN_H = 36
+ACTION_BTN_W = 168
 
 
 # ── Small circular progress indicator ────────────────────────────────────────
@@ -73,6 +79,11 @@ class DetailPage(QWidget):
         self.show_only_bookmarked = False
         self.bookmarked_chapters = set()
         self.settings_store = get_webtoon_settings()
+        self._update_service = None
+        self._active_update_name = None
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(self._sync_update_button)
+        self._update_timer.start(1000)
 
         self.setStyleSheet("background-color: #121212;")
 
@@ -162,8 +173,7 @@ class DetailPage(QWidget):
         self.continue_btn.setIcon(qta.icon("fa5s.play", color="#ffffff"))
         self.continue_btn.setIconSize(QSize(12, 12))
         self.continue_btn.setCursor(Qt.PointingHandCursor)
-        self.continue_btn.setFixedHeight(36)
-        self.continue_btn.setFixedWidth(200)
+        self.continue_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
         self.continue_btn.setStyleSheet("""
             QPushButton { background: #2979ff; color: #fff; border: none; border-radius: 6px;
                           font-size: 13px; font-weight: 600; }
@@ -176,14 +186,27 @@ class DetailPage(QWidget):
         self.start_btn.setIcon(qta.icon("fa5s.step-backward", color="#ffffff"))
         self.start_btn.setIconSize(QSize(12, 12))
         self.start_btn.setCursor(Qt.PointingHandCursor)
-        self.start_btn.setFixedHeight(36)
-        self.start_btn.setFixedWidth(200)
+        self.start_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
         self.start_btn.setStyleSheet("""
             QPushButton { background: #2979ff; color: #fff; border: none; border-radius: 6px;
                         font-size: 13px; font-weight: 600; }
             QPushButton:hover { background: #448aff; }
         """)
         self.start_btn.clicked.connect(self._start_from_beginning)
+
+        self.update_btn = QPushButton("  Update")
+        self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
+        self.update_btn.setIconSize(QSize(12, 12))
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
+        self.update_btn.setStyleSheet("""
+            QPushButton { background: #2a2a2a; color: #fff; border: none; border-radius: 6px;
+                          font-size: 13px; font-weight: 600; }
+            QPushButton:hover { background: #333333; }
+            QPushButton:disabled { background: #232323; color: #777; }
+        """)
+        self.update_btn.clicked.connect(self._start_update)
+        self.update_btn.hide()
 
         info_layout.addWidget(self.title_label)
         info_layout.addWidget(self.last_read_label)
@@ -193,6 +216,8 @@ class DetailPage(QWidget):
         btn_row.setSpacing(10)
         btn_row.addWidget(self.continue_btn)
         btn_row.addWidget(self.start_btn)
+        btn_row.addWidget(self.update_btn)
+        btn_row.addStretch()
         info_layout.addLayout(btn_row)
 
         hero_layout.addWidget(self.thumb_label)
@@ -340,6 +365,7 @@ class DetailPage(QWidget):
         self.bar_title.setText(webtoon.name)
         self.title_label.setText(webtoon.name)
         self._update_chapter_count_label()
+        self._sync_update_button()
 
         # Thumbnail
         pixmap = QPixmap(webtoon.thumbnail)
@@ -388,7 +414,7 @@ class DetailPage(QWidget):
         while self.chapter_list_layout.count():
             item = self.chapter_list_layout.takeAt(0)
             if item.widget():
-                item.widget().setParent(None)
+                item.widget().deleteLater()
 
         last_read_chapter = progress["chapter"] if progress else None
         chapters = self.webtoon.chapters
@@ -447,14 +473,8 @@ class DetailPage(QWidget):
         bookmark_btn.clicked.connect(
             lambda checked, ch=chapter, btn=bookmark_btn: self._toggle_chapter_bookmark(ch, btn)
         )
-        layout.addWidget(bookmark_btn)
 
         # ── Last-read bookmark icon (new) ─────────────────────────────────
-        if is_last_read:
-            bookmark = QLabel()
-            bookmark.setPixmap(qta.icon("fa5s.bookmark", color="#2979ff").pixmap(QSize(14, 14)))
-            bookmark.setStyleSheet("padding-right: 4px;")
-            layout.addWidget(bookmark)
 
         # ── Progress circle ───────────────────────────────────────────────
         percent = self._calc_percent(scroll, total)
@@ -462,6 +482,14 @@ class DetailPage(QWidget):
             circle = ProgressCircle()
             circle.set_percent(percent)
             layout.addWidget(circle)
+
+        if is_last_read:
+            last_read_icon = QLabel()
+            last_read_icon.setPixmap(qta.icon("fa5s.bookmark", color="#2979ff").pixmap(QSize(14, 14)))
+            last_read_icon.setStyleSheet("padding-right: 4px;")
+            layout.addWidget(last_read_icon)
+
+        layout.addWidget(bookmark_btn)
 
         row.mousePressEvent = lambda e, ch=chapter: self._open_chapter(ch)
         return row
@@ -550,11 +578,50 @@ class DetailPage(QWidget):
         progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
         self._build_chapter_list(progress)
 
+    def _refresh_webtoon_from_disk(self) -> bool:
+        if self.webtoon is None:
+            return False
+
+        chapter_dirs = [
+            entry for entry in os.listdir(self.webtoon.path)
+            if os.path.isdir(os.path.join(self.webtoon.path, entry))
+        ]
+        chapter_dirs.sort(key=self._chapter_sort_key)
+
+        if chapter_dirs == list(self.webtoon.chapters):
+            return True
+
+        self.webtoon.chapters = chapter_dirs
+        progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
+        self._update_chapter_count_label()
+        self._build_chapter_list(progress)
+        return True
+
+    def _chapter_sort_key(self, name: str):
+        match = re.search(r'(\d+(?:\.\d+)?)', name)
+        if match:
+            try:
+                return (0, float(match.group(1)), name.lower())
+            except Exception:
+                pass
+        return (1, float("inf"), name.lower())
+
     def _open_chapter(self, chapter: str):
+        if not self._refresh_webtoon_from_disk():
+            return
+        if chapter not in self.webtoon.chapters:
+            QMessageBox.information(
+                self,
+                "Chapter removed",
+                f"'{chapter}' no longer exists on disk. The chapter list has been refreshed.",
+            )
+            return
         idx = self.webtoon.chapters.index(chapter)
         self.main_window.open_chapter_with_prompt(self.webtoon, idx)
 
     def _continue_reading(self):
+        if not self._refresh_webtoon_from_disk():
+            return
         progress = self.progress_store.get(self.webtoon.name)
         if not progress:
             self.main_window.open_chapter(self.webtoon, 0, 0.0)
@@ -564,9 +631,91 @@ class DetailPage(QWidget):
         if chapter in self.webtoon.chapters:
             idx = self.webtoon.chapters.index(chapter)
             self.main_window.open_chapter(self.webtoon, idx, scroll_pct)
+        else:
+            QMessageBox.information(
+                self,
+                "Chapter removed",
+                f"The saved chapter '{chapter}' no longer exists on disk.",
+            )
 
     def _go_back(self):
         self.main_window.stack.setCurrentWidget(self.main_window.library)
+
+    def attach_update_service(self, service):
+        if self._update_service is service:
+            return
+        self._update_service = service
+        self._update_service.download_started.connect(self._on_update_started)
+        self._update_service.download_finished.connect(self._on_update_finished)
+        self._update_service.status_changed.connect(self._on_update_status_changed)
+        self._sync_update_button()
+
+    def _cooldown_remaining(self) -> int:
+        if self.webtoon is None:
+            return 0
+        last_update_at = self.settings_store.get_last_update_at(self.webtoon.name)
+        if last_update_at is None:
+            return 0
+        elapsed = int(time.time()) - int(last_update_at)
+        return max(0, UPDATE_COOLDOWN_SECONDS - elapsed)
+
+    def _start_update(self):
+        if self.webtoon is None or self._update_service is None:
+            return
+        source_url = self.settings_store.get_source_url(self.webtoon.name)
+        if not source_url:
+            return
+        if self._cooldown_remaining() > 0:
+            self._sync_update_button()
+            return
+        error = self._update_service.start_download(
+            source_url,
+            load_library_path(),
+            preferred_name=self.webtoon.name,
+        )
+        if error:
+            self._sync_update_button()
+            return
+        self._active_update_name = self.webtoon.name
+        self._sync_update_button()
+
+    def _sync_update_button(self):
+        if self.webtoon is None:
+            self.update_btn.hide()
+            return
+        source_url = self.settings_store.get_source_url(self.webtoon.name)
+        if not source_url:
+            self.update_btn.hide()
+            return
+
+        self.update_btn.show()
+        busy = self._update_service.is_busy() if self._update_service is not None else False
+        if busy and self._active_update_name == self.webtoon.name:
+            self.update_btn.setEnabled(False)
+            self.update_btn.setText("  Updating...")
+            return
+        if busy:
+            self.update_btn.setEnabled(False)
+            self.update_btn.setText("  Update")
+            return
+
+        remaining = self._cooldown_remaining()
+        self.update_btn.setEnabled(remaining == 0)
+        self.update_btn.setText(f"  {remaining}s" if remaining > 0 else "  Update")
+
+    def _on_update_started(self):
+        self._sync_update_button()
+
+    def _on_update_finished(self, name: str, status: str):
+        if status == "Completed" and self.webtoon and name == self.webtoon.name:
+            self.settings_store.set_last_update_at(name, int(time.time()))
+            self._refresh_webtoon_from_disk()
+        self._active_update_name = None
+        self._sync_update_button()
+
+    def _on_update_status_changed(self, name: str, status: str):
+        if self.webtoon and name == self.webtoon.name:
+            self._sync_update_button()
 
     def _open_edit_dialog(self):
         if self.webtoon is None or self.progress_store is None:

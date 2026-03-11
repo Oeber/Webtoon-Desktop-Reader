@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
 
 from PySide6.QtGui import QShortcut, QKeySequence, QPixmap, QIcon, Qt
 from PySide6.QtCore import QSize
+import time
 
 import qtawesome as qta
 
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.resize(1400, 900)
+        self._suppress_detail_open_until = 0.0
 
         self.stack = QStackedWidget()
 
@@ -176,6 +178,8 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_library)
         self.downloader = DownloaderPage(self)
         self.updates = UpdatePage(self)
+        self.library.attach_update_service(self.updates.service)
+        self.detail.attach_update_service(self.updates.service)
         self.stack.addWidget(self.downloader)
         self.stack.addWidget(self.updates)
         self.btn_downloader = QPushButton()
@@ -222,9 +226,17 @@ class MainWindow(QMainWindow):
 
     def open_detail(self, webtoon):
         """Show the detail / chapter-list page. Also refreshes progress badges."""
+        if time.monotonic() < self._suppress_detail_open_until:
+            return
         self.library.refresh_progress()
         self.detail.load_webtoon(webtoon, self.library.progress_store)
         self.stack.setCurrentWidget(self.detail)
+
+    def suppress_detail_open(self, seconds: float):
+        self._suppress_detail_open_until = max(
+            self._suppress_detail_open_until,
+            time.monotonic() + seconds,
+        )
 
     def open_chapter(self, webtoon, chapter_index: int, scroll_pct: float = 0.0):
         """

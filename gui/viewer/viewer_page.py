@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea,
-    QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication, QSlider
+    QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication, QSlider, QMessageBox
 )
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
@@ -882,10 +882,26 @@ class ViewerPage(QWidget):
         self.clear_images()
 
         chapter_path = os.path.join(self.webtoon.path, chapter)
+        if not os.path.isdir(chapter_path):
+            QMessageBox.information(
+                self,
+                "Chapter missing",
+                f"'{chapter}' no longer exists on disk.",
+            )
+            return
+
         image_files = sorted(
             f for f in os.listdir(chapter_path)
             if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
         )
+
+        if not image_files:
+            QMessageBox.information(
+                self,
+                "Chapter empty",
+                f"'{chapter}' has no readable images.",
+            )
+            return
 
         for img_file in image_files:
             label = QLabel()

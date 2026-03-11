@@ -187,6 +187,25 @@ class WebtoonSettingsStore:
         )
         conn.commit()
 
+    def get_last_update_at(self, webtoon_name: str) -> int | None:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT last_update_at FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        if row is None or row["last_update_at"] is None:
+            return None
+        return int(row["last_update_at"])
+
+    def set_last_update_at(self, webtoon_name: str, timestamp: int):
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            "UPDATE webtoon_settings SET last_update_at = ? WHERE webtoon_name = ?",
+            (int(timestamp), webtoon_name)
+        )
+        conn.commit()
+
     def get(self, webtoon_name: str) -> str | None:
         conn = get_connection()
         row = conn.execute(
@@ -261,8 +280,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, zoom_override, custom_thumbnail, source_url, bookmarked_chapters)
-               VALUES (?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, zoom_override, custom_thumbnail, source_url, bookmarked_chapters, last_update_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -270,6 +289,7 @@ class WebtoonSettingsStore:
                 custom_path,
                 row["source_url"],
                 row["bookmarked_chapters"],
+                row["last_update_at"],
             )
         )
         conn.execute(
