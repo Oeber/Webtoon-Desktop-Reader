@@ -1,12 +1,10 @@
-"""
-gui/library/library_page.py
-Responsive grid. Clicking a card opens the detail page (not the viewer directly).
-"""
-
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QGridLayout, QScrollArea,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLineEdit
+from PySide6.QtCore import Qt, QTimer
+
+from rapidfuzz import fuzz
 
 from library_manager import scan_library
 from thumbnail_store import ThumbnailStore
@@ -59,8 +57,34 @@ class LibraryPage(QWidget):
         self.grid.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, PAGE_PADDING)
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
+        #Search
         self.scroll.setWidget(self.container)
         root_layout.addWidget(self.scroll)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search webtoons...")
+        self.search.setFixedHeight(36)
+
+        self.search.setStyleSheet("""
+        QLineEdit {
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 6px;
+            padding-left: 10px;
+            color: #eee;
+        }
+        QLineEdit:focus {
+            border: 1px solid #666;
+        }
+        """)
+
+        self.search.textChanged.connect(self._filter_cards)
+
+        root_layout.addWidget(self.search)
+        #Debounce for search
+        self._search_timer = QTimer()
+        self._search_timer.setSingleShot(True)
+        self._search_timer.timeout.connect(self._apply_filter)
+        self.search.textChanged.connect(self._schedule_filter)
 
         self.load_library()
 
@@ -107,3 +131,89 @@ class LibraryPage(QWidget):
 
     def _open_detail(self, webtoon):
         self.main_window.open_detail(webtoon)
+
+    def _filter_cards(self, text: str):
+
+        text = text.strip().lower()
+
+        visible_cards = []
+
+        for card in self._cards:
+
+            name = card.webtoon.name.lower()
+
+            if not text:
+                score = 100
+            else:
+                score = fuzz.partial_ratio(text, name)
+
+            visible = score >= 60
+
+            card.setVisible(visible)
+
+            if visible:
+                visible_cards.append(card)
+
+        # re-pack visible cards
+        for i, card in enumerate(visible_cards):
+            row = i // self._current_cols
+            col = i % self._current_cols
+            self.grid.addWidget(card, row, col)
+
+    def _filter_cards(self, text: str):
+
+        text = text.strip().lower()
+
+        visible_cards = []
+
+        for card in self._cards:
+
+            name = card.webtoon.name.lower()
+
+            if not text:
+                score = 100
+            else:
+                score = fuzz.partial_ratio(text, name)
+
+            visible = score >= 60
+
+            card.setVisible(visible)
+
+            if visible:
+                visible_cards.append(card)
+
+        # re-pack visible cards
+        for i, card in enumerate(visible_cards):
+            row = i // self._current_cols
+            col = i % self._current_cols
+            self.grid.addWidget(card, row, col)
+
+    def _schedule_filter(self, text):
+        self._pending_search = text
+        self._search_timer.start(150)
+
+    def _apply_filter(self):
+        text = self._pending_search.strip().lower()
+
+        visible_cards = []
+
+        for card in self._cards:
+
+            name = card.webtoon.name.lower()
+
+            if not text:
+                score = 100
+            else:
+                score = fuzz.partial_ratio(text, name)
+
+            visible = score >= 60
+
+            card.setVisible(visible)
+
+            if visible:
+                visible_cards.append(card)
+
+        for i, card in enumerate(visible_cards):
+            row = i // self._current_cols
+            col = i % self._current_cols
+            self.grid.addWidget(card, row, col)

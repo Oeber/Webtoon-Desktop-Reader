@@ -46,7 +46,7 @@ class DetailPage(QWidget):
 
         tb_layout.addWidget(self.back_btn)
         tb_layout.addWidget(self.bar_title, 1)
-        tb_layout.addSpacing(80)
+        tb_layout.addSpacing(70)
         root.addWidget(top_bar)
 
         # ── Hero ─────────────────────────────────────────────────────────
