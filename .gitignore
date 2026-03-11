@@ -17,3 +17,4 @@ scrapers/sites/*
  
 !/scrapers/sites
 !/scrapers/sites/__init__.py
+!SCRAPPER GUIDE.MD
