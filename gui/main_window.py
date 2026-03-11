@@ -1,16 +1,13 @@
 from PySide6.QtWidgets import (
-    QMainWindow, QStackedWidget, QDialog,
-    QVBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
-    QWidget, QHBoxLayout, QPushButton
+    QMainWindow, QStackedWidget,
+    QWidget, QHBoxLayout, QPushButton, QVBoxLayout
 )
 
-from PySide6.QtGui import QShortcut, QKeySequence, QPixmap, QIcon, Qt
+from PySide6.QtGui import QShortcut, QKeySequence, Qt
 from PySide6.QtCore import QSize
 import time
 
 import qtawesome as qta
-
-from rapidfuzz import fuzz
 
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
@@ -18,80 +15,7 @@ from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
 from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
-
-class GlobalSearch(QDialog):
-
-    def __init__(self, main_window):
-        super().__init__(main_window)
-
-        self.main_window = main_window
-        self.setWindowTitle("Search")
-        self.resize(500, 400)
-
-        layout = QVBoxLayout(self)
-
-        self.input = QLineEdit()
-        self.input.setPlaceholderText("Quick Search (CTRL + K)")
-        layout.addWidget(self.input)
-
-        self.results = QListWidget()
-        self.results.setIconSize(QSize(60, 90))
-        self.results.setSpacing(6)
-        layout.addWidget(self.results)
-
-        self.input.textChanged.connect(self._update_results)
-        self.results.itemActivated.connect(self._open)
-
-    def open_dialog(self):
-        self.input.clear()
-        self.results.clear()
-        self.show()
-        self.raise_()
-        self.input.setFocus()
-
-    def _update_results(self, text):
-
-        text = text.lower()
-
-        self.results.clear()
-
-        webtoons = self.main_window.library._webtoons
-        settings_store = self.main_window.library.settings_store
-
-        scored = []
-
-        for w in webtoons:
-
-            name = w.name.lower()
-
-            score = fuzz.partial_ratio(text, name) if text else 100
-
-            if score >= 60:
-                scored.append((score, w))
-
-        scored.sort(reverse=True, key=lambda x: x[0])
-
-        for score, w in scored[:20]:
-
-            item = QListWidgetItem(w.name)
-
-            # store the real object correctly
-            item.setData(Qt.UserRole, w)
-
-            thumb = settings_store.get(w.name)
-
-            if thumb:
-                pixmap = QPixmap(thumb)
-                item.setIcon(QIcon(pixmap))
-
-            self.results.addItem(item)
-
-    def _open(self, item):
-
-        webtoon = item.data(Qt.UserRole)
-
-        self.main_window.open_detail(webtoon)
-        self.close()
+from gui.search.global_search import GlobalSearchDialog
 
 class MainWindow(QMainWindow):
 
@@ -215,12 +139,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack)
 
         self.setCentralWidget(root)
-        #attach ctrl+k to search
-        self.global_search = GlobalSearch(self)
+        self.global_search = GlobalSearchDialog(self)
+        self.global_search_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
+        self.global_search_shortcut.setContext(Qt.ApplicationShortcut)
+        self.global_search_shortcut.activated.connect(self.global_search.open_dialog)
 
-        QShortcut(QKeySequence("Ctrl+K"), self).activated.connect(
-            self.global_search.open_dialog
-        )
+    def iconSizeHint(self) -> QSize:
+        return QSize(60, 90)
 
     # ------------------------------------------------------------------ #
 

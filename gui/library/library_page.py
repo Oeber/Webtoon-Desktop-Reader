@@ -5,12 +5,11 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 from PySide6.QtCore import Qt, QTimer
 import time
 
-from rapidfuzz import fuzz
-
 from library_manager import scan_library
 from progress_store import get_instance as get_progress_store
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
+from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path
 
 
@@ -326,25 +325,23 @@ class LibraryPage(QWidget):
         self._search_timer.start(150)
 
     def _apply_filter(self):
-        text = self._pending_search.strip().lower()
-
+        text = self._pending_search.strip()
+        scores = {
+            webtoon.name: score
+            for score, webtoon in rank_webtoons(self._webtoons, text)
+        }
         visible_cards = []
 
         for card in self._cards:
-
-            name = card.webtoon.name.lower()
-
-            if not text:
-                score = 100
-            else:
-                score = fuzz.partial_ratio(text, name)
-
-            visible = score >= 60
-
+            visible = card.webtoon.name in scores if text else True
             card.setVisible(visible)
-
             if visible:
                 visible_cards.append(card)
+
+        if text:
+            visible_cards.sort(
+                key=lambda card: (-scores.get(card.webtoon.name, 0), card.webtoon.name.lower())
+            )
 
         for i, card in enumerate(visible_cards):
             row = i // self._current_cols
