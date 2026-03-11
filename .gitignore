@@ -4,8 +4,10 @@
 *.md
 *.db
 *.bak
+*.json
 
 webtoons/*
 data/*
 __pycache__/*
 data/thumbnails/*
+teste/*

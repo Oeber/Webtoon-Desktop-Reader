@@ -437,7 +437,7 @@ class ViewerPage(QWidget):
         return True
 
     # ------------------------------------------------------------------ #
-    #  Batch flush                                                         #
+    #  Batch flush                                                       #
     # ------------------------------------------------------------------ #
 
     def _on_image_ready(self, index: int, pixmap: QPixmap):

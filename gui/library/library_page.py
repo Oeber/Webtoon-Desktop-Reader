@@ -10,9 +10,9 @@ from library_manager import scan_library
 from thumbnail_store import ThumbnailStore
 from progress_store import get_instance as get_progress_store
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
+from gui.settings.settings_page import load_library_path
 
 
-LIBRARY_PATH  = "webtoons"
 CARD_SPACING  = 16
 PAGE_PADDING  = 24
 
@@ -87,9 +87,9 @@ class LibraryPage(QWidget):
         self.search.textChanged.connect(self._schedule_filter)
 
         self.load_library()
-
+ 
     def load_library(self):
-        self._webtoons = scan_library(LIBRARY_PATH, self.thumb_store)
+        self._webtoons = scan_library(load_library_path(), self.thumb_store)
         self._rebuild_grid(self._columns_for_width(self.width()))
 
     def refresh_progress(self):

@@ -166,6 +166,15 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_library)
         sidebar_layout.addStretch()
 
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setStyleSheet(button_style)
+        self.btn_settings.clicked.connect(
+            lambda: self.stack.setCurrentWidget(self.settings)
+        )
+        sidebar_layout.addWidget(self.btn_settings)
+        self.btn_settings.setStyleSheet(button_style)
+
+
         layout.addWidget(self.sidebar)
         layout.addWidget(self.stack)
 
@@ -214,13 +223,15 @@ class MainWindow(QMainWindow):
     def open_viewer(self, webtoon):
         """Legacy: open viewer from chapter 0."""
         self.open_chapter(webtoon, 0)
-
+    
     def toggle_sidebar(self):
         if self.sidebar_open:
             self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
-            self.btn_library.setText("")  # hide text
+            self.btn_library.setText("")
+            self.btn_settings.setText("")
             self.sidebar_open = False
         else:
             self.sidebar.setFixedWidth(self.sidebar_expanded_width)
             self.btn_library.setText("Library")
+            self.btn_settings.setText("Settings")
             self.sidebar_open = True
