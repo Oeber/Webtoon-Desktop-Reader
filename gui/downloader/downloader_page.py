@@ -4,18 +4,24 @@ import os
 import re
 import shutil
 import requests
+import time
+
 from urllib.parse import urlparse, parse_qs
 from bs4 import BeautifulSoup
-
+from pathlib import Path
 from scrapers.registry import get_scraper
 from scrapers.base import ScraperError
+from types import SimpleNamespace
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QLineEdit, QPushButton, QScrollArea, QFrame
 )
 from PySide6.QtCore import Qt, Signal, QObject, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor
+from PySide6.QtGui import QPainter, QPen, QColor, QPixmap
+
+from thumbnail_store import ThumbnailStore
+from progress_store import get_instance as get_progress_store
 
 BTN_STYLE = """
     QPushButton {
@@ -55,6 +61,7 @@ class _Signals(QObject):
     status_changed = Signal(str, str)    # name, status
     name_resolved  = Signal(str)         # resolved name
     progress_changed = Signal(str, int, int)  # name, current, total
+    thumbnail_resolved = Signal(str, str)      # name, thumbnail path
 
 
 class SpinnerCircle(QWidget):
@@ -139,26 +146,61 @@ class SpinnerCircle(QWidget):
 
 class DownloadEntry(QFrame):
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, on_open=None):
         super().__init__()
         self.name = name
+        self.on_open = on_open
+        self.thumbnail_path = ""
+        self.setCursor(Qt.ArrowCursor)
         self.setStyleSheet("""
             QFrame {
                 background-color: #1a1a1a;
                 border: 1px solid #2a2a2a;
                 border-radius: 8px;
             }
+            QFrame[clickable="true"] {
+                border: 1px solid #3a3a3a;
+            }
+            QFrame[clickable="true"]:hover {
+                background-color: #202020;
+                border: 1px solid #4a4a4a;
+            }
         """)
+        self.setProperty("clickable", False)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 10)
         layout.setSpacing(10)
 
+        self.thumb_label = QLabel()
+        self.thumb_label.setFixedSize(52, 78)
+        self.thumb_label.setAlignment(Qt.AlignCenter)
+        self.thumb_label.setStyleSheet("""
+            QLabel {
+                background-color: #161616;
+                border: 1px solid #2a2a2a;
+                border-radius: 6px;
+            }
+        """)
+
+        text_col = QVBoxLayout()
+        text_col.setContentsMargins(0, 0, 0, 0)
+        text_col.setSpacing(4)
+
         self.name_label = QLabel(name)
         self.name_label.setStyleSheet(
-            "color: #eeeeee; font-size: 13px; background: transparent; border: none;"
+            "color: #eeeeee; font-size: 13px; background: transparent; border: none; font-weight: 600;"
         )
         self.name_label.setWordWrap(True)
+
+        self.sub_label = QLabel("")
+        self.sub_label.setStyleSheet(
+            "color: #777777; font-size: 11px; background: transparent; border: none;"
+        )
+        self.sub_label.hide()
+
+        text_col.addWidget(self.name_label)
+        text_col.addWidget(self.sub_label)
 
         self.spinner = SpinnerCircle()
 
@@ -169,7 +211,8 @@ class DownloadEntry(QFrame):
             f"color: {STATUS_COLORS['Downloading']}; font-size: 12px; background: transparent; border: none;"
         )
 
-        layout.addWidget(self.name_label, stretch=1)
+        layout.addWidget(self.thumb_label)
+        layout.addLayout(text_col, stretch=1)
         layout.addWidget(self.spinner)
         layout.addWidget(self.status_label)
 
@@ -191,6 +234,19 @@ class DownloadEntry(QFrame):
             f"color: {color}; font-size: 12px; background: transparent; border: none;"
         )
 
+        clickable = status == "Completed"
+        self.setProperty("clickable", clickable)
+        self.setCursor(Qt.PointingHandCursor if clickable else Qt.ArrowCursor)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+        if clickable:
+            self.sub_label.setText("Click to open details")
+            self.sub_label.show()
+        else:
+            self.sub_label.hide()
+
         if status == "Completed":
             self.spinner.set_complete(100)
         elif status in ("Failed", "Cancelled"):
@@ -198,6 +254,34 @@ class DownloadEntry(QFrame):
         else:
             self.spinner.set_spinning()
 
+    def set_thumbnail(self, path: str):
+        self.thumbnail_path = path or ""
+        pixmap = QPixmap(self.thumbnail_path)
+        if pixmap.isNull():
+            self.thumb_label.clear()
+            return
+
+        target_w = self.thumb_label.width()
+        target_h = self.thumb_label.height()
+
+        pixmap = pixmap.scaled(
+            target_w,
+            target_h,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation
+        )
+        x = max(0, (pixmap.width() - target_w) // 2)
+        y = max(0, (pixmap.height() - target_h) // 2)
+        pixmap = pixmap.copy(x, y, target_w, target_h)
+        self.thumb_label.setPixmap(pixmap)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self.status_label.text() == "Completed":
+            if callable(self.on_open):
+                self.on_open(self.name)
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
 class DownloaderPage(QWidget):
 
@@ -213,6 +297,10 @@ class DownloaderPage(QWidget):
         self._signals.status_changed.connect(self._on_status_changed)
         self._signals.name_resolved.connect(self._on_name_resolved)
         self._signals.progress_changed.connect(self._on_progress_changed)
+        self._signals.thumbnail_resolved.connect(self._on_thumbnail_resolved)
+
+        self.thumb_store = ThumbnailStore()
+        self.progress_store = get_progress_store()
 
         # Clean up any leftover temp folder from a previous crash
         _temp = os.path.join("data", "_download_temp")
@@ -372,7 +460,7 @@ class DownloaderPage(QWidget):
         # Use sanitized slug as placeholder — real name resolved in thread
         slug = self._sanitize(url.rstrip("/").split("/")[-1]) or "download"
 
-        entry = DownloadEntry(slug)
+        entry = DownloadEntry(slug, on_open=self._open_downloaded_webtoon_detail)
         self.history_layout.insertWidget(0, entry)
         self._active_entry = entry
 
@@ -443,14 +531,25 @@ class DownloaderPage(QWidget):
     def _on_status_changed(self, name: str, status: str):
         if self._active_entry and self._active_entry.name == name:
             self._active_entry.set_status(status)
+
+            if status == "Completed":
+                thumb_path = self._preferred_thumbnail_for(name)
+                if thumb_path:
+                    self._active_entry.set_thumbnail(thumb_path)
+
         if status == "Completed":
             self.main_window.library.load_library()
+
         self._reset_buttons()
 
     def _on_name_resolved(self, name: str):
         if self._active_entry:
             self._active_entry.name = name
             self._active_entry.name_label.setText(name)
+
+            thumb_path = self._preferred_thumbnail_for(name)
+            if thumb_path:
+                self._active_entry.set_thumbnail(thumb_path)
 
     def _reset_buttons(self):
         self.download_btn.setEnabled(True)
@@ -520,6 +619,11 @@ class DownloaderPage(QWidget):
 
         series_name = self._sanitize(series.title) or "download"
         self._signals.name_resolved.emit(series_name)
+
+        if getattr(series, "cover_url", None):
+            ok, result = self.thumb_store.set_from_url(series_name, series.cover_url)
+            if ok:
+                self._signals.thumbnail_resolved.emit(series_name, result)
 
         target_base = os.path.join(output_path, series_name)
         os.makedirs(target_base, exist_ok=True)
@@ -611,6 +715,12 @@ class DownloaderPage(QWidget):
         if not any_chapter_succeeded and completed_chapters == 0:
             raise ScraperError("No chapters were downloaded")
 
+        thumb_path = self._preferred_thumbnail_for(series_name)
+        if not thumb_path:
+            thumb_path = self._create_auto_thumbnail_from_webtoon_folder(series_name, target_base)
+            if thumb_path:
+                self._signals.thumbnail_resolved.emit(series_name, thumb_path)
+
     def _gallery_dl_download(self, url: str, output_path: str, name: str):
         temp_dir = os.path.join("data", "_download_temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -620,11 +730,46 @@ class DownloaderPage(QWidget):
 
         cmd = ["gallery-dl", "--verbose", "-D", temp_dir]
 
+        missing_chapters = []
+        guessed_last_chapter = None
+
         if url_type == "series":
             existing = self._get_existing_chapters(target_base)
             if existing:
-                existing_str = ", ".join(str(e) for e in existing)
+                existing_str = ", ".join(str(e) for e in sorted(existing))
                 cmd += ["--filter", f"episode_no not in [{existing_str}]"]
+            else:
+                existing = set()
+
+            guessed_last_chapter = self._guess_gallery_dl_last_chapter(url)
+            if guessed_last_chapter is not None and guessed_last_chapter > 0:
+                missing_chapters = sorted(
+                    set(range(1, guessed_last_chapter + 1)) - set(existing)
+                )
+                if missing_chapters:
+                    self._signals.progress_changed.emit(name, 0, len(missing_chapters))
+
+        else:
+            qs = parse_qs(urlparse(url).query)
+            episode_no = None
+
+            if "episode_no" in qs:
+                try:
+                    episode_no = int(qs["episode_no"][0])
+                except Exception:
+                    episode_no = None
+
+            if episode_no is None:
+                match = re.search(r'chapter[-/ ]?(\d+)', url, re.IGNORECASE)
+                if match:
+                    episode_no = int(match.group(1))
+
+            if episode_no is not None:
+                missing_chapters = [episode_no]
+            else:
+                missing_chapters = [1]
+
+            self._signals.progress_changed.emit(name, 0, 1)
 
         cmd.append(url)
 
@@ -634,6 +779,39 @@ class DownloaderPage(QWidget):
             stderr=None,
             text=True
         )
+
+        def _progress_watcher():
+            last_current = -1
+            last_total = -1
+
+            while self._process and self._process.poll() is None:
+                try:
+                    if missing_chapters:
+                        total = len(missing_chapters)
+                        temp_numbers = self._chapter_numbers_in_temp_dir(temp_dir)
+                        current = sum(1 for ch in missing_chapters if ch in temp_numbers)
+
+                        if current != last_current or total != last_total:
+                            self._signals.progress_changed.emit(name, current, total)
+                            last_current = current
+                            last_total = total
+                except Exception as e:
+                    print(f"Progress watcher error: {e}")
+
+                time.sleep(0.4)
+
+            try:
+                if missing_chapters:
+                    total = len(missing_chapters)
+                    temp_numbers = self._chapter_numbers_in_temp_dir(temp_dir)
+                    current = sum(1 for ch in missing_chapters if ch in temp_numbers)
+                    if current != last_current or total != last_total:
+                        self._signals.progress_changed.emit(name, current, total)
+            except Exception as e:
+                print(f"Final progress watcher error: {e}")
+
+        watcher_thread = threading.Thread(target=_progress_watcher, daemon=True)
+        watcher_thread.start()
 
         for line in self._process.stdout:
             print(line.strip())
@@ -657,9 +835,26 @@ class DownloaderPage(QWidget):
 
         os.makedirs(target_base, exist_ok=True)
 
+        completed_now = set()
+
         if url_type == "chapter":
             qs = parse_qs(urlparse(url).query)
-            episode_no = int(qs.get("episode_no", ["1"])[0])
+            episode_no = None
+
+            if "episode_no" in qs:
+                try:
+                    episode_no = int(qs["episode_no"][0])
+                except Exception:
+                    episode_no = None
+
+            if episode_no is None:
+                match = re.search(r'chapter[-/ ]?(\d+)', url, re.IGNORECASE)
+                if match:
+                    episode_no = int(match.group(1))
+
+            if episode_no is None:
+                episode_no = 1
+
             chapter_dir = os.path.join(target_base, f"Chapter {episode_no}")
             os.makedirs(chapter_dir, exist_ok=True)
 
@@ -667,6 +862,9 @@ class DownloaderPage(QWidget):
                 src = os.path.join(temp_dir, filename)
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
+
+            completed_now.add(episode_no)
+
         else:
             for filename in all_files:
                 match = re.match(r'^(\d+)', filename)
@@ -681,9 +879,226 @@ class DownloaderPage(QWidget):
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
 
+                completed_now.add(chapter_num)
+
+        if missing_chapters:
+            final_current = sum(1 for ch in missing_chapters if ch in completed_now)
+            self._signals.progress_changed.emit(name, final_current, len(missing_chapters))
+
         shutil.rmtree(temp_dir, ignore_errors=True)
+
+        thumb_path = self._create_auto_thumbnail_from_webtoon_folder(name, target_base)
+        if thumb_path:
+            self._signals.thumbnail_resolved.emit(name, thumb_path)
+
         self._signals.status_changed.emit(name, "Completed")
 
     def _on_progress_changed(self, name: str, current: int, total: int):
         if self._active_entry and self._active_entry.name == name:
             self._active_entry.set_progress(current, total)
+
+    def _on_thumbnail_resolved(self, name: str, path: str):
+        if self._active_entry and self._active_entry.name == name and path:
+            self._active_entry.set_thumbnail(path)
+
+    def _preferred_thumbnail_for(self, webtoon_name: str) -> str | None:
+        custom = self.thumb_store.get(webtoon_name)
+        if custom and os.path.exists(custom):
+            return custom
+
+        auto_path = os.path.join("data", "thumbnails", f"{webtoon_name}.jpg")
+        if os.path.exists(auto_path):
+            return auto_path
+
+        return None
+
+    def _auto_thumbnail_path(self, webtoon_name: str) -> str:
+        os.makedirs(os.path.join("data", "thumbnails"), exist_ok=True)
+        return os.path.join("data", "thumbnails", f"{webtoon_name}.jpg")
+
+    def _create_auto_thumbnail_from_webtoon_folder(self, webtoon_name: str, webtoon_dir: str) -> str | None:
+        try:
+            from PIL import Image
+
+            if not os.path.isdir(webtoon_dir):
+                return None
+
+            chapter_dirs = [
+                os.path.join(webtoon_dir, d)
+                for d in os.listdir(webtoon_dir)
+                if os.path.isdir(os.path.join(webtoon_dir, d))
+            ]
+            if not chapter_dirs:
+                return None
+
+            def chapter_sort_key(path: str):
+                name = os.path.basename(path)
+                match = re.search(r'(\d+(?:\.\d+)?)', name)
+                if match:
+                    try:
+                        return (0, float(match.group(1)), name.lower())
+                    except Exception:
+                        pass
+                return (1, float("inf"), name.lower())
+
+            chapter_dirs.sort(key=chapter_sort_key)
+            first_chapter = chapter_dirs[0]
+
+            image_files = [
+                os.path.join(first_chapter, f)
+                for f in sorted(os.listdir(first_chapter))
+                if os.path.isfile(os.path.join(first_chapter, f))
+                and f.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".avif"))
+            ]
+            if not image_files:
+                return None
+
+            src = image_files[0]
+            dest = self._auto_thumbnail_path(webtoon_name)
+
+            with Image.open(src) as img:
+                rgb = img.convert("RGB")
+                rgb.thumbnail((360, 540))
+                canvas = Image.new("RGB", (360, 540), (18, 18, 18))
+
+                x = (360 - rgb.width) // 2
+                y = (540 - rgb.height) // 2
+                canvas.paste(rgb, (x, y))
+                canvas.save(dest, "JPEG", quality=90)
+
+            return dest if os.path.exists(dest) else None
+        except Exception as e:
+            print(f"Auto thumbnail generation failed for '{webtoon_name}': {e}")
+            return None
+
+    def _build_webtoon_from_folder(self, webtoon_name: str):
+        from gui.settings.settings_page import load_library_path
+
+        webtoon_dir = os.path.join(load_library_path(), webtoon_name)
+        if not os.path.isdir(webtoon_dir):
+            return None
+
+        chapter_dirs = [
+            d for d in os.listdir(webtoon_dir)
+            if os.path.isdir(os.path.join(webtoon_dir, d))
+        ]
+
+        def chapter_sort_key(name: str):
+            match = re.search(r'(\d+(?:\.\d+)?)', name)
+            if match:
+                try:
+                    return (0, float(match.group(1)), name.lower())
+                except Exception:
+                    pass
+            return (1, float("inf"), name.lower())
+
+        chapter_dirs.sort(key=chapter_sort_key)
+
+        thumb = self._preferred_thumbnail_for(webtoon_name)
+        if not thumb:
+            thumb = self._create_auto_thumbnail_from_webtoon_folder(webtoon_name, webtoon_dir)
+
+        return SimpleNamespace(
+            name=webtoon_name,
+            path=webtoon_dir,
+            thumbnail=thumb or "",
+            chapters=chapter_dirs,
+        )
+
+    def _open_downloaded_webtoon_detail(self, webtoon_name: str):
+        webtoon = self._build_webtoon_from_folder(webtoon_name)
+        if webtoon is None:
+            return
+        self.main_window.open_detail(webtoon)
+
+    def _guess_gallery_dl_last_chapter(self, url: str) -> int | None:
+        """
+        Best-effort estimate of the highest chapter number for gallery-dl sources.
+        Uses page metadata first, then falls back to URL/query hints.
+        """
+        try:
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            html = response.text
+
+            candidates = []
+
+            for match in re.finditer(r'episode[_\- ]?no["\':\s=]+(\d+)', html, re.IGNORECASE):
+                candidates.append(int(match.group(1)))
+
+            for match in re.finditer(r'chapter[_\- ]?(\d+)', html, re.IGNORECASE):
+                candidates.append(int(match.group(1)))
+
+            for match in re.finditer(r'/chapter[-/ ]?(\d+)', html, re.IGNORECASE):
+                candidates.append(int(match.group(1)))
+
+            og_url = re.search(
+                r'<meta[^>]+property=["\']og:url["\'][^>]+content=["\']([^"\']+)["\']',
+                html,
+                re.IGNORECASE
+            )
+            if og_url:
+                for match in re.finditer(r'chapter[-/ ]?(\d+)', og_url.group(1), re.IGNORECASE):
+                    candidates.append(int(match.group(1)))
+
+            if candidates:
+                return max(candidates)
+
+        except Exception as e:
+            print(f"Last chapter guess failed from HTML: {e}")
+
+        try:
+            parsed = urlparse(url)
+            qs = parse_qs(parsed.query)
+
+            if "episode_no" in qs:
+                return int(qs["episode_no"][0])
+
+            path_matches = re.findall(r'chapter[-/ ]?(\d+)', parsed.path, re.IGNORECASE)
+            if path_matches:
+                return max(int(x) for x in path_matches)
+
+        except Exception as e:
+            print(f"Last chapter guess failed from URL: {e}")
+
+        return None
+    
+    def _chapter_numbers_in_temp_dir(self, temp_dir: str) -> set[int]:
+        """
+        Reads chapter numbers from gallery-dl temp filenames.
+        Expected pattern starts with chapter number, e.g. '123_001.jpg'.
+        """
+        found = set()
+
+        if not os.path.isdir(temp_dir):
+            return found
+
+        for filename in os.listdir(temp_dir):
+            full = os.path.join(temp_dir, filename)
+            if not os.path.isfile(full):
+                continue
+
+            match = re.match(r'^(\d+)', filename)
+            if match:
+                found.add(int(match.group(1)))
+
+        return found
+    
+    def _emit_gallery_dl_estimated_progress(
+        self,
+        name: str,
+        temp_dir: str,
+        missing_chapters: list[int]
+    ):
+        """
+        Emits progress based on which missing chapter numbers have appeared
+        in gallery-dl's temp directory.
+        """
+        total = len(missing_chapters)
+        if total <= 0:
+            return
+
+        temp_numbers = self._chapter_numbers_in_temp_dir(temp_dir)
+        current = sum(1 for ch in missing_chapters if ch in temp_numbers)
+        self._signals.progress_changed.emit(name, current, total)
