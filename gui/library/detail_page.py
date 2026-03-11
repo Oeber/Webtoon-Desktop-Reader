@@ -3,7 +3,9 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea
 )
 from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QSize
+
+import qtawesome as qta
 
 
 THUMB_W = 140
@@ -72,7 +74,9 @@ class DetailPage(QWidget):
         tb_layout = QHBoxLayout(top_bar)
         tb_layout.setContentsMargins(16, 0, 16, 0)
 
-        self.back_btn = QPushButton("← Back")
+        self.back_btn = QPushButton("  Back")
+        self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color="#aaaaaa"))
+        self.back_btn.setIconSize(QSize(14, 14))
         self.back_btn.setCursor(Qt.PointingHandCursor)
         self.back_btn.setStyleSheet("""
             QPushButton { background: transparent; color: #aaa; border: none; font-size: 14px; }
@@ -125,7 +129,9 @@ class DetailPage(QWidget):
         self.chapter_count_label = QLabel()
         self.chapter_count_label.setStyleSheet("color: #888; font-size: 12px;")
 
-        self.continue_btn = QPushButton("▶  Continue reading")
+        self.continue_btn = QPushButton("  Continue reading")
+        self.continue_btn.setIcon(qta.icon("fa5s.play", color="#ffffff"))
+        self.continue_btn.setIconSize(QSize(12, 12))
         self.continue_btn.setCursor(Qt.PointingHandCursor)
         self.continue_btn.setFixedHeight(36)
         self.continue_btn.setFixedWidth(200)
@@ -137,7 +143,9 @@ class DetailPage(QWidget):
         self.continue_btn.clicked.connect(self._continue_reading)
         self.continue_btn.hide()
 
-        self.start_btn = QPushButton("Start from beginning")
+        self.start_btn = QPushButton("  Start from beginning")
+        self.start_btn.setIcon(qta.icon("fa5s.step-backward", color="#ffffff"))
+        self.start_btn.setIconSize(QSize(12, 12))
         self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.setFixedHeight(36)
         self.start_btn.setFixedWidth(200)
@@ -174,7 +182,9 @@ class DetailPage(QWidget):
             "color: #555; font-size: 11px; font-weight: 700; letter-spacing: 2px;"
         )
 
-        self.sort_btn = QPushButton("Latest ↓")
+        self.sort_btn = QPushButton("  Latest")
+        self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#888888"))
+        self.sort_btn.setIconSize(QSize(12, 12))
         self.sort_btn.setCursor(Qt.PointingHandCursor)
         self.sort_btn.setFixedHeight(24)
         self.sort_btn.setStyleSheet("""
@@ -316,12 +326,9 @@ class DetailPage(QWidget):
 
         # ── Last-read bookmark icon (new) ─────────────────────────────────
         if is_last_read:
-            bookmark = QLabel("🔖")
-            bookmark.setStyleSheet("""
-                color: #2979ff; 
-                font-size: 16px;
-                padding-right: 4px;
-            """)
+            bookmark = QLabel()
+            bookmark.setPixmap(qta.icon("fa5s.bookmark", color="#2979ff").pixmap(QSize(14, 14)))
+            bookmark.setStyleSheet("padding-right: 4px;")
             layout.addWidget(bookmark)
 
         # ── Progress circle ───────────────────────────────────────────────
@@ -359,9 +366,12 @@ class DetailPage(QWidget):
     def _toggle_sort(self):
         self.sort_latest_first = not self.sort_latest_first
         if self.sort_latest_first:
-            self.sort_btn.setText("Latest ↓")
+            self.sort_btn.setText("  Latest")
+            self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#888888"))
         else:
-            self.sort_btn.setText("Oldest ↑")
+            self.sort_btn.setText("  Oldest")
+            self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-up", color="#888888"))
+        self.sort_btn.setIconSize(QSize(12, 12))
         progress = self.progress_store.get(self.webtoon.name)
         self._build_chapter_list(progress)
 

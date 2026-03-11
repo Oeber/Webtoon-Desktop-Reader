@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QShortcut, QKeySequence, QPixmap, QIcon, Qt
 from PySide6.QtCore import QSize
 
+import qtawesome as qta
+
 from rapidfuzz import fuzz
 
 from gui.library.library_page import LibraryPage
@@ -147,16 +149,22 @@ class MainWindow(QMainWindow):
         sidebar_layout.setContentsMargins(10, 10, 10, 10)
         sidebar_layout.setSpacing(10)
 
+        icon_color = "#cccccc"
+
         # Toggle button
-        self.toggle_btn = QPushButton("☰")
+        self.toggle_btn = QPushButton()
+        self.toggle_btn.setIcon(qta.icon("fa5s.bars", color=icon_color))
+        self.toggle_btn.setIconSize(QSize(16, 16))
         self.toggle_btn.clicked.connect(self.toggle_sidebar)
         sidebar_layout.addWidget(self.toggle_btn)
 
         # Library button
-        self.btn_library = QPushButton("Library")
+        self.btn_library = QPushButton()
+        self.btn_library.setIcon(qta.icon("fa5s.book-open", color=icon_color))
+        self.btn_library.setIconSize(QSize(16, 16))
         self.btn_library.clicked.connect(
             lambda: self.stack.setCurrentWidget(self.library)
-        ) 
+        )
 
         self.toggle_btn.setStyleSheet(button_style)
         self.btn_library.setStyleSheet(button_style)
@@ -167,7 +175,9 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_library)
         self.downloader = DownloaderPage(self)
         self.stack.addWidget(self.downloader)
-        self.btn_downloader = QPushButton("⬇")
+        self.btn_downloader = QPushButton()
+        self.btn_downloader.setIcon(qta.icon("fa5s.download", color=icon_color))
+        self.btn_downloader.setIconSize(QSize(16, 16))
         self.btn_downloader.setStyleSheet(button_style)
         self.btn_downloader.clicked.connect(
             lambda: self.stack.setCurrentWidget(self.downloader)
@@ -176,7 +186,9 @@ class MainWindow(QMainWindow):
 
         sidebar_layout.addStretch()
 
-        self.btn_settings = QPushButton("⚙")
+        self.btn_settings = QPushButton()
+        self.btn_settings.setIcon(qta.icon("fa5s.cog", color=icon_color))
+        self.btn_settings.setIconSize(QSize(16, 16))
         self.btn_settings.setStyleSheet(button_style)
         self.btn_settings.clicked.connect(
             lambda: self.stack.setCurrentWidget(self.settings)
@@ -235,6 +247,7 @@ class MainWindow(QMainWindow):
         self.open_chapter(webtoon, 0)
     
     def toggle_sidebar(self):
+        icon_color = "#cccccc"
         if self.sidebar_open:
             self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
             self.btn_library.setText("")
@@ -243,7 +256,7 @@ class MainWindow(QMainWindow):
             self.sidebar_open = False
         else:
             self.sidebar.setFixedWidth(self.sidebar_expanded_width)
-            self.btn_library.setText("Library")
-            self.btn_settings.setText("Settings")
-            self.btn_downloader.setText("Download")
+            self.btn_library.setText("  Library")
+            self.btn_settings.setText("  Settings")
+            self.btn_downloader.setText("  Download")
             self.sidebar_open = True

@@ -360,6 +360,8 @@ class ChapterPreview(QWidget):
         view_h = self.scroll_area.viewport().height()
         scroll_max = max(1, bar.maximum())
 
+        # Reconstruct the same window the painter used, so the click maps to
+        # exactly the same coordinate space as the indicator.
         viewport_content_frac = view_h / (total_content_h + view_h)
         coverage = max(0.20, viewport_content_frac)
 
@@ -371,10 +373,13 @@ class ChapterPreview(QWidget):
             window_top_frac = 1.0 - coverage
         window_top_frac = max(0.0, window_top_frac)
 
+        # Exact inverse of the indicator_top formula in _paint_image_strip:
+        # indicator_top = ((scroll_top / total_content_h) - window_top_frac) / coverage * strip_h
+        # Subtract view_h // 2 so the clicked position lands at the center of
+        # the viewport rather than the top edge.
         click_frac = max(0.0, min(1.0, widget_y / self.height()))
-        content_frac = window_top_frac + click_frac * coverage
-        target = int(content_frac * total_content_h) - view_h // 2
-        bar.setValue(max(0, min(target, bar.maximum())))
+        target = int((click_frac * coverage + window_top_frac) * total_content_h) - view_h // 2
+        bar.setValue(max(0, min(target, scroll_max)))
 
     def mousePressEvent(self, event):
         if event.button() != Qt.LeftButton:
