@@ -167,28 +167,33 @@ class ViewerPage(QWidget):
     #  Progress save                                                       #
     # ------------------------------------------------------------------ #
 
-    def _save_progress(self):
-        if not self.webtoon or not self.image_labels:
-            return
+    def _current_packed_position(self) -> float:
+        """
+        Snapshot the current scroll position as a packed float
+        (image_index + fraction_within_image).
+        Returns 0.0 if nothing is loaded yet.
+        """
+        if not self.image_labels:
+            return 0.0
 
-        chapter   = self.webtoon.chapters[self.current_chapter_index]
         scroll_top = self.scroll.verticalScrollBar().value()
-
-        # Walk labels using cumulative heights (fast, no mapTo calls)
         cumulative = 0
-        img_idx    = 0
-        offset_px  = 0
         for i, label in enumerate(self.image_labels):
             h = label.height()
             if cumulative + h > scroll_top:
-                img_idx   = i
-                offset_px = scroll_top - cumulative
-                break
+                offset_px   = scroll_top - cumulative
+                offset_frac = (offset_px / h) if h > 0 else 0.0
+                return i + offset_frac
             cumulative += h
 
-        real_h       = self.image_labels[img_idx].height()
-        offset_frac  = (offset_px / real_h) if real_h > 0 else 0.0
-        packed       = img_idx + offset_frac
+        # Scrolled past all images — clamp to last image
+        return len(self.image_labels) - 1
+
+    def _save_progress(self):
+        if not self.webtoon or not self.image_labels:
+            return
+        chapter = self.webtoon.chapters[self.current_chapter_index]
+        packed  = self._current_packed_position()
         self.progress_store.save(self.webtoon.name, chapter, packed)
 
     # ------------------------------------------------------------------ #
@@ -208,32 +213,38 @@ class ViewerPage(QWidget):
         if idx is None or idx >= len(self.image_labels):
             return
 
+        # Require all images from 0 to idx (inclusive) to have real heights
         for i in range(idx + 1):
             lbl = self.image_labels[i]
             if lbl.pixmap() is None or lbl.pixmap().isNull():
-                return
+                return  # still waiting — called again when next image loads
 
+        self._jump_to_packed(idx, self._restore_image_offset)
+        self._restore_image_index = None
+
+    def _jump_to_packed(self, idx: int, offset_frac: float):
+        """
+        Scroll to image[idx] + offset_frac, forcing the scrollbar max
+        high enough so the value isn't clamped by unloaded placeholder heights.
+        """
         cumulative = sum(self.image_labels[i].height() for i in range(idx))
-        target_px  = cumulative + int(self.image_labels[idx].height() * self._restore_image_offset)
+        target_px  = cumulative + int(self.image_labels[idx].height() * offset_frac)
 
         from PySide6.QtWidgets import QApplication
         QApplication.processEvents()
 
         bar = self.scroll.verticalScrollBar()
-
-        # Force the scrollbar max high enough to reach target before setting value.
-        # Remaining placeholder images may be keeping max too low.
-        current_max = bar.maximum()
-        if target_px > current_max:
+        if target_px > bar.maximum():
             bar.setMaximum(target_px)
 
         bar.setValue(target_px)
 
-        # Verify it wasn't clamped — if it was, retry when more images load
+        # If still clamped, retry when more images load
         if bar.value() < target_px - 5:
-            return  # don't clear _restore_image_index, will retry
-
-        self._restore_image_index = None
+            # Restore index is already cleared by caller only on success;
+            # keep it alive so _on_image_ready retries.
+            return False
+        return True
 
     # ------------------------------------------------------------------ #
     #  Chapter loading                                                     #
@@ -272,8 +283,9 @@ class ViewerPage(QWidget):
         self.chapter_selector.blockSignals(False)
 
         self._load_chapter_images(chapter)
-        self.update_nav_buttons()    
-        
+        self.update_nav_buttons()
+
+        # Only reset to top if we're NOT restoring a saved position
         if self._restore_image_index is None:
             self.scroll.verticalScrollBar().setValue(0)
 
@@ -319,9 +331,7 @@ class ViewerPage(QWidget):
         idx = self._restore_image_index
         if idx is None or idx >= len(self.image_labels):
             return
-        vw = self.scroll.viewport().width() // 2
-        # Load ALL images up to and including the target so cumulative
-        # heights before it are real, not placeholder 400px values.
+        vw  = self.scroll.viewport().width() // 2
         end = min(len(self.image_labels), idx + 3)
         for i in range(0, end):
             self.loader.load(i, self.image_labels[i].img_path, vw)
@@ -354,12 +364,17 @@ class ViewerPage(QWidget):
         if index >= len(self.image_labels):
             return
         label = self.image_labels[index]
-        label._original_pixmap = pixmap  # store original
+        label._original_pixmap = pixmap
         self._apply_pixmap_to_label(label)
 
+        # Only attempt restore when an image at or before target finishes
         if (self._restore_image_index is not None
                 and index <= self._restore_image_index):
             self._apply_restore()
+
+    # ------------------------------------------------------------------ #
+    #  Image scaling                                                       #
+    # ------------------------------------------------------------------ #
 
     def _apply_pixmap_to_label(self, label):
         if not hasattr(label, '_original_pixmap'):
@@ -370,9 +385,24 @@ class ViewerPage(QWidget):
         label.setFixedHeight(scaled.height())
 
     def rescale_images(self):
+        # Snapshot position before heights change
+        packed = self._current_packed_position()
+        idx    = int(packed)
+        frac   = packed - idx
+
         for label in self.image_labels:
             self._apply_pixmap_to_label(label)
-            
+
+        # Re-apply position after rescale so the view stays on the same
+        # content even if pixel heights changed due to the new viewport width.
+        # Only do this if we have valid loaded images to jump to.
+        if (self.image_labels
+                and idx < len(self.image_labels)
+                and hasattr(self.image_labels[idx], '_original_pixmap')):
+            from PySide6.QtWidgets import QApplication
+            QApplication.processEvents()
+            self._jump_to_packed(idx, frac)
+
     # ------------------------------------------------------------------ #
     #  Navigation                                                          #
     # ------------------------------------------------------------------ #
@@ -407,16 +437,6 @@ class ViewerPage(QWidget):
     def resizeEvent(self, event):
         self._resize_timer.start()
         super().resizeEvent(event)
-
-    def rescale_images(self):
-        viewport_width = self.scroll.viewport().width() // 2
-        for label in self.image_labels:
-            pixmap = label.pixmap()
-            if pixmap is None or pixmap.isNull():
-                continue
-            scaled = pixmap.scaledToWidth(viewport_width, Qt.SmoothTransformation)
-            label.setPixmap(scaled)
-            label.setFixedHeight(scaled.height()) 
 
     # ------------------------------------------------------------------ #
     #  Middle-click auto scroll                                            #
