@@ -1,10 +1,11 @@
 from PySide6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout,
-    QPushButton, QMenu, QFileDialog
+    QPushButton, QMenu, QDialog,
 )
 from PySide6.QtGui import QPixmap, QFont, QPainter, QPainterPath, QAction
 from PySide6.QtCore import Qt, QPoint
 
+from gui.library.thumbnail_dialog import ThumbnailDialog
 
 CARD_WIDTH  = 180
 CARD_HEIGHT = 270
@@ -21,8 +22,7 @@ class WebtoonCard(QWidget):
         self.progress_store = progress_store
         self.on_open        = on_open
 
-        # Track whether badge buttons have a signal connected yet
-        self._latest_connected  = False
+        self._latest_connected   = False
         self._lastread_connected = False
 
         self.setFixedWidth(CARD_WIDTH + 16)
@@ -116,32 +116,33 @@ class WebtoonCard(QWidget):
         chapters = self.webtoon.chapters
         progress = self.progress_store.get(self.webtoon.name)
 
-        # ── Latest chapter badge ─────────────────────────────────────────
         if chapters:
             latest = chapters[-1]
             self.latest_btn.setText(f"▶  {latest}")
             self.latest_btn.show()
             if self._latest_connected:
                 self.latest_btn.clicked.disconnect()
-            self.latest_btn.clicked.connect(lambda checked=False, ch=latest: self._open_chapter_direct(ch))
+            self.latest_btn.clicked.connect(
+                lambda checked=False, ch=latest: self._open_chapter_direct(ch)
+            )
             self._latest_connected = True
         else:
             self.latest_btn.hide()
 
-        # ── Last-read badge ──────────────────────────────────────────────
         if progress:
             last_ch = progress["chapter"]
             self.lastread_btn.setText(f"◉  {last_ch}")
             self.lastread_btn.show()
             if self._lastread_connected:
                 self.lastread_btn.clicked.disconnect()
-            self.lastread_btn.clicked.connect(lambda checked=False, ch=last_ch: self._open_chapter_direct(ch))
+            self.lastread_btn.clicked.connect(
+                lambda checked=False, ch=last_ch: self._open_chapter_direct(ch)
+            )
             self._lastread_connected = True
         else:
             self.lastread_btn.hide()
 
     def _open_chapter_direct(self, chapter: str):
-        """Open a chapter via main_window so the continue/restart prompt is shown."""
         chapters = self.webtoon.chapters
         if chapter not in chapters:
             return
@@ -188,7 +189,7 @@ class WebtoonCard(QWidget):
         self.image_label.setPixmap(rounded)
 
     # ------------------------------------------------------------------ #
-    #  Context menu (thumbnail override)                                  #
+    #  Context menu                                                        #
     # ------------------------------------------------------------------ #
 
     def _build_menu(self) -> QMenu:
@@ -201,8 +202,9 @@ class WebtoonCard(QWidget):
             QMenu::item { padding: 6px 20px; border-radius: 4px; }
             QMenu::item:selected { background: #2e2e2e; }
         """)
-        set_action = QAction("🖼  Set custom thumbnail", self)
-        set_action.triggered.connect(self._pick_custom_thumbnail)
+
+        set_action = QAction("🖼  Set thumbnail", self)
+        set_action.triggered.connect(self._open_thumbnail_dialog)
         menu.addAction(set_action)
 
         if self.thumb_store.get(self.webtoon.name):
@@ -220,16 +222,11 @@ class WebtoonCard(QWidget):
     def contextMenuEvent(self, event):
         self._build_menu().exec(event.globalPos())
 
-    def _pick_custom_thumbnail(self):
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "Select thumbnail image", "",
-            "Images (*.jpg *.jpeg *.png *.webp)"
-        )
-        if not file_path:
-            return
-        self.thumb_store.set(self.webtoon.name, file_path)
-        self.webtoon.thumbnail = file_path
-        self._load_thumbnail(file_path)
+    def _open_thumbnail_dialog(self):
+        dlg = ThumbnailDialog(self.webtoon.name, self.thumb_store, parent=self)
+        if dlg.exec() == QDialog.Accepted and dlg.saved_path:
+            self.webtoon.thumbnail = dlg.saved_path
+            self._load_thumbnail(dlg.saved_path)
 
     def _reset_thumbnail(self):
         self.thumb_store.clear(self.webtoon.name)
@@ -272,7 +269,3 @@ class WebtoonCard(QWidget):
                 return
             self.on_open(self.webtoon)
         super().mousePressEvent(event)
-
-
-
-
