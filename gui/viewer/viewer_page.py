@@ -603,10 +603,7 @@ class ViewerPage(QWidget):
         self._invalidate_panel_cache()
         self.check_visible_images()
 
-        # Warm the panel-skip cache in the background so first keypress is instant
-        self._warm_panel_cache()
-        # Kick off panel cache build in background so first keypress is instant
-        QTimer.singleShot(0, self._warm_panel_cache)
+        self._build_panel_starts()
 
         if self._resize_packed is not None:
             idx  = int(self._resize_packed)
@@ -863,7 +860,7 @@ class ViewerPage(QWidget):
         Build a sorted list of doc-y positions where content begins after
         a blank gap. Cached until images change.
         """
-        MIN_BLANK = 25
+        MIN_BLANK = 18
         ROW_STEP  = 3
 
         starts     = [0]
@@ -906,12 +903,7 @@ class ViewerPage(QWidget):
         if self._panel_starts_dirty:
             self._build_panel_starts()
         return self._panel_starts
-
-    def _warm_panel_cache(self):
-        """Build the panel cache on a background thread so first keypress is instant."""
-        import threading
-        threading.Thread(target=self._build_panel_starts, daemon=True).start()
-
+  
     def _jump_to_panel(self, panel_y: int):
         """Scroll so panel_y sits near the top of the viewport with a small margin."""
         MARGIN = 12
@@ -923,23 +915,28 @@ class ViewerPage(QWidget):
         view_h = self.scroll.viewport().height()
         pos    = bar.value()
 
-        if key == Qt.Key_Down:
+        if key in (Qt.Key_Down, Qt.Key_Up):
             starts = self._get_panel_starts()
-            # Find the next panel start clearly past the current viewport
-            next_panel = next((s for s in starts if s > pos + view_h * 0.75), None)
-            if next_panel is not None:
-                self._jump_to_panel(next_panel)
-            else:
-                bar.setValue(pos + view_h)
+            if not starts:
+                super().keyPressEvent(event)
+                return
 
-        elif key == Qt.Key_Up:
-            starts = self._get_panel_starts()
-            # Find the last panel start clearly above current pos
-            prev_panel = next((s for s in reversed(starts) if s < pos - view_h * 0.1), None)
-            if prev_panel is not None:
-                self._jump_to_panel(prev_panel)
-            else:
-                bar.setValue(max(0, pos - view_h))
+            if key == Qt.Key_Down:
+                # Find the very next panel start after current position
+                next_panel = next((s for s in starts if s > pos), None)
+                # Only skip if the blank gap is meaningful (>40% of viewport)
+                if next_panel is not None and next_panel - pos > view_h * 0.4:
+                    self._jump_to_panel(next_panel)
+                else:
+                    bar.setValue(pos + view_h)          # normal page scroll
+
+            else:  # Key_Up
+                # Find the previous panel start
+                prev_panel = next((s for s in reversed(starts) if s < pos), None)
+                if prev_panel is not None and pos - prev_panel > view_h * 0.4:
+                    self._jump_to_panel(prev_panel)
+                else:
+                    bar.setValue(max(0, pos - view_h))
 
         elif key == Qt.Key_Right:
             if self.current_chapter_index < len(self.webtoon.chapters) - 1:
