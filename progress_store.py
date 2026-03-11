@@ -1,11 +1,17 @@
-import json
-import os
+"""
+progress_store.py
+Manages per-webtoon reading progress backed by SQLite (data/reader.db).
+Public API is identical to the old JSON-backed version.
 
-PROGRESS_JSON = "data/progress.json"
+Always use get_instance() — never instantiate ProgressStore directly.
+"""
+
+from db import get_connection
 
 _instance = None
 
-def get_instance():
+
+def get_instance() -> "ProgressStore":
     global _instance
     if _instance is None:
         _instance = ProgressStore()
@@ -14,32 +20,39 @@ def get_instance():
 
 class ProgressStore:
 
-    def __init__(self):
-        os.makedirs("data", exist_ok=True)
-        self._path = PROGRESS_JSON
-        self._data: dict = {}
-        self._load()
-
-    def _load(self):
-        if os.path.exists(self._path):
-            try:
-                with open(self._path, "r", encoding="utf-8") as f:
-                    self._data = json.load(f)
-            except (json.JSONDecodeError, OSError):
-                self._data = {}
-
-    def _save(self):
-        with open(self._path, "w", encoding="utf-8") as f:
-            json.dump(self._data, f, indent=2, ensure_ascii=False)
-
     def get(self, webtoon_name: str) -> dict | None:
-        return self._data.get(webtoon_name)
+        """
+        Return {"chapter": str, "scroll": float} for the given webtoon,
+        or None if no progress has been saved.
+        """
+        conn = get_connection()
+        row  = conn.execute(
+            "SELECT chapter, scroll FROM progress WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        if row is None:
+            return None
+        return {"chapter": row["chapter"], "scroll": row["scroll"]}
 
     def save(self, webtoon_name: str, chapter: str, scroll: float):
-        self._data[webtoon_name] = {"chapter": chapter, "scroll": scroll}
-        self._save()
+        """Persist progress, overwriting any previous entry."""
+        conn = get_connection()
+        conn.execute(
+            """INSERT INTO progress (webtoon_name, chapter, scroll, updated_at)
+               VALUES (?, ?, ?, strftime('%s', 'now'))
+               ON CONFLICT(webtoon_name) DO UPDATE SET
+                   chapter    = excluded.chapter,
+                   scroll     = excluded.scroll,
+                   updated_at = excluded.updated_at""",
+            (webtoon_name, chapter, scroll)
+        )
+        conn.commit()
 
     def clear(self, webtoon_name: str):
-        if webtoon_name in self._data:
-            del self._data[webtoon_name]
-            self._save()
+        """Delete saved progress for a webtoon."""
+        conn = get_connection()
+        conn.execute(
+            "DELETE FROM progress WHERE webtoon_name = ?",
+            (webtoon_name,)
+        )
+        conn.commit()

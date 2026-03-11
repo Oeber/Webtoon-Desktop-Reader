@@ -3,6 +3,7 @@
 *.docx
 *.md
 *.db
+*.bak
 
 webtoons/*
 data/*
