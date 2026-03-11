@@ -7,8 +7,8 @@ from PySide6.QtCore import Qt, QTimer
 from rapidfuzz import fuzz
 
 from library_manager import scan_library
-from thumbnail_store import ThumbnailStore
 from progress_store import get_instance as get_progress_store
+from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.settings.settings_page import load_library_path
 
@@ -23,11 +23,12 @@ class LibraryPage(QWidget):
         super().__init__()
 
         self.main_window   = main_window
-        self.thumb_store   = ThumbnailStore()
         self.progress_store = get_progress_store()
+        self.settings_store = get_webtoon_settings()
         self._webtoons     = []
         self._cards        = []
         self._current_cols = 0
+        self._pending_search = ""
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -77,8 +78,6 @@ class LibraryPage(QWidget):
         }
         """)
 
-        self.search.textChanged.connect(self._filter_cards)
-
         root_layout.addWidget(self.search)
         #Debounce for search
         self._search_timer = QTimer()
@@ -89,7 +88,7 @@ class LibraryPage(QWidget):
         self.load_library()
  
     def load_library(self):
-        self._webtoons = scan_library(load_library_path(), self.thumb_store)
+        self._webtoons = scan_library(load_library_path(), self.settings_store)
         self._rebuild_grid(self._columns_for_width(self.width()))
 
     def refresh_progress(self):
@@ -116,9 +115,10 @@ class LibraryPage(QWidget):
 
             card = WebtoonCard(
                 webtoon,
-                thumb_store=self.thumb_store,
+                settings_store=self.settings_store,
                 progress_store=self.progress_store,
                 on_open=self._open_detail,
+                on_changed=self._reload_after_edit,
             )
             self._cards.append(card)
             self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
@@ -132,61 +132,9 @@ class LibraryPage(QWidget):
     def _open_detail(self, webtoon):
         self.main_window.open_detail(webtoon)
 
-    def _filter_cards(self, text: str):
-
-        text = text.strip().lower()
-
-        visible_cards = []
-
-        for card in self._cards:
-
-            name = card.webtoon.name.lower()
-
-            if not text:
-                score = 100
-            else:
-                score = fuzz.partial_ratio(text, name)
-
-            visible = score >= 60
-
-            card.setVisible(visible)
-
-            if visible:
-                visible_cards.append(card)
-
-        # re-pack visible cards
-        for i, card in enumerate(visible_cards):
-            row = i // self._current_cols
-            col = i % self._current_cols
-            self.grid.addWidget(card, row, col)
-
-    def _filter_cards(self, text: str):
-
-        text = text.strip().lower()
-
-        visible_cards = []
-
-        for card in self._cards:
-
-            name = card.webtoon.name.lower()
-
-            if not text:
-                score = 100
-            else:
-                score = fuzz.partial_ratio(text, name)
-
-            visible = score >= 60
-
-            card.setVisible(visible)
-
-            if visible:
-                visible_cards.append(card)
-
-        # re-pack visible cards
-        for i, card in enumerate(visible_cards):
-            row = i // self._current_cols
-            col = i % self._current_cols
-            self.grid.addWidget(card, row, col)
+    def _reload_after_edit(self):
+        self.load_library()
+        self._apply_filter()
 
     def _schedule_filter(self, text):
         self._pending_search = text

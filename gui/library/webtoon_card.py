@@ -1,28 +1,27 @@
-from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout,
-    QPushButton, QMenu, QDialog,
-)
-from PySide6.QtGui import QPixmap, QFont, QPainter, QPainterPath, QAction
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QAction, QFont, QPainter, QPainterPath, QPixmap
+from PySide6.QtWidgets import QDialog, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
 
-from gui.library.thumbnail_dialog import ThumbnailDialog
+from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 
-CARD_WIDTH  = 180
+
+CARD_WIDTH = 180
 CARD_HEIGHT = 270
-CARD_RADIUS = 8
+CARD_RADIUS = 12
 
 
 class WebtoonCard(QWidget):
 
-    def __init__(self, webtoon, thumb_store, progress_store, on_open):
+    def __init__(self, webtoon, settings_store, progress_store, on_open, on_changed):
         super().__init__()
 
-        self.webtoon        = webtoon
-        self.thumb_store    = thumb_store
+        self.webtoon = webtoon
         self.progress_store = progress_store
-        self.on_open        = on_open
+        self.settings_store = settings_store
+        self.on_open = on_open
+        self.on_changed = on_changed
 
-        self._latest_connected   = False
+        self._latest_connected = False
         self._lastread_connected = False
 
         self.setFixedWidth(CARD_WIDTH + 16)
@@ -33,7 +32,6 @@ class WebtoonCard(QWidget):
         root.setSpacing(6)
         root.setContentsMargins(8, 8, 8, 8)
 
-        # ── Image container ──────────────────────────────────────────────
         self.image_container = QWidget()
         self.image_container.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
         self.image_container.setStyleSheet("background: transparent;")
@@ -43,23 +41,25 @@ class WebtoonCard(QWidget):
         self.image_label.setAlignment(Qt.AlignCenter)
         self._apply_border_style(hovered=False)
 
-        # ⋯ button
-        self.dots_btn = QPushButton("⋯", self.image_container)
+        self.dots_btn = QPushButton("...")
+        self.dots_btn.setParent(self.image_container)
         self.dots_btn.setFixedSize(28, 28)
         self.dots_btn.move(CARD_WIDTH - 34, 6)
         self.dots_btn.setCursor(Qt.PointingHandCursor)
         self.dots_btn.setStyleSheet("""
             QPushButton {
-                background: rgba(0,0,0,0.65); color: #fff;
-                border: none; border-radius: 14px;
-                font-size: 14px; padding-bottom: 4px;
+                background: rgba(0,0,0,0.65);
+                color: #fff;
+                border: none;
+                border-radius: 14px;
+                font-size: 14px;
+                padding-bottom: 2px;
             }
             QPushButton:hover { background: rgba(80,80,80,0.90); }
         """)
         self.dots_btn.hide()
         self.dots_btn.clicked.connect(self._show_context_menu_at_btn)
 
-        # ── Title ────────────────────────────────────────────────────────
         self.title_label = QLabel(webtoon.name)
         self.title_label.setFixedWidth(CARD_WIDTH)
         self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
@@ -67,16 +67,18 @@ class WebtoonCard(QWidget):
         self.title_label.setMaximumHeight(40)
         self.title_label.setStyleSheet("""
             QLabel {
-                color: #e0e0e0; font-size: 12px;
-                background: transparent; border: none; padding: 0;
+                color: #e0e0e0;
+                font-size: 12px;
+                background: transparent;
+                border: none;
+                padding: 0;
             }
         """)
         font = QFont("Segoe UI", 10)
         font.setWeight(QFont.Medium)
         self.title_label.setFont(font)
 
-        # ── Badge buttons ────────────────────────────────────────────────
-        self.latest_btn   = self._make_badge_btn(accent=False)
+        self.latest_btn = self._make_badge_btn(accent=False)
         self.lastread_btn = self._make_badge_btn(accent=True)
 
         root.addWidget(self.image_container)
@@ -87,22 +89,22 @@ class WebtoonCard(QWidget):
         self._load_thumbnail(webtoon.thumbnail)
         self._refresh_badges()
 
-    # ------------------------------------------------------------------ #
-    #  Badge buttons                                                       #
-    # ------------------------------------------------------------------ #
-
     def _make_badge_btn(self, accent=False) -> QPushButton:
         btn = QPushButton()
         btn.setFixedWidth(CARD_WIDTH)
         btn.setFixedHeight(20)
         btn.setCursor(Qt.PointingHandCursor)
-        color    = "#2979ff" if accent else "#888"
+        color = "#2979ff" if accent else "#888"
         bg_hover = "#1a2a4a" if accent else "#2a2a2a"
         btn.setStyleSheet(f"""
             QPushButton {{
-                color: {color}; font-size: 10px; font-weight: 600;
-                background: transparent; border: none;
-                text-align: left; padding: 0 2px;
+                color: {color};
+                font-size: 10px;
+                font-weight: 600;
+                background: transparent;
+                border: none;
+                text-align: left;
+                padding: 0 2px;
             }}
             QPushButton:hover {{
                 background: {bg_hover};
@@ -118,7 +120,7 @@ class WebtoonCard(QWidget):
 
         if chapters:
             latest = chapters[-1]
-            self.latest_btn.setText(f"▶  {latest}")
+            self.latest_btn.setText(f"Play  {latest}")
             self.latest_btn.show()
             if self._latest_connected:
                 self.latest_btn.clicked.disconnect()
@@ -131,7 +133,7 @@ class WebtoonCard(QWidget):
 
         if progress:
             last_ch = progress["chapter"]
-            self.lastread_btn.setText(f"◉  {last_ch}")
+            self.lastread_btn.setText(f"Last  {last_ch}")
             self.lastread_btn.show()
             if self._lastread_connected:
                 self.lastread_btn.clicked.disconnect()
@@ -159,20 +161,19 @@ class WebtoonCard(QWidget):
             w = w.parent()
         return None
 
-    # ------------------------------------------------------------------ #
-    #  Thumbnail                                                           #
-    # ------------------------------------------------------------------ #
-
     def _load_thumbnail(self, path: str):
         pixmap = QPixmap(path)
         if pixmap.isNull():
             self.image_label.clear()
             return
 
-        pixmap = pixmap.scaled(CARD_WIDTH, CARD_HEIGHT,
-                               Qt.KeepAspectRatioByExpanding,
-                               Qt.SmoothTransformation)
-        x = (pixmap.width()  - CARD_WIDTH)  // 2
+        pixmap = pixmap.scaled(
+            CARD_WIDTH,
+            CARD_HEIGHT,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        x = (pixmap.width() - CARD_WIDTH) // 2
         y = (pixmap.height() - CARD_HEIGHT) // 2
         pixmap = pixmap.copy(x, y, CARD_WIDTH, CARD_HEIGHT)
 
@@ -180,38 +181,34 @@ class WebtoonCard(QWidget):
         rounded.fill(Qt.transparent)
         painter = QPainter(rounded)
         painter.setRenderHint(QPainter.Antialiasing)
-        p = QPainterPath()
-        p.addRoundedRect(0, 0, CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS, CARD_RADIUS)
-        painter.setClipPath(p)
+        path_obj = QPainterPath()
+        path_obj.addRoundedRect(0, 0, CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS, CARD_RADIUS)
+        painter.setClipPath(path_obj)
         painter.drawPixmap(0, 0, pixmap)
         painter.end()
 
         self.image_label.setPixmap(rounded)
 
-    # ------------------------------------------------------------------ #
-    #  Context menu                                                        #
-    # ------------------------------------------------------------------ #
-
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
         menu.setStyleSheet("""
             QMenu {
-                background: #1e1e1e; color: #e0e0e0;
-                border: 1px solid #333; border-radius: 6px; padding: 4px;
+                background: #1e1e1e;
+                color: #e0e0e0;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 4px;
             }
-            QMenu::item { padding: 6px 20px; border-radius: 4px; }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 4px;
+            }
             QMenu::item:selected { background: #2e2e2e; }
         """)
 
-        set_action = QAction("🖼  Set thumbnail", self)
-        set_action.triggered.connect(self._open_thumbnail_dialog)
-        menu.addAction(set_action)
-
-        if self.thumb_store.get(self.webtoon.name):
-            reset_action = QAction("↺  Reset to auto thumbnail", self)
-            reset_action.triggered.connect(self._reset_thumbnail)
-            menu.addAction(reset_action)
-
+        edit_action = QAction("Edit", self)
+        edit_action.triggered.connect(self._open_edit_dialog)
+        menu.addAction(edit_action)
         return menu
 
     def _show_context_menu_at_btn(self):
@@ -222,21 +219,15 @@ class WebtoonCard(QWidget):
     def contextMenuEvent(self, event):
         self._build_menu().exec(event.globalPos())
 
-    def _open_thumbnail_dialog(self):
-        dlg = ThumbnailDialog(self.webtoon.name, self.thumb_store, parent=self)
-        if dlg.exec() == QDialog.Accepted and dlg.saved_path:
-            self.webtoon.thumbnail = dlg.saved_path
-            self._load_thumbnail(dlg.saved_path)
-
-    def _reset_thumbnail(self):
-        self.thumb_store.clear(self.webtoon.name)
-        auto_path = f"data/thumbnails/{self.webtoon.name}.jpg"
-        self.webtoon.thumbnail = auto_path
-        self._load_thumbnail(auto_path)
-
-    # ------------------------------------------------------------------ #
-    #  Hover                                                               #
-    # ------------------------------------------------------------------ #
+    def _open_edit_dialog(self):
+        dlg = EditWebtoonDialog(
+            self.webtoon,
+            settings_store=self.settings_store,
+            progress_store=self.progress_store,
+            parent=self,
+        )
+        if dlg.exec() == QDialog.Accepted and callable(self.on_changed):
+            self.on_changed()
 
     def enterEvent(self, event):
         self._apply_border_style(hovered=True)
@@ -257,10 +248,6 @@ class WebtoonCard(QWidget):
                 border: 1px solid {color};
             }}
         """)
-
-    # ------------------------------------------------------------------ #
-    #  Click — open detail page                                           #
-    # ------------------------------------------------------------------ #
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:

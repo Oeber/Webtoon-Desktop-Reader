@@ -8,9 +8,9 @@ Supports:
   - Paste / type a URL and download it
 
 Usage:
-    dlg = ThumbnailDialog(webtoon_name, thumb_store, parent=self)
+    dlg = ThumbnailDialog(webtoon_name, settings_store, parent=self)
     if dlg.exec() == QDialog.Accepted:
-        new_path = dlg.saved_path   # internal copy already saved in thumb_store
+        new_path = dlg.saved_path   # internal copy already saved in settings store
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
 )
 from PySide6.QtGui import (
-    QPixmap, QPainter, QPainterPath, QColor,
-    QDragEnterEvent, QDropEvent, QFont, QFontDatabase,
+    QPixmap, QPainter, QPainterPath,
+    QDragEnterEvent, QDropEvent,
 )
 from PySide6.QtCore import (
     Qt, QThread, Signal, QPropertyAnimation,
-    QEasingCurve, QSize, QTimer,
+    QEasingCurve,
 )
 
 
@@ -173,10 +173,10 @@ class ThumbnailDialog(QDialog):
     After exec() == Accepted, read `self.saved_path` for the stored path.
     """
 
-    def __init__(self, webtoon_name: str, thumb_store, parent=None):
+    def __init__(self, webtoon_name: str, settings_store, parent=None):
         super().__init__(parent)
         self._name       = webtoon_name
-        self._store      = thumb_store
+        self._store      = settings_store
         self._worker     = None
         self.saved_path  = None      # set on successful save
 
@@ -204,22 +204,9 @@ class ThumbnailDialog(QDialog):
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(20)
 
-        # header
-        header = QHBoxLayout()
         title = QLabel("Set Thumbnail")
         title.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
-        header.addWidget(title)
-        header.addStretch()
-        close_btn = QPushButton("✕")
-        close_btn.setFixedSize(28, 28)
-        close_btn.setCursor(Qt.PointingHandCursor)
-        close_btn.setStyleSheet(f"""
-            QPushButton {{ background: {SURFACE2}; color: {MUTED}; border: none; border-radius: 14px; font-size: 13px; }}
-            QPushButton:hover {{ background: {BORDER_H}; color: {TEXT}; }}
-        """)
-        close_btn.clicked.connect(self.reject)
-        header.addWidget(close_btn)
-        root.addLayout(header)
+        root.addWidget(title)
 
         # body: preview + right panel
         body = QHBoxLayout()

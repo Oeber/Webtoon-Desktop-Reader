@@ -20,7 +20,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QObject, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QPixmap
 
-from thumbnail_store import ThumbnailStore
 from progress_store import get_instance as get_progress_store
 from webtoon_settings_store import get_instance as get_webtoon_settings
 
@@ -300,7 +299,6 @@ class DownloaderPage(QWidget):
         self._signals.progress_changed.connect(self._on_progress_changed)
         self._signals.thumbnail_resolved.connect(self._on_thumbnail_resolved)
 
-        self.thumb_store = ThumbnailStore()
         self.progress_store = get_progress_store()
         self.settings_store = get_webtoon_settings()
 
@@ -633,7 +631,7 @@ class DownloaderPage(QWidget):
         self._signals.name_resolved.emit(series_name)
 
         if getattr(series, "cover_url", None):
-            ok, result = self.thumb_store.set_from_url(series_name, series.cover_url)
+            ok, result = self.settings_store.set_from_url(series_name, series.cover_url)
             if ok:
                 self._signals.thumbnail_resolved.emit(series_name, result)
 
@@ -917,7 +915,7 @@ class DownloaderPage(QWidget):
             self._active_entry.set_thumbnail(path)
 
     def _preferred_thumbnail_for(self, webtoon_name: str) -> str | None:
-        custom = self.thumb_store.get(webtoon_name)
+        custom = self.settings_store.get(webtoon_name)
         if custom and os.path.exists(custom):
             return custom
 

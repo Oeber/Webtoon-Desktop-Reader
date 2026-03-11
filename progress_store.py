@@ -69,3 +69,11 @@ class ProgressStore:
             (webtoon_name,)
         )
         conn.commit()
+
+    def rename_webtoon(self, old_name: str, new_name: str):
+        conn = get_connection()
+        conn.execute(
+            "UPDATE progress SET webtoon_name = ? WHERE webtoon_name = ?",
+            (new_name, old_name)
+        )
+        conn.commit()

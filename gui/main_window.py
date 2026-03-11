@@ -54,7 +54,7 @@ class GlobalSearch(QDialog):
         self.results.clear()
 
         webtoons = self.main_window.library._webtoons
-        thumb_store = self.main_window.library.thumb_store
+        settings_store = self.main_window.library.settings_store
 
         scored = []
 
@@ -76,7 +76,7 @@ class GlobalSearch(QDialog):
             # store the real object correctly
             item.setData(Qt.UserRole, w)
 
-            thumb = thumb_store.get(w.name)
+            thumb = settings_store.get(w.name)
 
             if thumb:
                 pixmap = QPixmap(thumb)

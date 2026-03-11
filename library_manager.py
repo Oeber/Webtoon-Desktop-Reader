@@ -3,9 +3,6 @@ import re
 
 from PIL import Image
 
-from thumbnail_store import ThumbnailStore
-
-
 class Webtoon:
     def __init__(self, name, path, chapters, thumbnail):
         self.name = name
@@ -14,7 +11,7 @@ class Webtoon:
         self.thumbnail = thumbnail
 
 
-def scan_library(library_path: str, thumb_store: ThumbnailStore) -> list[Webtoon]:
+def scan_library(library_path: str, settings_store) -> list[Webtoon]:
 
     webtoons = []
 
@@ -44,7 +41,7 @@ def scan_library(library_path: str, thumb_store: ThumbnailStore) -> list[Webtoon
             continue
 
         # Resolve thumbnail: custom override → auto-generated
-        custom = thumb_store.get(webtoon_name)
+        custom = settings_store.get(webtoon_name)
         if custom and os.path.exists(custom):
             thumbnail = custom
         else:
