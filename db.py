@@ -16,9 +16,9 @@ def get_connection() -> sqlite3.Connection:
     return _connection
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 #  Internal
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 
 def _init_db() -> sqlite3.Connection:
     os.makedirs("data", exist_ok=True)
@@ -26,7 +26,6 @@ def _init_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
 
-    # Keep writes fast while still being crash-safe
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
 
@@ -44,20 +43,18 @@ def _create_schema(conn: sqlite3.Connection):
         );
 
         CREATE TABLE IF NOT EXISTS progress (
-            webtoon_name  TEXT PRIMARY KEY,
-            chapter       TEXT NOT NULL,
-            scroll        REAL NOT NULL DEFAULT 0.0,
-            updated_at    INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+            webtoon_name   TEXT NOT NULL,
+            chapter        TEXT NOT NULL,
+            scroll         REAL NOT NULL DEFAULT 0.0,
+            total_images   INTEGER NOT NULL DEFAULT 0,
+            updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            PRIMARY KEY (webtoon_name, chapter)
         );
     """)
     conn.commit()
 
 
 def _migrate_json(conn: sqlite3.Connection):
-    """
-    One-time migration: if legacy JSON files exist and the tables are empty,
-    import their data then rename the files to .bak so migration won't repeat.
-    """
     _migrate_thumbnails_json(conn)
     _migrate_progress_json(conn)
 
@@ -68,7 +65,6 @@ def _migrate_thumbnails_json(conn: sqlite3.Connection):
 
     row_count = conn.execute("SELECT COUNT(*) FROM thumbnails").fetchone()[0]
     if row_count > 0:
-        # Data already present — just remove the old file
         _backup_json(THUMBNAILS_JSON)
         return
 
@@ -100,13 +96,13 @@ def _migrate_progress_json(conn: sqlite3.Connection):
         with open(PROGRESS_JSON, "r", encoding="utf-8") as f:
             data: dict = json.load(f)
         rows = [
-            (name, entry["chapter"], entry.get("scroll", 0.0))
+            (name, entry["chapter"], entry.get("scroll", 0.0), 0)
             for name, entry in data.items()
             if "chapter" in entry
         ]
         conn.executemany(
-            """INSERT OR IGNORE INTO progress (webtoon_name, chapter, scroll)
-               VALUES (?, ?, ?)""",
+            """INSERT OR IGNORE INTO progress (webtoon_name, chapter, scroll, total_images)
+               VALUES (?, ?, ?, ?)""",
             rows
         )
         conn.commit()

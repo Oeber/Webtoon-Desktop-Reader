@@ -2,13 +2,52 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea
 )
-from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont
+from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
 from PySide6.QtCore import Qt, QPoint
 
 
 THUMB_W = 140
 THUMB_H = 210
 RADIUS  = 8
+
+
+# ── Small circular progress indicator ────────────────────────────────────────
+class ProgressCircle(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._percent = 0
+        self.setFixedSize(32, 32)
+
+    def set_percent(self, percent: int):
+        self._percent = max(0, min(100, int(percent)))
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        rect = self.rect().adjusted(2, 2, -2, -2)
+
+        # Background ring
+        painter.setPen(QPen(QColor("#333333"), 3))
+        painter.drawEllipse(rect)
+
+        # Progress arc (green)
+        if self._percent > 0:
+            pen = QPen(QColor("#22c55e"), 3)
+            pen.setCapStyle(Qt.RoundCap)
+            painter.setPen(pen)
+            start_angle = -90 * 16
+            span_angle = int(self._percent / 100.0 * 360 * 16)
+            painter.drawArc(rect, start_angle, span_angle)
+
+        # Center text
+        font = painter.font()
+        font.setPixelSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor("#e0e0e0"))
+        painter.drawText(rect, Qt.AlignCenter, f"{self._percent}%")
 
 
 class DetailPage(QWidget):
@@ -18,6 +57,7 @@ class DetailPage(QWidget):
         self.main_window    = main_window
         self.webtoon        = None
         self.progress_store = None
+        self.progress_map   = {}
 
         self.setStyleSheet("background-color: #121212;")
 
@@ -73,7 +113,6 @@ class DetailPage(QWidget):
         info_layout.setSpacing(10)
         info_layout.setAlignment(Qt.AlignTop)
 
-        #title
         self.title_label = QLabel()
         self.title_label.setWordWrap(False)
         self.title_label.setStyleSheet("color: #fff; font-size: 28px; font-weight: 700;")
@@ -86,7 +125,6 @@ class DetailPage(QWidget):
         self.chapter_count_label = QLabel()
         self.chapter_count_label.setStyleSheet("color: #888; font-size: 12px;")
 
-        #Continue Reading button
         self.continue_btn = QPushButton("▶  Continue reading")
         self.continue_btn.setCursor(Qt.PointingHandCursor)
         self.continue_btn.setFixedHeight(36)
@@ -116,10 +154,8 @@ class DetailPage(QWidget):
         info_layout.addSpacing(12)
         btn_row = QHBoxLayout()
         btn_row.setSpacing(10)
-
         btn_row.addWidget(self.continue_btn)
         btn_row.addWidget(self.start_btn)
-
         info_layout.addLayout(btn_row)
 
         hero_layout.addWidget(self.thumb_label)
@@ -156,13 +192,11 @@ class DetailPage(QWidget):
         }
         """)
         self.sort_latest_first = True
-
         self.sort_btn.clicked.connect(self._toggle_sort)
 
         sh_layout.addWidget(chapters_lbl)
         sh_layout.addStretch()
         sh_layout.addWidget(self.sort_btn)
-
         root.addWidget(section_header)
 
         # ── Chapter list ─────────────────────────────────────────────────
@@ -194,6 +228,7 @@ class DetailPage(QWidget):
     def load_webtoon(self, webtoon, progress_store):
         self.webtoon        = webtoon
         self.progress_store = progress_store
+        self.progress_map   = progress_store.get_progress_map(webtoon.name)
 
         self.bar_title.setText(webtoon.name)
         self.title_label.setText(webtoon.name)
@@ -220,16 +255,26 @@ class DetailPage(QWidget):
             p.end()
             self.thumb_label.setPixmap(rounded)
 
-        # Progress
+        # Last read label
         progress = progress_store.get(webtoon.name)
         if progress:
-            self.last_read_label.setText(f"Last read: {progress['chapter']}")
+            ch = progress["chapter"]
+            scroll, total = self.progress_map.get(ch, (0.0, 0))
+            percent = self._calc_percent(scroll, total)
+            self.last_read_label.setText(f"Last read: {ch} ({percent}%)")
             self.continue_btn.show()
         else:
             self.last_read_label.setText("Not started")
             self.continue_btn.hide()
 
         self._build_chapter_list(progress)
+
+    def _calc_percent(self, scroll: float, total_images: int) -> int:
+        if total_images <= 0:
+            return 0
+        idx = int(scroll)
+        frac = scroll - idx
+        return int(((idx + frac) / total_images) * 100)
 
     def _build_chapter_list(self, progress):
         while self.chapter_list_layout.count():
@@ -244,10 +289,13 @@ class DetailPage(QWidget):
             chapters = list(reversed(chapters))
 
         for chapter in chapters:
-            row = self._make_chapter_row(chapter, is_last_read=(chapter == last_read_chapter))
+            data = self.progress_map.get(chapter, (0.0, 0))
+            scroll, total = data
+            is_last_read = (chapter == last_read_chapter)
+            row = self._make_chapter_row(chapter, is_last_read, scroll, total)
             self.chapter_list_layout.addWidget(row)
 
-    def _make_chapter_row(self, chapter: str, is_last_read: bool) -> QWidget:
+    def _make_chapter_row(self, chapter: str, is_last_read: bool, scroll: float, total: int) -> QWidget:
         row = QWidget()
         row.setCursor(Qt.PointingHandCursor)
         row.setStyleSheet("""
@@ -260,25 +308,28 @@ class DetailPage(QWidget):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(12)
 
+        color = "#2979ff" if is_last_read else "#cccccc"
         name_lbl = QLabel(chapter)
-        name_lbl.setStyleSheet(
-            "color: #2979ff; font-size: 14px; border: none;" if is_last_read
-            else "color: #cccccc; font-size: 14px; border: none;"
-        )
+        name_lbl.setStyleSheet(f"color: {color}; font-size: 14px; border: none;")
         layout.addWidget(name_lbl, 1)
 
+        # ── Last-read bookmark icon (new) ─────────────────────────────────
         if is_last_read:
-            badge = QLabel("last read")
-            badge.setStyleSheet("""
-                QLabel {
-                    color: #2979ff; font-size: 10px; font-weight: 600;
-                    background: #1a2a4a; border-radius: 4px;
-                    padding: 2px 6px; border: none;
-                }
+            bookmark = QLabel("🔖")
+            bookmark.setStyleSheet("""
+                color: #2979ff; 
+                font-size: 16px;
+                padding-right: 4px;
             """)
-            layout.addWidget(badge)
+            layout.addWidget(bookmark)
 
-        # clicking any chapter goes through the prompt in the viewer
+        # ── Progress circle ───────────────────────────────────────────────
+        percent = self._calc_percent(scroll, total)
+        if percent > 0:
+            circle = ProgressCircle()
+            circle.set_percent(percent)
+            layout.addWidget(circle)
+
         row.mousePressEvent = lambda e, ch=chapter: self._open_chapter(ch)
         return row
 
@@ -291,7 +342,6 @@ class DetailPage(QWidget):
         self.main_window.open_chapter_with_prompt(self.webtoon, idx)
 
     def _continue_reading(self):
-        """Continue button: restore saved chapter + scroll, no prompt."""
         progress = self.progress_store.get(self.webtoon.name)
         if not progress:
             self.main_window.open_chapter(self.webtoon, 0, 0.0)
@@ -306,14 +356,11 @@ class DetailPage(QWidget):
         self.main_window.stack.setCurrentWidget(self.main_window.library)
 
     def _toggle_sort(self):
-
         self.sort_latest_first = not self.sort_latest_first
-
         if self.sort_latest_first:
             self.sort_btn.setText("Latest ↓")
         else:
             self.sort_btn.setText("Oldest ↑")
-
         progress = self.progress_store.get(self.webtoon.name)
         self._build_chapter_list(progress)
 

@@ -269,7 +269,6 @@ class ViewerPage(QWidget):
 
     def __init__(self, main_window):
         super().__init__()
-
         self.main_window           = main_window
         self.webtoon               = None
         self.current_chapter_index = 0
@@ -278,14 +277,11 @@ class ViewerPage(QWidget):
         self._restore_image_index  = None
         self._restore_image_offset = 0.0
 
-        # Pending decoded pixmaps waiting to be flushed to labels
         self._pending_batch: dict[int, QPixmap] = {}
 
         self.loader = ImageLoader()
         self.loader.image_ready.connect(self._on_image_ready)
 
-        # Batch flush timer — collects incoming pixmaps and applies
-        # them all at once to avoid per-image layout recalculations
         self._batch_timer = QTimer()
         self._batch_timer.setSingleShot(True)
         self._batch_timer.setInterval(BATCH_MS)
@@ -399,7 +395,8 @@ class ViewerPage(QWidget):
             return
         chapter = self.webtoon.chapters[self.current_chapter_index]
         packed  = self._current_packed_position()
-        self.progress_store.save(self.webtoon.name, chapter, packed)
+        total   = len(self.image_labels)
+        self.progress_store.save(self.webtoon.name, chapter, packed, total)
 
     # ------------------------------------------------------------------ #
     #  Progress restore                                                    #
@@ -498,15 +495,15 @@ class ViewerPage(QWidget):
     def _load_chapter_with_prompt(self, index):
         if not self.webtoon:
             return
-        chapter  = self.webtoon.chapters[index]
-        progress = self.progress_store.get(self.webtoon.name)
-        packed   = 0.0
-        if progress and progress.get("chapter") == chapter:
-            saved = progress.get("scroll", 0.0)
-            if saved > 0.005:
-                dlg = ContinueDialog(chapter, parent=self)
-                if dlg.exec() == QDialog.Accepted:
-                    packed = saved
+        chapter = self.webtoon.chapters[index]
+
+        saved_scroll = self.progress_store.get_for_chapter(self.webtoon.name, chapter)
+        packed = 0.0
+        if saved_scroll > 0.005:
+            dlg = ContinueDialog(chapter, parent=self)
+            if dlg.exec() == QDialog.Accepted:
+                packed = saved_scroll
+
         self._unpack_restore(packed)
         self._load_chapter_no_prompt(index)
 
