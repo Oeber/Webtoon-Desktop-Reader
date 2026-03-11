@@ -9,6 +9,7 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 
 from progress_store import get_instance as get_progress_store
+from gui.settings.settings_page import load_setting, save_setting
 
 FILMSTRIP_W   = 25
 IMAGE_STRIP_W = 50
@@ -438,8 +439,8 @@ class ViewerPage(QWidget):
         self._panel_warm_timer.setInterval(180)
         self._panel_warm_timer.timeout.connect(self._warm_panel_cache)
 
-        self._zoom = 0.5
-        self.auto_skip_enabled = True
+        self._zoom = load_setting("viewer_zoom", 0.5)
+        self.auto_skip_enabled = load_setting("viewer_auto_skip", True)
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -466,7 +467,10 @@ class ViewerPage(QWidget):
 
         self.nav_toggle = QPushButton("Auto Skip")
         self.nav_toggle.setCheckable(True)
-        self.nav_toggle.setChecked(True)
+        self.nav_toggle.setChecked(self.auto_skip_enabled)
+
+        if not self.auto_skip_enabled:
+            self.nav_toggle.setText("Standard")
         self.nav_toggle.setFocusPolicy(Qt.NoFocus)
         self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
 
@@ -825,11 +829,18 @@ class ViewerPage(QWidget):
 
     def _set_zoom(self, zoom: float, update_slider: bool = True):
         self._zoom = max(0.25, min(1.0, zoom))
+
         if update_slider:
             self._zoom_slider.blockSignals(True)
             self._zoom_slider.setValue(int(self._zoom * 100))
             self._zoom_slider.blockSignals(False)
+
         self._zoom_label.setText(f"{int(self._zoom * 100)}%")
+
+        save_setting("viewer_zoom", self._zoom)
+
+        self._zoom_slider.setValue(int(self._zoom * 100))
+
         self.preview.set_zoom(self._zoom)
         self.rescale_images()
 
@@ -1179,5 +1190,7 @@ class ViewerPage(QWidget):
             self.nav_toggle.setText("Auto Skip")
         else:
             self.nav_toggle.setText("Standard")
+
+        save_setting("viewer_auto_skip", self.auto_skip_enabled)
 
         self.setFocus()
