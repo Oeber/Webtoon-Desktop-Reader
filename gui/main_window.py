@@ -13,6 +13,7 @@ from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
+from gui.downloader.downloader_page import DownloaderPage
 
 class GlobalSearch(QDialog):
 
@@ -164,6 +165,15 @@ class MainWindow(QMainWindow):
             self.btn_library.setText("")
 
         sidebar_layout.addWidget(self.btn_library)
+        self.downloader = DownloaderPage(self)
+        self.stack.addWidget(self.downloader)
+        self.btn_downloader = QPushButton("⬇")
+        self.btn_downloader.setStyleSheet(button_style)
+        self.btn_downloader.clicked.connect(
+            lambda: self.stack.setCurrentWidget(self.downloader)
+        )
+        sidebar_layout.addWidget(self.btn_downloader)
+
         sidebar_layout.addStretch()
 
         self.btn_settings = QPushButton("⚙")
@@ -229,9 +239,11 @@ class MainWindow(QMainWindow):
             self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
             self.btn_library.setText("")
             self.btn_settings.setText("")
+            self.btn_downloader.setText("")
             self.sidebar_open = False
         else:
             self.sidebar.setFixedWidth(self.sidebar_expanded_width)
             self.btn_library.setText("Library")
             self.btn_settings.setText("Settings")
+            self.btn_downloader.setText("Download")
             self.sidebar_open = True

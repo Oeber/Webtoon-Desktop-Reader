@@ -272,9 +272,10 @@ class DetailPage(QWidget):
     def _calc_percent(self, scroll: float, total_images: int) -> int:
         if total_images <= 0:
             return 0
-        idx = int(scroll)
-        frac = scroll - idx
-        return int(((idx + frac) / total_images) * 100)
+        # sentinel: viewer saves scroll == total_images when scrollbar is at max
+        if scroll >= total_images:
+            return 100
+        return min(99, int((scroll / total_images) * 100))
 
     def _build_chapter_list(self, progress):
         while self.chapter_list_layout.count():
