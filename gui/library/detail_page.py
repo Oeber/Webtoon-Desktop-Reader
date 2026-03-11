@@ -1,7 +1,7 @@
 import re
 
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea
 )
 from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
@@ -10,6 +10,7 @@ from PySide6.QtCore import Qt, QPoint, QSize
 import qtawesome as qta
 
 from webtoon_settings_store import get_instance as get_webtoon_settings
+from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 
 
 # Matches chapter names that contain a decimal sub-number, e.g. "Chapter 1.5", "Ch.10.5"
@@ -18,7 +19,7 @@ _SPECIAL_CHAPTER_RE = re.compile(r'\b\d+\.\d+\b')
 
 THUMB_W = 140
 THUMB_H = 210
-RADIUS  = 8
+RADIUS  = 12
 
 
 # ── Small circular progress indicator ────────────────────────────────────────
@@ -94,13 +95,29 @@ class DetailPage(QWidget):
         """)
         self.back_btn.clicked.connect(self._go_back)
 
+        self.edit_btn = QPushButton("  Edit")
+        self.edit_btn.setIcon(qta.icon("fa5s.edit", color="#aaaaaa"))
+        self.edit_btn.setIconSize(QSize(14, 14))
+        self.edit_btn.setCursor(Qt.PointingHandCursor)
+        self.edit_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #aaa;
+                border: none;
+                font-size: 14px;
+            }
+            QPushButton:hover { color: #fff; }
+        """)
+        self.edit_btn.clicked.connect(self._open_edit_dialog)
+
         self.bar_title = QLabel()
         self.bar_title.setStyleSheet("color: #e0e0e0; font-size: 15px; font-weight: 600;")
         self.bar_title.setAlignment(Qt.AlignCenter)
 
         tb_layout.addWidget(self.back_btn)
+        tb_layout.addSpacing(8)
         tb_layout.addWidget(self.bar_title, 1)
-        tb_layout.addSpacing(70)
+        tb_layout.addWidget(self.edit_btn)
         root.addWidget(top_bar)
 
         # ── Hero ─────────────────────────────────────────────────────────
@@ -446,6 +463,37 @@ class DetailPage(QWidget):
 
     def _go_back(self):
         self.main_window.stack.setCurrentWidget(self.main_window.library)
+
+    def _open_edit_dialog(self):
+        if self.webtoon is None or self.progress_store is None:
+            return
+
+        dlg = EditWebtoonDialog(
+            self.webtoon,
+            settings_store=self.settings_store,
+            progress_store=self.progress_store,
+            parent=self,
+        )
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        self.main_window.library.load_library()
+        self.main_window.library.refresh_progress()
+
+        if dlg.deleted:
+            self.main_window.stack.setCurrentWidget(self.main_window.library)
+            return
+
+        updated = next(
+            (w for w in self.main_window.library._webtoons if w.name == self.webtoon.name),
+            None,
+        )
+        if updated is None:
+            self.main_window.stack.setCurrentWidget(self.main_window.library)
+            return
+
+        self.load_webtoon(updated, self.progress_store)
+        self.main_window.stack.setCurrentWidget(self)
 
     def _toggle_sort(self):
         self.sort_latest_first = not self.sort_latest_first

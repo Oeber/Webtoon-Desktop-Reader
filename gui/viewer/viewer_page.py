@@ -504,13 +504,6 @@ class ViewerPage(QWidget):
         self.nav_toggle.setFocusPolicy(Qt.NoFocus)
         self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
 
-        self.skip_specials_btn = QPushButton("Hide Filler")
-        self.skip_specials_btn.setCheckable(True)
-        self.skip_specials_btn.setChecked(False)
-        self.skip_specials_btn.setFocusPolicy(Qt.NoFocus)
-        self.skip_specials_btn.setToolTip("Hide special/hiatus chapters (e.g. Chapter 1.5) from the selector and skip them during navigation")
-        self.skip_specials_btn.clicked.connect(self._toggle_skip_specials)
-
         zoom_out_btn = QPushButton("−")
         zoom_out_btn.setFixedWidth(28)
         zoom_out_btn.setFocusPolicy(Qt.NoFocus)
@@ -561,7 +554,6 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.next_button)
         top_bar.addWidget(self.chapter_selector)
         top_bar.addWidget(self.nav_toggle)
-        top_bar.addWidget(self.skip_specials_btn)
         top_bar.addStretch()
         top_bar.addWidget(zoom_out_btn)
         top_bar.addWidget(self._zoom_slider)
@@ -637,7 +629,6 @@ class ViewerPage(QWidget):
         """Apply per-webtoon settings (zoom, hide filler). Called whenever a webtoon is opened."""
         # Hide filler
         self.skip_specials_enabled = self.settings_store.get_hide_filler(webtoon.name)
-        self.skip_specials_btn.setChecked(self.skip_specials_enabled)
 
         # Zoom override
         override = self.settings_store.get_zoom_override(webtoon.name)
@@ -1028,27 +1019,6 @@ class ViewerPage(QWidget):
             self._chapter_index_map = []
             self.chapter_selector.addItems(self.webtoon.chapters)
         self.chapter_selector.blockSignals(False)
-
-    def _toggle_skip_specials(self):
-        self.skip_specials_enabled = self.skip_specials_btn.isChecked()
-        if self.webtoon:
-            self.settings_store.set_hide_filler(self.webtoon.name, self.skip_specials_enabled)
-        self._repopulate_chapter_selector()
-        # Sync the selector highlight to the current chapter without reloading images
-        self.chapter_selector.blockSignals(True)
-        if self._chapter_index_map:
-            selector_pos = next(
-                (i for i, real in enumerate(self._chapter_index_map)
-                 if real == self.current_chapter_index),
-                None
-            )
-            if selector_pos is not None:
-                self.chapter_selector.setCurrentIndex(selector_pos)
-        else:
-            self.chapter_selector.setCurrentIndex(self.current_chapter_index)
-        self.chapter_selector.blockSignals(False)
-        self.update_nav_buttons()
-        self.setFocus()
 
     def update_nav_buttons(self):
         self.prev_button.setEnabled(self._prev_chapter_index(self.current_chapter_index) is not None)
