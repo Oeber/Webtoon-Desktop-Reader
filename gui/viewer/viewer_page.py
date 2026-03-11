@@ -11,7 +11,7 @@ from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 from progress_store import get_instance as get_progress_store
 from gui.settings.settings_page import load_setting, save_setting
 
-FILMSTRIP_W   = 25
+FILMSTRIP_W   = 40
 IMAGE_STRIP_W = 50
 PREVIEW_W     = FILMSTRIP_W + IMAGE_STRIP_W
 
@@ -64,6 +64,7 @@ class ContinueDialog(QDialog):
 
 class ImageLoader(QObject):
     image_ready = Signal(int, QPixmap)
+    preview_ready = Signal(int, QPixmap, int)  # index, thumb, natural_height
     panel_starts_ready = Signal(int, list)
 
     def __init__(self):
@@ -71,10 +72,12 @@ class ImageLoader(QObject):
         self.executor = ThreadPoolExecutor(max_workers=NUM_WORKERS)
         self._cancelled = False
         self._queued = set()
+        self._preview_queued = set()
 
     def cancel(self):
         self._cancelled = True
         self._queued.clear()
+        self._preview_queued.clear()
 
     def reset(self):
         self._cancelled = False
@@ -85,6 +88,13 @@ class ImageLoader(QObject):
         self._queued.add(index)
         self.executor.submit(self._load_task, index, path)
 
+    def load_preview(self, index: int, path: str, max_w: int = 50):
+        """Load a small thumbnail for the preview strip only."""
+        if index in self._preview_queued or index in self._queued:
+            return
+        self._preview_queued.add(index)
+        self.executor.submit(self._preview_task, index, path, max_w)
+
     def _load_task(self, index: int, path: str):
         if self._cancelled:
             return
@@ -93,6 +103,16 @@ class ImageLoader(QObject):
             return
         if not self._cancelled:
             self.image_ready.emit(index, pixmap)
+
+    def _preview_task(self, index: int, path: str, max_w: int):
+        if self._cancelled:
+            return
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            return
+        if not self._cancelled:
+            thumb = pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
+            self.preview_ready.emit(index, thumb, pixmap.height())
 
     def build_panel_starts(self, generation: int, payload: list):
         self.executor.submit(self._panel_task, generation, payload)
@@ -263,6 +283,23 @@ class ChapterPreview(QWidget):
                 painter.setPen(QColor("#0e0e0e"))
                 painter.drawLine(rect.left(), rect.bottom() + 1, rect.right(), rect.bottom() + 1)
 
+    def _coverage(self, total_content_h: int, view_h: int) -> float:
+        return 0.20
+
+    def _window_fracs(self, total_content_h: int, view_h: int):
+        """Return (coverage, window_top_frac) for the current scroll position."""
+        bar = self.scroll_area.verticalScrollBar()
+        scroll_max = max(1, bar.maximum())
+        coverage = self._coverage(total_content_h, view_h)
+        scroll_frac = bar.value() / scroll_max
+        window_top_frac = scroll_frac * (1.0 - coverage)
+        window_bot_frac = window_top_frac + coverage
+        if window_bot_frac > 1.0:
+            window_bot_frac = 1.0
+            window_top_frac = 1.0 - coverage
+        window_top_frac = max(0.0, window_top_frac)
+        return coverage, window_top_frac
+
     def _paint_image_strip(self, painter: QPainter, current_idx: int):
         strip_x = FILMSTRIP_W
         strip_w = IMAGE_STRIP_W
@@ -276,19 +313,9 @@ class ChapterPreview(QWidget):
 
         scroll_top = self.scroll_area.verticalScrollBar().value()
         view_h = self.scroll_area.viewport().height()
-        scroll_max = max(1, self.scroll_area.verticalScrollBar().maximum())
 
-        viewport_content_frac = view_h / (total_content_h + view_h)
-        coverage = max(0.20, viewport_content_frac)
-
-        scroll_frac = scroll_top / scroll_max
-        window_top_frac = scroll_frac * (1.0 - coverage)
+        coverage, window_top_frac = self._window_fracs(total_content_h, view_h)
         window_bot_frac = window_top_frac + coverage
-
-        if window_bot_frac > 1.0:
-            window_bot_frac = 1.0
-            window_top_frac = 1.0 - coverage
-        window_top_frac = max(0.0, window_top_frac)
 
         content_top = window_top_frac * total_content_h
         content_bot = window_bot_frac * total_content_h
@@ -360,23 +387,10 @@ class ChapterPreview(QWidget):
         view_h = self.scroll_area.viewport().height()
         scroll_max = max(1, bar.maximum())
 
-        # Reconstruct the same window the painter used, so the click maps to
-        # exactly the same coordinate space as the indicator.
-        viewport_content_frac = view_h / (total_content_h + view_h)
-        coverage = max(0.20, viewport_content_frac)
+        coverage, window_top_frac = self._window_fracs(total_content_h, view_h)
 
-        scroll_frac = bar.value() / scroll_max
-        window_top_frac = scroll_frac * (1.0 - coverage)
-        window_bot_frac = window_top_frac + coverage
-        if window_bot_frac > 1.0:
-            window_bot_frac = 1.0
-            window_top_frac = 1.0 - coverage
-        window_top_frac = max(0.0, window_top_frac)
-
-        # Exact inverse of the indicator_top formula in _paint_image_strip:
-        # indicator_top = ((scroll_top / total_content_h) - window_top_frac) / coverage * strip_h
-        # Subtract view_h // 2 so the clicked position lands at the center of
-        # the viewport rather than the top edge.
+        # Exact inverse of the indicator_top formula in _paint_image_strip.
+        # Subtract view_h // 2 so the clicked position lands at viewport center.
         click_frac = max(0.0, min(1.0, widget_y / self.height()))
         target = int((click_frac * coverage + window_top_frac) * total_content_h) - view_h // 2
         bar.setValue(max(0, min(target, scroll_max)))
@@ -427,6 +441,7 @@ class ViewerPage(QWidget):
 
         self.loader = ImageLoader()
         self.loader.image_ready.connect(self._on_image_ready)
+        self.loader.preview_ready.connect(self._on_preview_ready)
         self.loader.panel_starts_ready.connect(self._on_panel_starts_ready)
 
         self._batch_timer = QTimer()
@@ -791,6 +806,11 @@ class ViewerPage(QWidget):
         self.check_visible_images()
         QTimer.singleShot(0, self.check_visible_images)
 
+        # Immediately queue small thumbnails for all images so the preview
+        # strip populates quickly regardless of scroll position.
+        for idx, label in enumerate(self.image_labels):
+            self.loader.load_preview(idx, label.img_path)
+
         if self._restore_image_index is not None:
             self._preload_restore_target()
 
@@ -862,7 +882,12 @@ class ViewerPage(QWidget):
         label.setFixedHeight(scaled.height())
 
     def rescale_images(self):
-        packed = self._current_packed_position()
+        # Capture position as a fraction of total content height — this is
+        # invariant across rescales, unlike packed position which depends on
+        # individual label heights that are about to change.
+        bar = self.scroll.verticalScrollBar()
+        total_before = sum(lbl.height() for lbl in self.image_labels)
+        scroll_frac = (bar.value() / total_before) if total_before > 0 else 0.0
 
         self.container.setUpdatesEnabled(False)
         try:
@@ -871,11 +896,12 @@ class ViewerPage(QWidget):
         finally:
             self.container.setUpdatesEnabled(True)
 
-        idx = int(packed)
-        frac = packed - idx
-        if self.image_labels and idx < len(self.image_labels):
-            QApplication.processEvents()
-            self._jump_to_packed(idx, frac)
+        # Defer the jump so Qt finishes reflowing label geometry first.
+        def _restore():
+            total_after = sum(lbl.height() for lbl in self.image_labels)
+            bar.setValue(max(0, min(int(scroll_frac * total_after), bar.maximum())))
+
+        QTimer.singleShot(0, _restore)
 
         self.preview.update()
         self._invalidate_panel_cache()
@@ -946,6 +972,20 @@ class ViewerPage(QWidget):
 
         self._panel_starts = starts
         self._panel_starts_dirty = False
+
+    def _on_preview_ready(self, index: int, pixmap: QPixmap, natural_h: int):
+        """Thumbnail arrived — store it and set correct label height if not yet loaded."""
+        if index >= len(self.image_labels):
+            return
+        label = self.image_labels[index]
+        if getattr(label, '_original_pixmap', None) is None:
+            label._original_pixmap = pixmap
+            # Set the correct scaled height based on actual image proportions.
+            if natural_h > 0 and pixmap.width() > 0:
+                aspect = natural_h / (pixmap.width() * (1.0 / self._zoom))
+                scaled_h = max(100, int(self._image_width() * aspect))
+                label.setFixedHeight(scaled_h)
+        self.preview.notify_image_loaded()
 
     def _get_panel_starts(self) -> list[int]:
         if self._panel_starts_dirty:
