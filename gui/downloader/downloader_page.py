@@ -22,6 +22,7 @@ from PySide6.QtGui import QPainter, QPen, QColor, QPixmap
 
 from thumbnail_store import ThumbnailStore
 from progress_store import get_instance as get_progress_store
+from webtoon_settings_store import get_instance as get_webtoon_settings
 
 BTN_STYLE = """
     QPushButton {
@@ -301,6 +302,7 @@ class DownloaderPage(QWidget):
 
         self.thumb_store = ThumbnailStore()
         self.progress_store = get_progress_store()
+        self.settings_store = get_webtoon_settings()
 
         # Clean up any leftover temp folder from a previous crash
         _temp = os.path.join("data", "_download_temp")
@@ -496,7 +498,8 @@ class DownloaderPage(QWidget):
 
             if scraper is not None:
                 try:
-                    self._custom_download(url, output_path)
+                    saved_name = self._custom_download(url, output_path)
+                    self._save_source_url(saved_name, url)
                     self._signals.status_changed.emit(
                         self._active_entry.name if self._active_entry else name,
                         "Completed"
@@ -511,7 +514,8 @@ class DownloaderPage(QWidget):
                     shutil.rmtree(temp_dir, ignore_errors=True)
                 return
 
-            self._gallery_dl_download(url, output_path, name)
+            saved_name = self._gallery_dl_download(url, output_path, name)
+            self._save_source_url(saved_name, url)
 
         except FileNotFoundError:
             self._signals.status_changed.emit(name, "Failed")
@@ -598,6 +602,14 @@ class DownloaderPage(QWidget):
                     continue
 
         raise last_error
+
+    def _save_source_url(self, webtoon_name: str, source_url: str):
+        if not webtoon_name or not source_url:
+            return
+        try:
+            self.settings_store.set_source_url(webtoon_name, source_url)
+        except Exception as e:
+            print(f"Source URL save failed for '{webtoon_name}': {e}")
     
     def _custom_download(self, url: str, output_path: str):
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -721,6 +733,8 @@ class DownloaderPage(QWidget):
             if thumb_path:
                 self._signals.thumbnail_resolved.emit(series_name, thumb_path)
 
+        return series_name
+
     def _gallery_dl_download(self, url: str, output_path: str, name: str):
         temp_dir = os.path.join("data", "_download_temp")
         os.makedirs(temp_dir, exist_ok=True)
@@ -821,7 +835,7 @@ class DownloaderPage(QWidget):
         if self._process.returncode != 0:
             self._signals.status_changed.emit(name, "Failed")
             shutil.rmtree(temp_dir, ignore_errors=True)
-            return
+            raise RuntimeError("gallery-dl exited with a non-zero status")
 
         all_files = sorted([
             f for f in os.listdir(temp_dir)
@@ -831,7 +845,7 @@ class DownloaderPage(QWidget):
         if not all_files:
             shutil.rmtree(temp_dir, ignore_errors=True)
             self._signals.status_changed.emit(name, "Completed")
-            return
+            return name
 
         os.makedirs(target_base, exist_ok=True)
 
@@ -892,6 +906,7 @@ class DownloaderPage(QWidget):
             self._signals.thumbnail_resolved.emit(name, thumb_path)
 
         self._signals.status_changed.emit(name, "Completed")
+        return name
 
     def _on_progress_changed(self, name: str, current: int, total: int):
         if self._active_entry and self._active_entry.name == name:

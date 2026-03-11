@@ -63,3 +63,22 @@ class WebtoonSettingsStore:
             (webtoon_name,)
         )
         conn.commit()
+
+    def get_source_url(self, webtoon_name: str) -> str | None:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT source_url FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        if row is None or not row["source_url"]:
+            return None
+        return str(row["source_url"])
+
+    def set_source_url(self, webtoon_name: str, source_url: str):
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            "UPDATE webtoon_settings SET source_url = ? WHERE webtoon_name = ?",
+            (source_url, webtoon_name)
+        )
+        conn.commit()
