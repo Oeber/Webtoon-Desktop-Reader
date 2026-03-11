@@ -34,6 +34,7 @@ class ContinueDialog(QDialog):
 
     def __init__(self, chapter: str, parent=None):
         super().__init__(parent)
+        self.choice = "cancel"
         self.setWindowTitle("Resume reading?")
         self.setModal(True)
         self.setFixedWidth(360)
@@ -58,18 +59,26 @@ class ContinueDialog(QDialog):
         btn_layout.setSpacing(10)
         restart_btn = QPushButton("Start over")
         restart_btn.setStyleSheet("QPushButton{background:#2e2e2e;color:#ccc;} QPushButton:hover{background:#3a3a3a;}")
-        restart_btn.clicked.connect(self.reject)
+        restart_btn.clicked.connect(self._start_over)
         continue_btn = QPushButton("Continue")
         continue_btn.setStyleSheet("QPushButton{background:#2979ff;color:#fff;} QPushButton:hover{background:#448aff;}")
-        continue_btn.clicked.connect(self.accept)
+        continue_btn.clicked.connect(self._continue)
         btn_layout.addWidget(restart_btn)
         btn_layout.addWidget(continue_btn)
         layout.addLayout(btn_layout)
 
+    def _start_over(self):
+        self.choice = "restart"
+        self.accept()
+
+    def _continue(self):
+        self.choice = "continue"
+        self.accept()
+
 
 class ImageLoader(QObject):
     image_ready = Signal(int, QPixmap)
-    preview_ready = Signal(int, QPixmap, int)  # index, thumb, natural_height
+    preview_ready = Signal(int, QPixmap, int, int)  # index, thumb, natural_width, natural_height
     panel_starts_ready = Signal(int, list)
 
     def __init__(self):
@@ -117,7 +126,7 @@ class ImageLoader(QObject):
             return
         if not self._cancelled:
             thumb = pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
-            self.preview_ready.emit(index, thumb, pixmap.height())
+            self.preview_ready.emit(index, thumb, pixmap.width(), pixmap.height())
 
     def build_panel_starts(self, generation: int, payload: list):
         self.executor.submit(self._panel_task, generation, payload)
@@ -214,6 +223,17 @@ class ChapterPreview(QWidget):
     def notify_image_loaded(self):
         self.update()
 
+    def _scaled_label_height(self, label) -> int:
+        natural_w = getattr(label, '_natural_width', 0)
+        natural_h = getattr(label, '_natural_height', 0)
+        image_width = max(1, int(self.scroll_area.viewport().width() * self._zoom))
+        if natural_w > 0 and natural_h > 0:
+            return max(1, int(image_width * (natural_h / natural_w)))
+        return max(1, label.height())
+
+    def _total_content_height(self) -> int:
+        return sum(self._scaled_label_height(label) for label in self.image_labels)
+
     def _tile_height(self) -> int:
         n = len(self.image_labels)
         if n == 0:
@@ -243,9 +263,10 @@ class ChapterPreview(QWidget):
         scroll_top = self.scroll_area.verticalScrollBar().value()
         cumulative = 0
         for i, label in enumerate(self.image_labels):
-            if cumulative + label.height() > scroll_top:
+            h = self._scaled_label_height(label)
+            if cumulative + h > scroll_top:
                 return i
-            cumulative += label.height()
+            cumulative += h
         return len(self.image_labels) - 1
 
     def paintEvent(self, event):
@@ -265,7 +286,7 @@ class ChapterPreview(QWidget):
         tile_w = FILMSTRIP_W - TILE_PADDING * 2
         for i, label in enumerate(self.image_labels):
             rect = self._tile_rect(i, tile_h)
-            src = getattr(label, '_original_pixmap', None)
+            src = getattr(label, '_preview_pixmap', None) or getattr(label, '_source_pixmap', None)
             if src and not src.isNull():
                 sw, sh = src.width(), src.height()
                 scale = max(tile_w / sw, tile_h / sh)
@@ -311,7 +332,7 @@ class ChapterPreview(QWidget):
         strip_h = self.height()
         strip_rect = QRect(strip_x, 0, strip_w, strip_h)
 
-        total_content_h = sum(lbl.height() for lbl in self.image_labels)
+        total_content_h = self._total_content_height()
         if total_content_h == 0:
             painter.fillRect(strip_rect, QColor("#2a2a2a"))
             return
@@ -330,7 +351,7 @@ class ChapterPreview(QWidget):
 
         cumulative = 0
         for lbl in self.image_labels:
-            img_h = lbl.height()
+            img_h = self._scaled_label_height(lbl)
             img_top = cumulative
             img_bot = cumulative + img_h
             cumulative += img_h
@@ -338,7 +359,7 @@ class ChapterPreview(QWidget):
             if img_bot <= content_top or img_top >= content_bot:
                 continue
 
-            src = getattr(lbl, '_original_pixmap', None)
+            src = getattr(lbl, '_preview_pixmap', None) or getattr(lbl, '_source_pixmap', None)
 
             src_frac_top = max(0.0, (content_top - img_top) / img_h) if img_h else 0.0
             src_frac_bot = min(1.0, (content_bot - img_top) / img_h) if img_h else 1.0
@@ -377,14 +398,14 @@ class ChapterPreview(QWidget):
     def _jump_to_image(self, index: int):
         if not self.image_labels or index >= len(self.image_labels):
             return
-        cumulative = sum(self.image_labels[i].height() for i in range(index))
+        cumulative = sum(self._scaled_label_height(self.image_labels[i]) for i in range(index))
         bar = self.scroll_area.verticalScrollBar()
         bar.setValue(max(0, min(cumulative, bar.maximum())))
 
     def _scrub_strip_to_y(self, widget_y: int):
         if not self.image_labels:
             return
-        total_content_h = sum(lbl.height() for lbl in self.image_labels)
+        total_content_h = self._total_content_height()
         if total_content_h == 0:
             return
 
@@ -442,6 +463,7 @@ class ViewerPage(QWidget):
         self._restore_image_index = None
         self._restore_image_offset = 0.0
         self._resize_packed = None
+        self._resize_anchor_px = 0
 
         self._pending_batch: dict[int, QPixmap] = {}
 
@@ -641,12 +663,24 @@ class ViewerPage(QWidget):
         self._zoom_reset_btn.setEnabled(self._zoom_override_active)
 
     def _current_packed_position(self) -> float:
+        return self._packed_position_at(self.scroll.verticalScrollBar().value())
+
+    def _scaled_label_height(self, label, zoom: float | None = None) -> int:
+        natural_w = getattr(label, '_natural_width', 0)
+        natural_h = getattr(label, '_natural_height', 0)
+        zoom = self._zoom if zoom is None else zoom
+        if natural_w > 0 and natural_h > 0:
+            image_width = max(1, int(self.scroll.viewport().width() * zoom))
+            return max(1, int(image_width * (natural_h / natural_w)))
+        return max(1, label.height())
+
+    def _packed_position_at(self, scroll_top: int, zoom: float | None = None) -> float:
         if not self.image_labels:
             return 0.0
-        scroll_top = self.scroll.verticalScrollBar().value()
+        scroll_top = max(0, scroll_top)
         cumulative = 0
         for i, label in enumerate(self.image_labels):
-            h = label.height()
+            h = self._scaled_label_height(label, zoom)
             if cumulative + h > scroll_top:
                 offset_frac = ((scroll_top - cumulative) / h) if h > 0 else 0.0
                 return i + offset_frac
@@ -684,16 +718,14 @@ class ViewerPage(QWidget):
         if self._jump_to_packed(idx, self._restore_image_offset):
             self._restore_image_index = None
 
-    def _jump_to_packed(self, idx: int, offset_frac: float) -> bool:
-        cumulative = sum(self.image_labels[i].height() for i in range(idx))
-        target_px = cumulative + int(self.image_labels[idx].height() * offset_frac)
+    def _jump_to_packed(self, idx: int, offset_frac: float, anchor_px: int = 0) -> bool:
+        cumulative = sum(self._scaled_label_height(self.image_labels[i]) for i in range(idx))
+        target_px = cumulative + int(self._scaled_label_height(self.image_labels[idx]) * offset_frac) - max(0, anchor_px)
 
         QApplication.processEvents()
 
         bar = self.scroll.verticalScrollBar()
-        if target_px > bar.maximum():
-            bar.setMaximum(target_px)
-        bar.setValue(target_px)
+        bar.setValue(max(0, min(target_px, bar.maximum())))
 
         return not (bar.value() < target_px - 5)
 
@@ -706,7 +738,8 @@ class ViewerPage(QWidget):
         if not self._did_immediate_first_paint and not self._pending_batch:
             label = self.image_labels[index]
             label._source_pixmap = pixmap
-            label._original_pixmap = pixmap
+            label._natural_width = pixmap.width()
+            label._natural_height = pixmap.height()
             self._apply_pixmap_to_label(label)
 
             self._did_immediate_first_paint = True
@@ -737,7 +770,8 @@ class ViewerPage(QWidget):
                     continue
                 label = self.image_labels[index]
                 label._source_pixmap = pixmap
-                label._original_pixmap = pixmap
+                label._natural_width = pixmap.width()
+                label._natural_height = pixmap.height()
                 self._apply_pixmap_to_label(label)
                 if restore_idx is not None and index <= restore_idx:
                     needs_restore_check = True
@@ -758,7 +792,7 @@ class ViewerPage(QWidget):
                 and idx < len(self.image_labels)
                 and getattr(self.image_labels[idx], '_source_pixmap', None) is not None
             ):
-                self._jump_to_packed(idx, frac)
+                self._jump_to_packed(idx, frac, self._resize_anchor_px)
                 self._resize_packed = None
 
         if needs_restore_check:
@@ -781,8 +815,12 @@ class ViewerPage(QWidget):
         packed = 0.0
         if saved_scroll > 0.005:
             dlg = ContinueDialog(chapter, parent=self)
-            if dlg.exec() == QDialog.Accepted:
+            if dlg.exec() != QDialog.Accepted:
+                return
+            if dlg.choice == "continue":
                 packed = saved_scroll
+            elif dlg.choice != "restart":
+                return
 
         self._unpack_restore(packed)
         self._load_chapter_no_prompt(index)
@@ -852,6 +890,10 @@ class ViewerPage(QWidget):
         for img_file in image_files:
             label = QLabel()
             label.img_path = os.path.join(chapter_path, img_file)
+            label._source_pixmap = None
+            label._preview_pixmap = None
+            label._natural_width = 0
+            label._natural_height = 0
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumHeight(400)
             self.image_layout.addWidget(label)
@@ -886,7 +928,7 @@ class ViewerPage(QWidget):
 
         cumulative = 0
         for i, label in enumerate(self.image_labels):
-            h = label.height()
+            h = self._scaled_label_height(label)
             pos = cumulative
             cumulative += h
 
@@ -920,6 +962,7 @@ class ViewerPage(QWidget):
         self._zoom_reset_btn.setEnabled(True)
 
     def _set_zoom(self, zoom: float, update_slider: bool = True):
+        previous_zoom = self._zoom
         self._zoom = max(0.25, min(1.0, zoom))
 
         self._zoom_slider.blockSignals(True)
@@ -929,7 +972,7 @@ class ViewerPage(QWidget):
         self._zoom_label.setText(f"{int(self._zoom * 100)}%")
 
         self.preview.set_zoom(self._zoom)
-        self.rescale_images()
+        self.rescale_images(previous_zoom)
 
     def _image_width(self) -> int:
         return max(1, int(self.scroll.viewport().width() * self._zoom))
@@ -939,17 +982,16 @@ class ViewerPage(QWidget):
         if src is None or src.isNull():
             return
         scaled = src.scaledToWidth(self._image_width(), Qt.SmoothTransformation)
-        label._original_pixmap = scaled
         label.setPixmap(scaled)
         label.setFixedHeight(scaled.height())
 
-    def rescale_images(self):
+    def rescale_images(self, previous_zoom: float | None = None):
         # Capture position as a fraction of total content height — this is
         # invariant across rescales, unlike packed position which depends on
         # individual label heights that are about to change.
         bar = self.scroll.verticalScrollBar()
-        total_before = sum(lbl.height() for lbl in self.image_labels)
-        scroll_frac = (bar.value() / total_before) if total_before > 0 else 0.0
+        self._resize_anchor_px = 0
+        self._resize_packed = self._packed_position_at(bar.value(), previous_zoom)
 
         self.container.setUpdatesEnabled(False)
         try:
@@ -960,8 +1002,12 @@ class ViewerPage(QWidget):
 
         # Defer the jump so Qt finishes reflowing label geometry first.
         def _restore():
-            total_after = sum(lbl.height() for lbl in self.image_labels)
-            bar.setValue(max(0, min(int(scroll_frac * total_after), bar.maximum())))
+            if self._resize_packed is None or not self.image_labels:
+                return
+            idx = int(self._resize_packed)
+            frac = self._resize_packed - idx
+            if idx < len(self.image_labels):
+                self._jump_to_packed(idx, frac, self._resize_anchor_px)
 
         QTimer.singleShot(0, _restore)
 
@@ -1056,7 +1102,7 @@ class ViewerPage(QWidget):
 
         for label in self.image_labels:
             src = getattr(label, '_source_pixmap', None)
-            h = label.height()
+            h = self._scaled_label_height(label)
             path = getattr(label, 'img_path', None)
 
             if src is None or src.isNull() or h <= 0 or not path:
@@ -1082,18 +1128,18 @@ class ViewerPage(QWidget):
         self._panel_starts = starts
         self._panel_starts_dirty = False
 
-    def _on_preview_ready(self, index: int, pixmap: QPixmap, natural_h: int):
+    def _on_preview_ready(self, index: int, pixmap: QPixmap, natural_w: int, natural_h: int):
         """Thumbnail arrived — store it and set correct label height if not yet loaded."""
         if index >= len(self.image_labels):
             return
         label = self.image_labels[index]
-        if getattr(label, '_original_pixmap', None) is None:
-            label._original_pixmap = pixmap
-            # Set the correct scaled height based on actual image proportions.
-            if natural_h > 0 and pixmap.width() > 0:
-                aspect = natural_h / (pixmap.width() * (1.0 / self._zoom))
-                scaled_h = max(100, int(self._image_width() * aspect))
-                label.setFixedHeight(scaled_h)
+        label._preview_pixmap = pixmap
+        label._natural_width = natural_w
+        label._natural_height = natural_h
+        if getattr(label, '_source_pixmap', None) is None and natural_w > 0 and natural_h > 0:
+            aspect = natural_h / natural_w
+            scaled_h = max(100, int(self._image_width() * aspect))
+            label.setFixedHeight(scaled_h)
         self.preview.notify_image_loaded()
 
     def _get_panel_starts(self) -> list[int]:
@@ -1102,7 +1148,7 @@ class ViewerPage(QWidget):
         return self._panel_starts
 
     def _total_content_height(self) -> int:
-        return sum(label.height() for label in self.image_labels)
+        return sum(self._scaled_label_height(label) for label in self.image_labels)
 
     def _merge_close_targets(self, targets: list[int], min_gap: int) -> list[int]:
         if not targets:

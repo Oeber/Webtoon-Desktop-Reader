@@ -1,4 +1,5 @@
 import io
+import json
 from pathlib import Path
 import urllib.error
 import urllib.request
@@ -91,6 +92,46 @@ class WebtoonSettingsStore:
             (int(value), webtoon_name)
         )
         conn.commit()
+
+    def get_bookmarked_chapters(self, webtoon_name: str) -> set[str]:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT bookmarked_chapters FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        if row is None or not row["bookmarked_chapters"]:
+            return set()
+
+        try:
+            data = json.loads(row["bookmarked_chapters"])
+        except (TypeError, json.JSONDecodeError):
+            return set()
+
+        if not isinstance(data, list):
+            return set()
+        return {str(chapter) for chapter in data}
+
+    def set_bookmarked_chapters(self, webtoon_name: str, chapters: set[str] | list[str]):
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        payload = json.dumps(sorted({str(chapter) for chapter in chapters}))
+        conn.execute(
+            "UPDATE webtoon_settings SET bookmarked_chapters = ? WHERE webtoon_name = ?",
+            (payload, webtoon_name)
+        )
+        conn.commit()
+
+    def toggle_bookmarked_chapter(self, webtoon_name: str, chapter: str) -> bool:
+        bookmarks = self.get_bookmarked_chapters(webtoon_name)
+        if chapter in bookmarks:
+            bookmarks.remove(chapter)
+            is_bookmarked = False
+        else:
+            bookmarks.add(chapter)
+            is_bookmarked = True
+
+        self.set_bookmarked_chapters(webtoon_name, bookmarks)
+        return is_bookmarked
 
     def get_zoom_override(self, webtoon_name: str) -> float | None:
         conn = get_connection()
@@ -220,14 +261,15 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, zoom_override, custom_thumbnail, source_url)
-               VALUES (?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, zoom_override, custom_thumbnail, source_url, bookmarked_chapters)
+               VALUES (?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
                 row["zoom_override"],
                 custom_path,
                 row["source_url"],
+                row["bookmarked_chapters"],
             )
         )
         conn.execute(

@@ -2,7 +2,7 @@ import re
 
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea
+    QPushButton, QScrollArea, QToolButton
 )
 from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
 from PySide6.QtCore import Qt, QPoint, QSize
@@ -70,6 +70,8 @@ class DetailPage(QWidget):
         self.progress_store = None
         self.progress_map   = {}
         self.hide_specials  = False
+        self.show_only_bookmarked = False
+        self.bookmarked_chapters = set()
         self.settings_store = get_webtoon_settings()
 
         self.setStyleSheet("background-color: #121212;")
@@ -258,8 +260,37 @@ class DetailPage(QWidget):
         """)
         self.hide_specials_btn.clicked.connect(self._toggle_hide_specials)
 
+        self.bookmarks_filter_btn = QPushButton("  Bookmarked")
+        self.bookmarks_filter_btn.setIcon(qta.icon("fa5s.star", color="#888888"))
+        self.bookmarks_filter_btn.setIconSize(QSize(12, 12))
+        self.bookmarks_filter_btn.setCursor(Qt.PointingHandCursor)
+        self.bookmarks_filter_btn.setCheckable(True)
+        self.bookmarks_filter_btn.setFixedHeight(24)
+        self.bookmarks_filter_btn.setStyleSheet("""
+        QPushButton {
+            background: transparent;
+            color: #888;
+            border: 1px solid #2a2a2a;
+            border-radius: 4px;
+            padding: 2px 8px;
+            font-size: 11px;
+        }
+        QPushButton:hover {
+            background: #1a1a1a;
+            color: #fff;
+        }
+        QPushButton:checked {
+            background: #2f2815;
+            color: #f5c451;
+            border-color: #f5c451;
+        }
+        """)
+        self.bookmarks_filter_btn.clicked.connect(self._toggle_bookmarks_filter)
+
         sh_layout.addWidget(chapters_lbl)
         sh_layout.addStretch()
+        sh_layout.addWidget(self.bookmarks_filter_btn)
+        sh_layout.addSpacing(6)
         sh_layout.addWidget(self.hide_specials_btn)
         sh_layout.addSpacing(6)
         sh_layout.addWidget(self.sort_btn)
@@ -295,6 +326,9 @@ class DetailPage(QWidget):
         self.webtoon        = webtoon
         self.progress_store = progress_store
         self.progress_map   = progress_store.get_progress_map(webtoon.name)
+        self.bookmarked_chapters = self.settings_store.get_bookmarked_chapters(webtoon.name)
+        self.show_only_bookmarked = False
+        self.bookmarks_filter_btn.setChecked(False)
 
         # Restore per-webtoon hide-filler setting
         self.hide_specials = self.settings_store.get_hide_filler(webtoon.name)
@@ -305,18 +339,7 @@ class DetailPage(QWidget):
 
         self.bar_title.setText(webtoon.name)
         self.title_label.setText(webtoon.name)
-
-        # Count only non-special chapters for the label (respects current toggle)
-        visible_count = self._visible_chapters_count(webtoon.chapters)
-        total_count   = len(webtoon.chapters)
-        if visible_count < total_count:
-            self.chapter_count_label.setText(
-                f"{visible_count} chapters ({total_count - visible_count} special hidden)"
-                if self.hide_specials else
-                f"{total_count} chapters"
-            )
-        else:
-            self.chapter_count_label.setText(f"{total_count} chapters")
+        self._update_chapter_count_label()
 
         # Thumbnail
         pixmap = QPixmap(webtoon.thumbnail)
@@ -372,6 +395,8 @@ class DetailPage(QWidget):
 
         if self.hide_specials:
             chapters = [c for c in chapters if not _SPECIAL_CHAPTER_RE.search(c)]
+        if self.show_only_bookmarked:
+            chapters = [c for c in chapters if c in self.bookmarked_chapters]
 
         if self.sort_latest_first:
             chapters = list(reversed(chapters))
@@ -401,6 +426,29 @@ class DetailPage(QWidget):
         name_lbl.setStyleSheet(f"color: {color}; font-size: 14px; border: none;")
         layout.addWidget(name_lbl, 1)
 
+        bookmark_btn = QToolButton()
+        bookmark_btn.setCursor(Qt.PointingHandCursor)
+        bookmark_btn.setAutoRaise(True)
+        bookmark_btn.setCheckable(True)
+        bookmark_btn.setChecked(chapter in self.bookmarked_chapters)
+        bookmark_btn.setIconSize(QSize(14, 14))
+        bookmark_btn.setStyleSheet("""
+            QToolButton {
+                border: none;
+                padding: 4px;
+                background: transparent;
+            }
+            QToolButton:hover {
+                background: #222222;
+                border-radius: 8px;
+            }
+        """)
+        self._apply_bookmark_icon(bookmark_btn, bookmark_btn.isChecked())
+        bookmark_btn.clicked.connect(
+            lambda checked, ch=chapter, btn=bookmark_btn: self._toggle_chapter_bookmark(ch, btn)
+        )
+        layout.addWidget(bookmark_btn)
+
         # ── Last-read bookmark icon (new) ─────────────────────────────────
         if is_last_read:
             bookmark = QLabel()
@@ -426,6 +474,63 @@ class DetailPage(QWidget):
         """Count chapters that are not special (.5-style) chapters."""
         return sum(1 for c in chapters if not _SPECIAL_CHAPTER_RE.search(c))
 
+    def _filtered_chapters(self) -> list[str]:
+        if self.webtoon is None:
+            return []
+
+        chapters = list(self.webtoon.chapters)
+        if self.hide_specials:
+            chapters = [c for c in chapters if not _SPECIAL_CHAPTER_RE.search(c)]
+        if self.show_only_bookmarked:
+            chapters = [c for c in chapters if c in self.bookmarked_chapters]
+        return chapters
+
+    def _update_chapter_count_label(self):
+        if self.webtoon is None:
+            self.chapter_count_label.clear()
+            return
+
+        total_count = len(self.webtoon.chapters)
+        visible_count = len(self._filtered_chapters())
+        hidden_specials = total_count - self._visible_chapters_count(self.webtoon.chapters)
+
+        if self.show_only_bookmarked:
+            parts = [f"{visible_count} chapters shown"]
+        elif self.hide_specials and hidden_specials > 0:
+            parts = [f"{visible_count} chapters"]
+        else:
+            parts = [f"{total_count} chapters"]
+        if self.hide_specials and hidden_specials > 0:
+            parts.append(f"{hidden_specials} special hidden")
+        if self.show_only_bookmarked:
+            parts.append(f"{len(self.bookmarked_chapters)} bookmarked")
+
+        self.chapter_count_label.setText(" | ".join(parts))
+
+    def _apply_bookmark_icon(self, button: QToolButton, is_bookmarked: bool):
+        color = "#f5c451" if is_bookmarked else "#666666"
+        button.setIcon(qta.icon("fa5s.star", color=color))
+
+    def _toggle_chapter_bookmark(self, chapter: str, button: QToolButton):
+        if self.webtoon is None:
+            return
+
+        is_bookmarked = self.settings_store.toggle_bookmarked_chapter(self.webtoon.name, chapter)
+        if is_bookmarked:
+            self.bookmarked_chapters.add(chapter)
+        else:
+            self.bookmarked_chapters.discard(chapter)
+
+        button.blockSignals(True)
+        button.setChecked(is_bookmarked)
+        button.blockSignals(False)
+        self._apply_bookmark_icon(button, is_bookmarked)
+        self._update_chapter_count_label()
+
+        if self.show_only_bookmarked:
+            progress = self.progress_store.get(self.webtoon.name)
+            self._build_chapter_list(progress)
+
     def _toggle_hide_specials(self):
         self.hide_specials = self.hide_specials_btn.isChecked()
         icon_name = "fa5s.eye-slash" if self.hide_specials else "fa5s.eye"
@@ -434,15 +539,14 @@ class DetailPage(QWidget):
 
         if self.webtoon:
             self.settings_store.set_hide_filler(self.webtoon.name, self.hide_specials)
-            total_count   = len(self.webtoon.chapters)
-            visible_count = self._visible_chapters_count(self.webtoon.chapters)
-            if self.hide_specials and visible_count < total_count:
-                self.chapter_count_label.setText(
-                    f"{visible_count} chapters ({total_count - visible_count} special hidden)"
-                )
-            else:
-                self.chapter_count_label.setText(f"{total_count} chapters")
+            self._update_chapter_count_label()
 
+        progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
+        self._build_chapter_list(progress)
+
+    def _toggle_bookmarks_filter(self):
+        self.show_only_bookmarked = self.bookmarks_filter_btn.isChecked()
+        self._update_chapter_count_label()
         progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
         self._build_chapter_list(progress)
 

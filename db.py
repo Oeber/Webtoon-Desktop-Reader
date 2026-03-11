@@ -53,7 +53,8 @@ def _create_schema(conn: sqlite3.Connection):
             hide_filler       INTEGER NOT NULL DEFAULT 0,
             zoom_override     REAL,
             custom_thumbnail  TEXT,
-            source_url        TEXT
+            source_url        TEXT,
+            bookmarked_chapters TEXT
         );
     """)
     conn.commit()
@@ -70,6 +71,7 @@ def _migrate_columns(conn: sqlite3.Connection):
         ("zoom_override",    "REAL"),
         ("custom_thumbnail", "TEXT"),
         ("source_url",       "TEXT"),
+        ("bookmarked_chapters", "TEXT"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE webtoon_settings ADD COLUMN {col} {definition}")
