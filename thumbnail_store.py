@@ -1,9 +1,3 @@
-"""
-thumbnail_store.py
-Manages custom thumbnail overrides backed by SQLite (data/reader.db).
-Public API is identical to the old JSON-backed version.
-"""
-
 from db import get_connection
 
 

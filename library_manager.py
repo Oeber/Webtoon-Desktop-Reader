@@ -1,11 +1,3 @@
-"""
-library_manager.py
-Scans the webtoon library folder and generates thumbnails.
-Auto-thumbnail logic: scan the first chapter's first image row-by-row and
-find the first fully black or white horizontal line — that marks the end of
-the cover/first page. Falls back to 1000px if no such line is found.
-"""
-
 import os
 import re
 

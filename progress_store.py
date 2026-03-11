@@ -1,11 +1,3 @@
-"""
-progress_store.py
-Manages per-webtoon reading progress backed by SQLite (data/reader.db).
-Public API is identical to the old JSON-backed version.
-
-Always use get_instance() — never instantiate ProgressStore directly.
-"""
-
 from db import get_connection
 
 _instance = None

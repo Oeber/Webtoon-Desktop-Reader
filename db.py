@@ -1,17 +1,3 @@
-"""
-db.py
-Owns the single SQLite connection for the app.
-All other stores import `get_connection()` from here.
-
-Database file: data/reader.db
-Schema:
-    thumbnails  – custom thumbnail overrides  (replaces data/thumbnails.json)
-    progress    – reading progress per webtoon (replaces data/progress.json)
-
-On first run this module also migrates any existing JSON files into the
-database so users don't lose their data, then renames them to .bak.
-"""
-
 import json
 import os
 import sqlite3
