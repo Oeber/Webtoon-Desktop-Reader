@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication, QSlider
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 
 from progress_store import get_instance as get_progress_store
@@ -600,7 +600,13 @@ class ViewerPage(QWidget):
             self.container.setUpdatesEnabled(True)
 
         self.preview.notify_image_loaded()
+        self._invalidate_panel_cache()
         self.check_visible_images()
+
+        # Warm the panel-skip cache in the background so first keypress is instant
+        self._warm_panel_cache()
+        # Kick off panel cache build in background so first keypress is instant
+        QTimer.singleShot(0, self._warm_panel_cache)
 
         if self._resize_packed is not None:
             idx  = int(self._resize_packed)
@@ -670,6 +676,7 @@ class ViewerPage(QWidget):
         self.scroll.setWidget(self.container)
 
         self.preview.set_image_labels([])
+        self._invalidate_panel_cache()
 
     def _load_chapter_images(self, chapter):
         self.clear_images()
@@ -822,13 +829,118 @@ class ViewerPage(QWidget):
     #  Keyboard navigation                                                 #
     # ------------------------------------------------------------------ #
 
+    _panel_starts: list[int] = []
+    _panel_starts_dirty: bool = True
+
+    def _invalidate_panel_cache(self):
+        self._panel_starts_dirty = True
+
+    def _is_blank_row(self, image, y: int, sample_step: int = 10) -> bool:
+        """
+        A row is blank if it has very low luminance variance AND is near
+        uniform white or black. Speech bubbles and dialogue text have
+        high variance even on white backgrounds, so they read as content.
+        """
+        w = image.width()
+        if w == 0:
+            return True
+        lums = []
+        for x in range(0, w, sample_step):
+            c   = image.pixelColor(x, y)
+            lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
+            lums.append(lum)
+        if not lums:
+            return True
+        avg      = sum(lums) / len(lums)
+        variance = sum((l - avg) ** 2 for l in lums) / len(lums)
+        # Must be near-white or near-black AND have very low variance
+        is_extreme = avg < 0.12 or avg > 0.88
+        is_uniform = variance < 0.003
+        return is_extreme and is_uniform
+
+    def _build_panel_starts(self):
+        """
+        Build a sorted list of doc-y positions where content begins after
+        a blank gap. Cached until images change.
+        """
+        MIN_BLANK = 25
+        ROW_STEP  = 3
+
+        starts     = [0]
+        cumulative = 0
+
+        for label in self.image_labels:
+            h   = label.height()
+            src = getattr(label, '_source_pixmap', None)
+
+            if src is None or src.isNull() or h == 0:
+                cumulative += h
+                continue
+
+            img   = src.toImage()
+            ih    = img.height()
+            scale = ih / h
+
+            in_blank  = self._is_blank_row(img, 0)
+            blank_run = 0
+
+            for doc_y in range(ROW_STEP, h, ROW_STEP):
+                src_y    = min(ih - 1, int(doc_y * scale))
+                is_blank = self._is_blank_row(img, src_y)
+
+                if is_blank:
+                    blank_run += ROW_STEP
+                else:
+                    if in_blank and blank_run >= MIN_BLANK:
+                        starts.append(cumulative + doc_y)
+                    blank_run = 0
+
+                in_blank = is_blank
+
+            cumulative += h
+
+        self._panel_starts       = sorted(set(starts))
+        self._panel_starts_dirty = False
+
+    def _get_panel_starts(self) -> list[int]:
+        if self._panel_starts_dirty:
+            self._build_panel_starts()
+        return self._panel_starts
+
+    def _warm_panel_cache(self):
+        """Build the panel cache on a background thread so first keypress is instant."""
+        import threading
+        threading.Thread(target=self._build_panel_starts, daemon=True).start()
+
+    def _jump_to_panel(self, panel_y: int):
+        """Scroll so panel_y sits near the top of the viewport with a small margin."""
+        MARGIN = 12
+        self.scroll.verticalScrollBar().setValue(max(0, panel_y - MARGIN))
+
     def keyPressEvent(self, event):
-        key = event.key()
-        bar = self.scroll.verticalScrollBar()
+        key    = event.key()
+        bar    = self.scroll.verticalScrollBar()
+        view_h = self.scroll.viewport().height()
+        pos    = bar.value()
+
         if key == Qt.Key_Down:
-            bar.setValue(bar.value() + self.scroll.viewport().height())
+            starts = self._get_panel_starts()
+            # Find the next panel start clearly past the current viewport
+            next_panel = next((s for s in starts if s > pos + view_h * 0.75), None)
+            if next_panel is not None:
+                self._jump_to_panel(next_panel)
+            else:
+                bar.setValue(pos + view_h)
+
         elif key == Qt.Key_Up:
-            bar.setValue(bar.value() - self.scroll.viewport().height())
+            starts = self._get_panel_starts()
+            # Find the last panel start clearly above current pos
+            prev_panel = next((s for s in reversed(starts) if s < pos - view_h * 0.1), None)
+            if prev_panel is not None:
+                self._jump_to_panel(prev_panel)
+            else:
+                bar.setValue(max(0, pos - view_h))
+
         elif key == Qt.Key_Right:
             if self.current_chapter_index < len(self.webtoon.chapters) - 1:
                 self._progress_save_timer.stop()
@@ -856,20 +968,22 @@ class ViewerPage(QWidget):
         if obj == self.scroll.viewport():
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
                 if self.auto_scroll:
-                    # Second MMB click stops scroll
                     self.auto_scroll = False
                     self.scroll_timer.stop()
+                    self.scroll.viewport().unsetCursor()
                     self.scroll.viewport().update()
                 else:
                     self.auto_scroll = True
                     self.auto_scroll_origin = event.pos()
                     self.current_mouse_pos  = event.pos()
+                    self.scroll.viewport().setCursor(Qt.SizeAllCursor)
                     self.scroll_timer.start(16)
+                self.setFocus()
                 return True
 
             if event.type() == QEvent.MouseMove and self.auto_scroll:
                 self.current_mouse_pos = event.pos()
-                self.scroll.viewport().update()   # repaint crosshair
+                self.scroll.viewport().update()
                 return True
 
             if (event.type() == QEvent.MouseButtonPress
@@ -877,36 +991,34 @@ class ViewerPage(QWidget):
                     and self.auto_scroll):
                 self.auto_scroll = False
                 self.scroll_timer.stop()
+                self.scroll.viewport().unsetCursor()
                 self.scroll.viewport().update()
+                self.setFocus()
 
             if event.type() == QEvent.Paint and self.auto_scroll:
-                # Draw origin crosshair over the viewport
                 painter = QPainter(self.scroll.viewport())
                 painter.setRenderHint(QPainter.Antialiasing)
                 ox = self.auto_scroll_origin.x()
                 oy = self.auto_scroll_origin.y()
                 dy = self.current_mouse_pos.y() - oy
 
-                # Deadzone circle
                 DEADZONE = 8
                 painter.setPen(QPen(QColor(255, 255, 255, 160), 1))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawEllipse(QPoint(ox, oy), DEADZONE, DEADZONE)
 
-                # Direction arrow when outside deadzone
                 if abs(dy) > DEADZONE:
                     arrow_y = oy + (DEADZONE if dy > 0 else -DEADZONE)
                     tip_y   = oy + (DEADZONE + 6 if dy > 0 else -DEADZONE - 6)
                     painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
                     painter.drawLine(ox, arrow_y, ox, tip_y)
-                    # Arrowhead
                     if dy > 0:
                         painter.drawLine(ox, tip_y, ox - 4, tip_y - 5)
                         painter.drawLine(ox, tip_y, ox + 4, tip_y - 5)
                     else:
                         painter.drawLine(ox, tip_y, ox - 4, tip_y + 5)
                         painter.drawLine(ox, tip_y, ox + 4, tip_y + 5)
-                return False   # let Qt finish its own paint pass
+                return False
 
         return super().eventFilter(obj, event)
 
@@ -914,8 +1026,8 @@ class ViewerPage(QWidget):
         dy = self.current_mouse_pos.y() - self.auto_scroll_origin.y()
         DEADZONE = 8
         if abs(dy) <= DEADZONE:
-            return   # no movement inside deadzone
-        # Quadratic feel: slow near origin, faster further away
+            return
         speed = ((abs(dy) - DEADZONE) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar   = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
+        self.setFocus()
