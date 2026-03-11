@@ -4,10 +4,16 @@
 *.md
 *.db
 *.bak
-*.json
+*.json 
+
+!/scrapers 
 
 webtoons/*
 data/*
 __pycache__/*
 data/thumbnails/*
 teste/*
+scrapers/sites/*
+ 
+!/scrapers/sites
+!/scrapers/sites/__init__.py
