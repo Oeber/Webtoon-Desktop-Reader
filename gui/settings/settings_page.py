@@ -96,6 +96,9 @@ class SettingsPage(QWidget):
         super().__init__()
         self.main_window = main_window
         self._last_log_stamp = None
+        self._last_log_path = None
+        self._last_log_size = 0
+        self._logs_loaded = False
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -119,7 +122,6 @@ class SettingsPage(QWidget):
         self._log_refresh_timer = QTimer(self)
         self._log_refresh_timer.timeout.connect(self._refresh_logs_if_changed)
         self._log_refresh_timer.start(1500)
-        self._refresh_logs(force=True)
 
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
@@ -343,7 +345,10 @@ class SettingsPage(QWidget):
 
     def _on_tab_changed(self, index: int):
         if self.tabs.tabText(index) == "Logs":
-            self._refresh_logs(force=True)
+            if not self._logs_loaded:
+                QTimer.singleShot(0, lambda: self._refresh_logs(force=True))
+            else:
+                self._refresh_logs(force=False)
 
     def _refresh_logs_if_changed(self):
         if self.tabs.currentWidget() is not getattr(self, "logs_tab", None):
@@ -353,17 +358,16 @@ class SettingsPage(QWidget):
     def _refresh_logs(self, force: bool = False):
         path = current_log_path()
         archives = archived_log_paths()
-        stamp = None
+        errors_only = self.errors_only_checkbox.isChecked()
 
         if path.exists():
             stat = path.stat()
-            stamp = (stat.st_mtime_ns, stat.st_size, self.errors_only_checkbox.isChecked())
+            stamp = (str(path), stat.st_mtime_ns, stat.st_size, errors_only)
         else:
-            stamp = ("missing", self.errors_only_checkbox.isChecked())
+            stamp = ("missing", errors_only)
 
         if not force and stamp == self._last_log_stamp:
             return
-        self._last_log_stamp = stamp
 
         self.log_meta_label.setText(
             f"Current file: {path} | Archived sessions kept: {len(archives)}"
@@ -371,7 +375,41 @@ class SettingsPage(QWidget):
 
         if not path.exists():
             self.log_view.setHtml("<span style='color:#888888;'>No log file created yet.</span>")
+            self._last_log_stamp = stamp
+            self._last_log_path = str(path)
+            self._last_log_size = 0
+            self._logs_loaded = True
             return
+
+        incremental_allowed = (
+            not force
+            and self._logs_loaded
+            and not errors_only
+            and self._last_log_path == str(path)
+            and self._last_log_stamp is not None
+            and len(stamp) >= 4
+            and len(self._last_log_stamp) >= 4
+            and stamp[2] >= self._last_log_size
+        )
+
+        if incremental_allowed:
+            try:
+                appended_text = self._read_log_tail(path, self._last_log_size)
+            except OSError as exc:
+                logger.error("Failed to read appended log lines", exc_info=exc)
+                appended_text = None
+            if appended_text is not None:
+                if appended_text:
+                    cursor = self.log_view.textCursor()
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    cursor.insertHtml(self._render_log_html(appended_text, errors_only))
+                    cursor.movePosition(QTextCursor.MoveOperation.End)
+                    self.log_view.setTextCursor(cursor)
+                self._last_log_stamp = stamp
+                self._last_log_path = str(path)
+                self._last_log_size = stamp[2]
+                self._logs_loaded = True
+                return
 
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -380,12 +418,26 @@ class SettingsPage(QWidget):
             self.log_view.setHtml(
                 f"<span style='color:#ef4444;'>Failed to read log file: {html.escape(str(exc))}</span>"
             )
+            self._last_log_stamp = stamp
+            self._last_log_path = str(path)
+            self._last_log_size = 0
+            self._logs_loaded = True
             return
 
-        self.log_view.setHtml(self._render_log_html(text, self.errors_only_checkbox.isChecked()))
+        self.log_view.setHtml(self._render_log_html(text, errors_only))
         cursor = self.log_view.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.log_view.setTextCursor(cursor)
+        self._last_log_stamp = stamp
+        self._last_log_path = str(path)
+        self._last_log_size = stamp[2]
+        self._logs_loaded = True
+
+    def _read_log_tail(self, path, start: int) -> str:
+        with path.open("rb") as handle:
+            handle.seek(max(0, int(start)))
+            data = handle.read()
+        return data.decode("utf-8", errors="replace")
 
     def _render_log_html(self, text: str, errors_only: bool) -> str:
         lines = text.splitlines()

@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QToolButton, QMessageBox
 )
-from PySide6.QtGui import QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
 from PySide6.QtCore import Qt, QPoint, QSize, QTimer
 
 import qtawesome as qta
@@ -421,6 +421,9 @@ class DetailPage(QWidget):
         root.addWidget(self.chapter_scroll, 1)
         root.addWidget(self.chapter_batch_bar)
 
+    def _chapter_selection_visible(self) -> bool:
+        return bool(self.selected_chapters)
+
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
     # ------------------------------------------------------------------ #
@@ -528,6 +531,13 @@ class DetailPage(QWidget):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(12)
 
+        select_slot = QWidget()
+        select_slot.setFixedWidth(22)
+        select_slot.setStyleSheet("background: transparent; border: none;")
+        select_slot_layout = QHBoxLayout(select_slot)
+        select_slot_layout.setContentsMargins(0, 0, 0, 0)
+        select_slot_layout.setSpacing(0)
+
         select_btn = QToolButton()
         select_btn.setCursor(Qt.PointingHandCursor)
         select_btn.setAutoRaise(True)
@@ -545,11 +555,14 @@ class DetailPage(QWidget):
                 border-radius: 8px;
             }
         """)
+        select_btn.setProperty("chapter_name", chapter)
         self._apply_select_icon(select_btn, select_btn.isChecked())
+        self._set_chapter_select_visibility(row, select_btn, force=self._chapter_selection_visible())
         select_btn.clicked.connect(
             lambda checked, ch=chapter, btn=select_btn: self._toggle_chapter_selected(ch, btn, checked)
         )
-        layout.addWidget(select_btn)
+        select_slot_layout.addWidget(select_btn, 0, Qt.AlignCenter)
+        layout.addWidget(select_slot)
 
         color = "#2979ff" if is_last_read else "#cccccc"
         title_row = QHBoxLayout()
@@ -619,6 +632,8 @@ class DetailPage(QWidget):
 
         layout.addWidget(bookmark_btn)
 
+        row.enterEvent = lambda event, btn=select_btn, widget=row: self._on_chapter_row_hover(widget, btn, True, event)
+        row.leaveEvent = lambda event, btn=select_btn, widget=row: self._on_chapter_row_hover(widget, btn, False, event)
         row.mousePressEvent = lambda e, ch=chapter: self._open_chapter(ch)
         return row
 
@@ -672,6 +687,31 @@ class DetailPage(QWidget):
         icon_name = "fa5s.check-circle" if is_selected else "fa5s.circle"
         button.setIcon(qta.icon(icon_name, color=color))
 
+    def _set_chapter_select_visibility(self, row: QWidget, button: QToolButton, force: bool = False):
+        show_checkbox = force or button.isChecked() or row.underMouse()
+        if show_checkbox:
+            self._apply_select_icon(button, button.isChecked())
+            button.setEnabled(True)
+            button.setCursor(Qt.PointingHandCursor)
+        else:
+            button.setIcon(QIcon())
+            button.setEnabled(False)
+            button.setCursor(Qt.ArrowCursor)
+
+    def _on_chapter_row_hover(self, row: QWidget, button: QToolButton, hovered: bool, event):
+        self._set_chapter_select_visibility(row, button, force=self._chapter_selection_visible() or hovered)
+        QWidget.enterEvent(row, event) if hovered else QWidget.leaveEvent(row, event)
+
+    def _refresh_chapter_selection_visibility(self):
+        force = self._chapter_selection_visible()
+        for button in self.chapter_list_widget.findChildren(QToolButton):
+            if button.property("chapter_name") is None:
+                continue
+            row = button.parentWidget()
+            if row is None:
+                continue
+            self._set_chapter_select_visibility(row, button, force=force)
+
     def _toggle_chapter_selected(self, chapter: str, button: QToolButton, is_selected: bool):
         if is_selected:
             self.selected_chapters.add(chapter)
@@ -679,10 +719,12 @@ class DetailPage(QWidget):
             self.selected_chapters.discard(chapter)
         self._apply_select_icon(button, is_selected)
         self._sync_chapter_batch_actions()
+        self._refresh_chapter_selection_visibility()
 
     def _sync_chapter_batch_actions(self):
         count = len(self.selected_chapters)
         self.chapter_batch_bar.setVisible(count > 0)
+        self._refresh_chapter_selection_visibility()
         if count <= 0:
             return
         self.chapter_batch_label.setText(f"{count} chapters selected")

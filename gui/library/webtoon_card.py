@@ -1,6 +1,6 @@
 from PySide6.QtCore import QPoint, Qt, QSize
 from PySide6.QtGui import QAction, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 import qtawesome as qta
 import time
 
@@ -13,6 +13,12 @@ CARD_WIDTH = 180
 CARD_HEIGHT = 270
 CARD_RADIUS = 12
 logger = get_logger(__name__)
+
+
+def _retain_hidden_size(widget: QWidget):
+    policy = widget.sizePolicy()
+    policy.setRetainSizeWhenHidden(True)
+    widget.setSizePolicy(policy)
 
 
 class ElidedLabel(QLabel):
@@ -79,8 +85,10 @@ class WebtoonCard(QWidget):
         self._update_action = None
         self._current_update_status = None
         self._selected = False
+        self._show_selection_controls = False
         self.card_width = max(120, card_width)
         self.card_height = int(self.card_width * (CARD_HEIGHT / CARD_WIDTH))
+        self._root_layout = None
 
         self.setFixedWidth(self.card_width + 16)
         self.setCursor(Qt.ArrowCursor if self._download_placeholder else Qt.PointingHandCursor)
@@ -89,6 +97,7 @@ class WebtoonCard(QWidget):
         root = QVBoxLayout(self)
         root.setSpacing(6)
         root.setContentsMargins(8, 8, 8, 8)
+        self._root_layout = root
 
         self.image_container = QWidget()
         self.image_container.setFixedSize(self.card_width, self.card_height)
@@ -175,6 +184,7 @@ class WebtoonCard(QWidget):
         self.select_btn.clicked.connect(self._toggle_selected_from_button)
         self._apply_select_button_style()
         self._refresh_select_button()
+        self._refresh_select_visibility()
 
         self.progress_overlay = QWidget(self.image_container)
         self.progress_overlay.setFixedSize(84, 84)
@@ -226,6 +236,7 @@ class WebtoonCard(QWidget):
 
         self.latest_btn = self._make_badge_btn(accent=False)
         self.lastread_btn = self._make_badge_btn(accent=True)
+        _retain_hidden_size(self.lastread_btn)
 
         self.new_chip = QLabel("NEW")
         self.new_chip.setAlignment(Qt.AlignCenter)
@@ -298,7 +309,7 @@ class WebtoonCard(QWidget):
 
         if chapters:
             latest = chapters[-1]
-            self.latest_btn.setText(f"Play  {latest}")
+            self.latest_btn.setText(f"Read  {latest}")
             self.latest_btn.show()
             self.new_chip.setVisible(latest == latest_new_chapter)
             if self._latest_connected:
@@ -381,6 +392,31 @@ class WebtoonCard(QWidget):
         self._load_thumbnail(webtoon.thumbnail)
         self._refresh_badges()
 
+    def update_card_size(self, card_width: int):
+        card_width = max(120, int(card_width))
+        new_height = int(card_width * (CARD_HEIGHT / CARD_WIDTH))
+        if card_width == self.card_width and new_height == self.card_height:
+            return
+
+        self.card_width = card_width
+        self.card_height = new_height
+
+        self.setUpdatesEnabled(False)
+        self.setFixedWidth(self.card_width + 16)
+        self.image_container.setFixedSize(self.card_width, self.card_height)
+        self.image_label.setFixedSize(self.card_width, self.card_height)
+        self.dots_btn.move(self.card_width - 34, 6)
+        self.select_btn.move(6, self.card_height - 34)
+        self.title_label.setFixedWidth(max(80, self.card_width - 42))
+        self.latest_btn.setFixedWidth(self.card_width)
+        self.lastread_btn.setFixedWidth(self.card_width)
+        self._center_progress_overlay()
+        self._load_thumbnail(self.webtoon.thumbnail)
+        self._apply_border_style(hovered=self.underMouse())
+        self._refresh_select_visibility()
+        self.setUpdatesEnabled(True)
+        self.update()
+
     def set_selected(self, selected: bool):
         if self._download_placeholder:
             return
@@ -389,7 +425,14 @@ class WebtoonCard(QWidget):
         self.select_btn.setChecked(self._selected)
         self.select_btn.blockSignals(False)
         self._refresh_select_button()
+        self._refresh_select_visibility()
         self._apply_border_style(hovered=self.underMouse())
+
+    def set_selection_controls_visible(self, visible: bool):
+        if self._download_placeholder:
+            return
+        self._show_selection_controls = bool(visible)
+        self._refresh_select_visibility()
 
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -484,6 +527,7 @@ class WebtoonCard(QWidget):
             self.update_btn.hide()
         elif self._update_available:
             self.update_btn.show()
+        self._refresh_select_visibility()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -496,6 +540,7 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.hide()
         if self._update_available and not self.progress_overlay.isVisible() and not self._manual_download_active:
             self.update_btn.hide()
+        self._refresh_select_visibility()
         super().leaveEvent(event)
 
     def _apply_border_style(self, hovered: bool):
@@ -614,6 +659,7 @@ class WebtoonCard(QWidget):
             return
         self._selected = self.select_btn.isChecked()
         self._refresh_select_button()
+        self._refresh_select_visibility()
         self._apply_border_style(hovered=self.underMouse())
         if callable(self.on_select):
             self.on_select(self.webtoon.name, self._selected)
@@ -676,6 +722,13 @@ class WebtoonCard(QWidget):
         else:
             self.select_btn.setIcon(qta.icon("fa5s.circle", color="#ffffff"))
         self.select_btn.setIconSize(QSize(12, 12))
+
+    def _refresh_select_visibility(self):
+        if self._download_placeholder:
+            self.select_btn.hide()
+            return
+        visible = self._selected or self._show_selection_controls or self.underMouse()
+        self.select_btn.setVisible(visible)
 
     def _clear_menu_refs(self):
         self._update_menu = None

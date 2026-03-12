@@ -47,6 +47,7 @@ class LibraryPage(QWidget):
         self._block_input_until = 0.0
         self._pending_reload = False
         self._card_scale = int(load_setting(CARD_SCALE_KEY, 100))
+        self._pending_card_scale = self._card_scale
         self._selected_webtoons = set()
 
         root_layout = QVBoxLayout(self)
@@ -73,6 +74,7 @@ class LibraryPage(QWidget):
         self.size_slider.setFixedWidth(140)
         self.size_slider.setToolTip("Smaller cards fit more items per row")
         self.size_slider.valueChanged.connect(self._on_size_slider_changed)
+        self.size_slider.sliderReleased.connect(self._apply_pending_card_scale)
         controls.addWidget(self.size_slider)
 
         self.size_value_label = QLabel(f"{self._card_scale}%")
@@ -141,9 +143,6 @@ class LibraryPage(QWidget):
         batch_layout.addWidget(self.clear_selection_btn)
         batch_layout.addStretch()
 
-        self.batch_bar.hide()
-        root_layout.addWidget(self.batch_bar)
-
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -158,12 +157,19 @@ class LibraryPage(QWidget):
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         self.scroll.setWidget(self.container)
-        root_layout.addWidget(self.scroll)
+        root_layout.addWidget(self.scroll, 1)
+
+        self.batch_bar.hide()
+        root_layout.addWidget(self.batch_bar)
 
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._apply_filter)
         self.search.textChanged.connect(self._schedule_filter)
+
+        self._scale_timer = QTimer(self)
+        self._scale_timer.setSingleShot(True)
+        self._scale_timer.timeout.connect(self._apply_pending_card_scale)
 
         self._cooldown_timer = QTimer(self)
         self._cooldown_timer.timeout.connect(self._sync_update_controls)
@@ -245,14 +251,46 @@ class LibraryPage(QWidget):
         self._sync_manual_download_cards()
         self._sync_batch_actions()
 
+    def _relayout_cards(self, columns: int | None = None):
+        if columns is None:
+            columns = self._columns_for_width(self.width())
+        columns = max(1, columns)
+
+        while self.grid.count():
+            self.grid.takeAt(0)
+
+        self._current_cols = columns
+        visible_cards = []
+
+        for card in self._cards:
+            card.update_card_size(self._card_width())
+            if not card.isHidden():
+                visible_cards.append(card)
+
+        if self._pending_search.strip():
+            scores = {
+                webtoon.name: score
+                for score, webtoon in rank_webtoons(self._display_webtoons(), self._pending_search.strip())
+            }
+            visible_cards.sort(
+                key=lambda card: (-scores.get(card.webtoon.name, 0), card.webtoon.name.lower())
+            )
+
+        for index, card in enumerate(visible_cards):
+            row = index // columns
+            col = index % columns
+            self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
+
+        self.container.updateGeometry()
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._input_blocker.setGeometry(self.rect())
         if self._input_blocker.isVisible():
             self._input_blocker.raise_()
         new_cols = self._columns_for_width(event.size().width())
-        if new_cols != self._current_cols and self._webtoons:
-            self._rebuild_grid(new_cols)
+        if new_cols != self._current_cols and self._cards:
+            self._relayout_cards(new_cols)
 
     def _open_detail(self, webtoon):
         if time.monotonic() < self._ignore_open_until:
@@ -403,6 +441,9 @@ class LibraryPage(QWidget):
     def _sync_batch_actions(self):
         count = len(self._selected_webtoons)
         self.batch_bar.setVisible(count > 0)
+        show_selection_controls = count > 0
+        for card in self._cards:
+            card.set_selection_controls_visible(show_selection_controls)
         if count <= 0:
             return
         self.batch_label.setText(f"{count} selected")
@@ -651,15 +692,31 @@ class LibraryPage(QWidget):
 
     def _on_size_slider_changed(self, value: int):
         value = max(CARD_SCALE_MIN, min(CARD_SCALE_MAX, value))
+        self._pending_card_scale = value
+        self.size_value_label.setText(f"{value}%")
+        if value == self._card_scale:
+            self._scale_timer.stop()
+            save_setting(CARD_SCALE_KEY, value)
+            return
+        if self.size_slider.isSliderDown():
+            self._scale_timer.start(24)
+            return
+        self._scale_timer.start(16)
+
+    def _apply_pending_card_scale(self):
+        value = max(CARD_SCALE_MIN, min(CARD_SCALE_MAX, self._pending_card_scale))
         if value == self._card_scale:
             self.size_value_label.setText(f"{value}%")
+            save_setting(CARD_SCALE_KEY, value)
             return
         self._card_scale = value
         self.size_value_label.setText(f"{value}%")
         save_setting(CARD_SCALE_KEY, value)
         logger.info("Library card scale changed: %d%%", value)
-        self._rebuild_grid(self._columns_for_width(self.width()))
-        self._apply_filter()
+        if self._cards:
+            self._relayout_cards(self._columns_for_width(self.width()))
+        else:
+            self._rebuild_grid(self._columns_for_width(self.width()))
 
     def _apply_filter(self):
         text = self._pending_search.strip()
