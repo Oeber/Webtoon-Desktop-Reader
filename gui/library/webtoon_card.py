@@ -700,9 +700,10 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.hide()
         if self._download_placeholder:
             return
-        self.progress_overlay.hide()
+        if self._current_update_status != "Downloading":
+            self.progress_overlay.hide()
         self.info_label.hide()
-        if self._update_available and self.underMouse():
+        if self._current_update_status != "Downloading" and self._update_available and self.underMouse():
             self.update_btn.show()
 
     def _apply_download_placeholder_mode(self):

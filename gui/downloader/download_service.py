@@ -5,7 +5,6 @@ import subprocess
 import threading
 import time
 import uuid
-from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -16,12 +15,11 @@ from app_logging import get_logger
 from app_paths import data_path
 from gui.downloader.helpers import (
     SUPPORTED_IMAGE_EXTENSIONS,
-    chapter_path_sort_key,
-    chapter_sort_key,
     detect_url_type,
     extract_episode_number,
     sanitize_webtoon_name,
 )
+from library_manager import build_webtoon_from_folder, preferred_thumbnail_path
 from scrapers.base import ScraperError
 from scrapers.registry import get_scraper
 from webtoon_settings_store import get_instance as get_webtoon_settings
@@ -43,6 +41,8 @@ class DownloadJob:
         self.process = None
         self.thread = None
         self.executor = None
+        self.progress_current = 0
+        self.progress_total = 0
         self.temp_dir = str(data_path("_download_temp", f"job-{uuid.uuid4().hex}"))
 
 
@@ -156,6 +156,16 @@ class DownloadService(QObject):
         with self._jobs_lock:
             return len(self._jobs)
 
+    def get_progress(self, name: str) -> tuple[int, int]:
+        normalized = sanitize_webtoon_name(name or "")
+        if not normalized:
+            return 0, 0
+        with self._jobs_lock:
+            for job in self._jobs.values():
+                if job.active_name == normalized or job.initial_name == normalized:
+                    return int(job.progress_current), int(job.progress_total)
+        return 0, 0
+
     def _run_download(self, job: DownloadJob, url: str, output_path: str, preferred_name: str | None):
         name = sanitize_webtoon_name(preferred_name) or job.initial_name or "download"
         status = "Failed"
@@ -210,6 +220,11 @@ class DownloadService(QObject):
         if float(chapter_number).is_integer():
             return str(int(chapter_number))
         return format(chapter_number, "g")
+
+    def _emit_progress(self, job: DownloadJob, name: str, current: int, total: int):
+        job.progress_current = max(0, int(current))
+        job.progress_total = max(0, int(total))
+        self.progress_changed.emit(name, job.progress_current, job.progress_total)
 
     def _get_existing_chapters(self, webtoon_dir: str) -> set[str]:
         existing = set()
@@ -366,7 +381,7 @@ class DownloadService(QObject):
                 if self._format_chapter_number(chapter.number) in existing
             )
 
-        self.progress_changed.emit(series_name, completed_chapters, total_chapters)
+        self._emit_progress(job, series_name, completed_chapters, total_chapters)
 
         for chapter in chapter_list:
             if job.cancel_requested:
@@ -452,7 +467,7 @@ class DownloadService(QObject):
             if had_existing_chapters:
                 latest_new_chapter_name = chapter_dir_name
             completed_chapters += 1
-            self.progress_changed.emit(series_name, completed_chapters, total_chapters)
+            self._emit_progress(job, series_name, completed_chapters, total_chapters)
             self.library_changed.emit(series_name)
 
             if failure_count > 0:
@@ -468,11 +483,10 @@ class DownloadService(QObject):
         if not any_chapter_succeeded and completed_chapters == 0:
             raise ScraperError("No chapters were downloaded")
 
-        thumb_path = self._preferred_thumbnail_for(series_name)
-        if not thumb_path:
-            thumb_path = self._create_auto_thumbnail_from_webtoon_folder(series_name, target_base)
-            if thumb_path:
-                self.thumbnail_resolved.emit(series_name, thumb_path)
+        snapshot = build_webtoon_from_folder(output_path, series_name, self.settings_store)
+        thumb_path = snapshot.thumbnail if snapshot is not None else None
+        if thumb_path:
+            self.thumbnail_resolved.emit(series_name, thumb_path)
 
         if latest_new_chapter_name:
             self.settings_store.set_latest_new_chapter(series_name, latest_new_chapter_name)
@@ -498,11 +512,11 @@ class DownloadService(QObject):
             if guessed_last_chapter is not None and guessed_last_chapter > 0:
                 missing_chapters = sorted(set(range(1, guessed_last_chapter + 1)) - set(existing))
                 if missing_chapters:
-                    self.progress_changed.emit(name, 0, len(missing_chapters))
+                    self._emit_progress(job, name, 0, len(missing_chapters))
         else:
             episode_no = extract_episode_number(url)
             missing_chapters = [episode_no] if episode_no is not None else [1]
-            self.progress_changed.emit(name, 0, 1)
+            self._emit_progress(job, name, 0, 1)
 
         cmd.append(url)
 
@@ -524,7 +538,7 @@ class DownloadService(QObject):
                         temp_numbers = self._chapter_numbers_in_temp_dir(job.temp_dir)
                         current = sum(1 for chapter in missing_chapters if chapter in temp_numbers)
                         if current != last_current or total != last_total:
-                            self.progress_changed.emit(name, current, total)
+                            self._emit_progress(job, name, current, total)
                             last_current = current
                             last_total = total
                 except Exception as e:
@@ -585,9 +599,10 @@ class DownloadService(QObject):
 
         if missing_chapters:
             final_current = sum(1 for chapter in missing_chapters if chapter in completed_now)
-            self.progress_changed.emit(name, final_current, len(missing_chapters))
+            self._emit_progress(job, name, final_current, len(missing_chapters))
 
-        thumb_path = self._create_auto_thumbnail_from_webtoon_folder(name, target_base)
+        snapshot = build_webtoon_from_folder(output_path, name, self.settings_store)
+        thumb_path = snapshot.thumbnail if snapshot is not None else None
         if thumb_path:
             self.thumbnail_resolved.emit(name, thumb_path)
 
@@ -597,85 +612,10 @@ class DownloadService(QObject):
         return name
 
     def _preferred_thumbnail_for(self, webtoon_name: str) -> str | None:
-        custom = self.settings_store.get(webtoon_name)
-        if custom and os.path.exists(custom):
-            return custom
-
-        auto_path = str(data_path("thumbnails", f"{webtoon_name}.jpg"))
-        if os.path.exists(auto_path):
-            return auto_path
-        return None
-
-    def _auto_thumbnail_path(self, webtoon_name: str) -> str:
-        thumb_dir = data_path("thumbnails")
-        thumb_dir.mkdir(parents=True, exist_ok=True)
-        return str(thumb_dir / f"{webtoon_name}.jpg")
-
-    def _create_auto_thumbnail_from_webtoon_folder(self, webtoon_name: str, webtoon_dir: str) -> str | None:
-        try:
-            from PIL import Image
-
-            if not os.path.isdir(webtoon_dir):
-                return None
-
-            chapter_dirs = [
-                os.path.join(webtoon_dir, folder)
-                for folder in os.listdir(webtoon_dir)
-                if os.path.isdir(os.path.join(webtoon_dir, folder))
-            ]
-            if not chapter_dirs:
-                return None
-
-            chapter_dirs.sort(key=chapter_path_sort_key)
-            first_chapter = chapter_dirs[0]
-            image_files = [
-                os.path.join(first_chapter, filename)
-                for filename in sorted(os.listdir(first_chapter))
-                if os.path.isfile(os.path.join(first_chapter, filename))
-                and filename.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
-            ]
-            if not image_files:
-                return None
-
-            src = image_files[0]
-            dest = self._auto_thumbnail_path(webtoon_name)
-            with Image.open(src) as image:
-                rgb = image.convert("RGB")
-                rgb.thumbnail((360, 540))
-                canvas = Image.new("RGB", (360, 540), (18, 18, 18))
-                x = (360 - rgb.width) // 2
-                y = (540 - rgb.height) // 2
-                canvas.paste(rgb, (x, y))
-                canvas.save(dest, "JPEG", quality=90)
-            return dest if os.path.exists(dest) else None
-        except Exception as e:
-            logger.warning("Auto thumbnail generation failed for '%s'", webtoon_name, exc_info=e)
-            return None
+        return preferred_thumbnail_path(webtoon_name, self.settings_store)
 
     def build_webtoon_from_folder(self, library_path: str, webtoon_name: str):
-        webtoon_dir = os.path.join(library_path, webtoon_name)
-        if not os.path.isdir(webtoon_dir):
-            return None
-
-        chapter_dirs = [
-            folder for folder in os.listdir(webtoon_dir)
-            if os.path.isdir(os.path.join(webtoon_dir, folder))
-        ]
-
-        chapter_dirs.sort(key=chapter_sort_key)
-        thumb = self._preferred_thumbnail_for(webtoon_name)
-        if not thumb:
-            thumb = self._create_auto_thumbnail_from_webtoon_folder(webtoon_name, webtoon_dir)
-
-        return SimpleNamespace(
-            name=webtoon_name,
-            path=webtoon_dir,
-            thumbnail=thumb or "",
-            chapters=chapter_dirs,
-            category=self.settings_store.get_category(webtoon_name),
-            is_bookmarked=self.settings_store.get_bookmarked(webtoon_name),
-            has_new_chapter=bool(self.settings_store.get_latest_new_chapter(webtoon_name)),
-        )
+        return build_webtoon_from_folder(library_path, webtoon_name, self.settings_store)
 
     def preferred_thumbnail_for(self, webtoon_name: str) -> str | None:
         return self._preferred_thumbnail_for(webtoon_name)

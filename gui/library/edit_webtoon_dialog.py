@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import re
 import shutil
@@ -39,7 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from gui.library.thumbnail_dialog import ThumbnailDialog
-from gui.settings.settings_page import load_library_path, load_setting, save_setting
+from gui.settings.settings_page import load_library_path, load_setting
+from library_categories import load_custom_categories, save_custom_categories
 
 
 CARD_W = 140
@@ -47,7 +47,6 @@ CARD_H = 210
 CARD_RADIUS = 12
 ROW_H = 40
 logger = get_logger(__name__)
-CUSTOM_CATEGORIES_KEY = "library_custom_categories"
 
 
 def _safe_name(name: str) -> str:
@@ -71,19 +70,6 @@ def _round_pixmap(src: QPixmap, w: int, h: int, radius: int) -> QPixmap:
     painter.drawPixmap(0, 0, cropped)
     painter.end()
     return out
-
-
-def _load_custom_categories() -> list[str]:
-    raw = load_setting(CUSTOM_CATEGORIES_KEY, "[]")
-    try:
-        values = json.loads(raw) if isinstance(raw, str) else list(raw)
-    except Exception:
-        return []
-    return sorted({str(value).strip() for value in values if str(value).strip()}, key=str.lower)
-
-
-def _save_custom_categories(categories: list[str]):
-    save_setting(CUSTOM_CATEGORIES_KEY, json.dumps(sorted({c.strip() for c in categories if c and c.strip()}, key=str.lower)))
 
 
 class EditWebtoonDialog(QDialog):
@@ -241,7 +227,7 @@ class EditWebtoonDialog(QDialog):
         self._load_categories()
 
     def _load_categories(self):
-        categories = _load_custom_categories()
+        categories = load_custom_categories()
         current = self.settings_store.get_category(self.webtoon.name) or ""
         self.category_input.blockSignals(True)
         self.category_input.clear()
@@ -339,10 +325,10 @@ class EditWebtoonDialog(QDialog):
 
             category = self.category_input.currentText().strip()
             if category:
-                existing = _load_custom_categories()
+                existing = load_custom_categories()
                 if category not in existing:
                     existing.append(category)
-                    _save_custom_categories(existing)
+                    save_custom_categories(existing)
                 self.settings_store.set_category(self.webtoon.name, category)
                 self.webtoon.category = category
             else:

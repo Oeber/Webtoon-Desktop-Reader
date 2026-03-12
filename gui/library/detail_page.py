@@ -44,11 +44,11 @@ from gui.common.styles import (
     SECONDARY_META_LABEL_STYLE,
 )
 from gui.downloader.download_widgets import SpinnerCircle
+from update_utils import cooldown_remaining
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 from gui.settings.settings_page import load_library_path
 
-UPDATE_COOLDOWN_SECONDS = 30
 logger = get_logger(__name__)
 
 
@@ -121,7 +121,11 @@ class DetailPage(QWidget):
         self._update_progress_total = 0
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._sync_update_button)
-        self._update_timer.start(1000)
+        self._update_timer.start(250)
+        self._pending_disk_refresh = False
+        self._disk_refresh_timer = QTimer(self)
+        self._disk_refresh_timer.setSingleShot(True)
+        self._disk_refresh_timer.timeout.connect(self._flush_disk_refresh)
 
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -421,6 +425,7 @@ class DetailPage(QWidget):
 
         self._build_chapter_list(progress)
         self._sync_chapter_batch_actions()
+        self._sync_update_button()
 
     def _calc_percent(self, scroll: float, total_images: int) -> int:
         if total_images <= 0:
@@ -788,6 +793,23 @@ class DetailPage(QWidget):
             base.reverse()
         return base
 
+    def _is_current_webtoon_updating(self) -> bool:
+        return bool(
+            self.webtoon
+            and self._update_service is not None
+            and self._update_service.has_active_download(self.webtoon.name)
+        )
+
+    def _append_new_chapters_to_display_order(
+        self,
+        previous_display: list[str],
+        chapter_dirs: list[str],
+    ) -> list[str]:
+        existing = set(chapter_dirs)
+        kept = [chapter for chapter in previous_display if chapter in existing]
+        new_chapters = [chapter for chapter in chapter_dirs if chapter not in kept]
+        return kept + new_chapters
+
     def _get_disk_chapter_dirs(self) -> list[str]:
         if self.webtoon is None:
             return []
@@ -827,11 +849,11 @@ class DetailPage(QWidget):
         logger.info("Detail page refreshed chapter list from disk for %s", self.webtoon.name)
         previous_display = list(self._chapter_display_order or self._ordered_chapters_for_display(self.webtoon.chapters))
         self.webtoon.chapters = chapter_dirs
-        if preserve_display_order:
-            existing = set(chapter_dirs)
-            kept = [chapter for chapter in previous_display if chapter in existing]
-            new_chapters = [chapter for chapter in chapter_dirs if chapter not in kept]
-            self._chapter_display_order = kept + new_chapters
+        if preserve_display_order or self._is_current_webtoon_updating():
+            self._chapter_display_order = self._append_new_chapters_to_display_order(
+                previous_display,
+                chapter_dirs,
+            )
         else:
             self._chapter_display_order = self._ordered_chapters_for_display(chapter_dirs)
         self.selected_chapters &= set(chapter_dirs)
@@ -898,11 +920,7 @@ class DetailPage(QWidget):
     def _cooldown_remaining(self) -> int:
         if self.webtoon is None:
             return 0
-        last_update_at = self.settings_store.get_last_update_at(self.webtoon.name)
-        if last_update_at is None:
-            return 0
-        elapsed = int(time.time()) - int(last_update_at)
-        return max(0, UPDATE_COOLDOWN_SECONDS - elapsed)
+        return cooldown_remaining(self.settings_store.get_last_update_at(self.webtoon.name))
 
     def _start_update(self):
         if self.webtoon is None or self._update_service is None:
@@ -950,6 +968,10 @@ class DetailPage(QWidget):
 
         self.update_btn.show()
         if self._update_service is not None and self._update_service.has_active_download(self.webtoon.name):
+            current, total = self._update_service.get_progress(self.webtoon.name)
+            if total > 0:
+                self._update_progress_current = current
+                self._update_progress_total = total
             self.update_btn.setEnabled(False)
             self.update_btn.setText("  Updating...")
             self._show_update_progress()
@@ -990,8 +1012,17 @@ class DetailPage(QWidget):
 
     def _on_update_library_changed(self, name: str):
         if self.webtoon and name == self.webtoon.name:
-            self._refresh_webtoon_from_disk(preserve_display_order=True)
+            self._pending_disk_refresh = True
+            if not self._disk_refresh_timer.isActive():
+                self._disk_refresh_timer.start(150)
             self._sync_update_button()
+
+    def _flush_disk_refresh(self):
+        if not self._pending_disk_refresh:
+            return
+        self._pending_disk_refresh = False
+        self._refresh_webtoon_from_disk(preserve_display_order=True)
+        self._sync_update_button()
 
     def _open_edit_dialog(self):
         if self.webtoon is None or self.progress_store is None:

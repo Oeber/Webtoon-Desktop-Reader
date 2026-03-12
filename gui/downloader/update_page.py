@@ -11,20 +11,17 @@ from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path
 from library_manager import scan_library
+from update_utils import cooldown_remaining
 from webtoon_settings_store import get_instance as get_webtoon_settings
 
 
-UPDATE_COOLDOWN_SECONDS = 30
 logger = get_logger(__name__)
 
 
 class UpdateEntry(BaseUpdateEntry):
 
     def cooldown_remaining(self) -> int:
-        if self.last_update_at is None:
-            return 0
-        elapsed = int(time.time()) - int(self.last_update_at)
-        return max(0, UPDATE_COOLDOWN_SECONDS - elapsed)
+        return cooldown_remaining(self.last_update_at)
 
 
 class UpdatePage(DownloadHistoryPageBase):

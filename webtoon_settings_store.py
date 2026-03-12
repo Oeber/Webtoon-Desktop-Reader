@@ -76,62 +76,60 @@ class WebtoonSettingsStore:
     def _ensure_row(self, conn, webtoon_name: str):
         conn.execute(
             "INSERT OR IGNORE INTO webtoon_settings (webtoon_name) VALUES (?)",
-            (webtoon_name,)
+            (webtoon_name,),
         )
+
+    def _get_scalar(self, webtoon_name: str, column: str, *, default=None, coerce=None):
+        conn = get_connection()
+        row = conn.execute(
+            f"SELECT {column} FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,),
+        ).fetchone()
+        if row is None:
+            return default
+        value = row[column]
+        if value is None or value == "":
+            return default
+        return coerce(value) if coerce is not None else value
+
+    def _set_scalar(self, webtoon_name: str, column: str, value, *, log_message: str | None = None):
+        if log_message:
+            logger.info(log_message, webtoon_name, value)
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            f"UPDATE webtoon_settings SET {column} = ? WHERE webtoon_name = ?",
+            (value, webtoon_name),
+        )
+        conn.commit()
+
+    def _clear_scalar(self, webtoon_name: str, column: str, *, log_message: str | None = None):
+        if log_message:
+            logger.info(log_message, webtoon_name)
+        conn = get_connection()
+        conn.execute(
+            f"UPDATE webtoon_settings SET {column} = NULL WHERE webtoon_name = ?",
+            (webtoon_name,),
+        )
+        conn.commit()
 
     def get_hide_filler(self, webtoon_name: str) -> bool:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT hide_filler FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        return bool(row["hide_filler"]) if row else False
+        return bool(self._get_scalar(webtoon_name, "hide_filler", default=0))
 
     def get_completed(self, webtoon_name: str) -> bool:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT completed FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        return bool(row["completed"]) if row else False
+        return bool(self._get_scalar(webtoon_name, "completed", default=0))
 
     def get_bookmarked(self, webtoon_name: str) -> bool:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT bookmarked FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        return bool(row["bookmarked"]) if row else False
+        return bool(self._get_scalar(webtoon_name, "bookmarked", default=0))
 
     def set_hide_filler(self, webtoon_name: str, value: bool):
-        logger.info("Setting hide_filler for %s to %s", webtoon_name, value)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET hide_filler = ? WHERE webtoon_name = ?",
-            (int(value), webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "hide_filler", int(value), log_message="Setting hide_filler for %s to %s")
 
     def set_completed(self, webtoon_name: str, value: bool):
-        logger.info("Setting completed for %s to %s", webtoon_name, value)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET completed = ? WHERE webtoon_name = ?",
-            (int(value), webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "completed", int(value), log_message="Setting completed for %s to %s")
 
     def set_bookmarked(self, webtoon_name: str, value: bool):
-        logger.info("Setting bookmarked for %s to %s", webtoon_name, value)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET bookmarked = ? WHERE webtoon_name = ?",
-            (int(value), webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "bookmarked", int(value), log_message="Setting bookmarked for %s to %s")
 
     def toggle_completed(self, webtoon_name: str) -> bool:
         completed = not self.get_completed(webtoon_name)
@@ -144,16 +142,12 @@ class WebtoonSettingsStore:
         return bookmarked
 
     def get_bookmarked_chapters(self, webtoon_name: str) -> set[str]:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT bookmarked_chapters FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        if row is None or not row["bookmarked_chapters"]:
+        payload = self._get_scalar(webtoon_name, "bookmarked_chapters")
+        if not payload:
             return set()
 
         try:
-            data = json.loads(row["bookmarked_chapters"])
+            data = json.loads(payload)
         except (TypeError, json.JSONDecodeError):
             return set()
 
@@ -163,14 +157,8 @@ class WebtoonSettingsStore:
 
     def set_bookmarked_chapters(self, webtoon_name: str, chapters: set[str] | list[str]):
         logger.info("Saving %d bookmarked chapters for %s", len(set(chapters)), webtoon_name)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
         payload = json.dumps(sorted({str(chapter) for chapter in chapters}))
-        conn.execute(
-            "UPDATE webtoon_settings SET bookmarked_chapters = ? WHERE webtoon_name = ?",
-            (payload, webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "bookmarked_chapters", payload)
 
     def toggle_bookmarked_chapter(self, webtoon_name: str, chapter: str) -> bool:
         bookmarks = self.get_bookmarked_chapters(webtoon_name)
@@ -185,149 +173,50 @@ class WebtoonSettingsStore:
         return is_bookmarked
 
     def get_zoom_override(self, webtoon_name: str) -> float | None:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT zoom_override FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        if row is None or row["zoom_override"] is None:
-            return None
-        return float(row["zoom_override"])
+        return self._get_scalar(webtoon_name, "zoom_override", default=None, coerce=float)
 
     def set_zoom_override(self, webtoon_name: str, zoom: float):
-        logger.info("Setting zoom override for %s to %.2f", webtoon_name, zoom)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET zoom_override = ? WHERE webtoon_name = ?",
-            (zoom, webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "zoom_override", zoom, log_message="Setting zoom override for %s to %s")
 
     def clear_zoom_override(self, webtoon_name: str):
-        logger.info("Clearing zoom override for %s", webtoon_name)
-        conn = get_connection()
-        conn.execute(
-            "UPDATE webtoon_settings SET zoom_override = NULL WHERE webtoon_name = ?",
-            (webtoon_name,)
-        )
-        conn.commit()
+        self._clear_scalar(webtoon_name, "zoom_override", log_message="Clearing zoom override for %s")
 
     def get_source_url(self, webtoon_name: str) -> str | None:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT source_url FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        if row is None or not row["source_url"]:
-            return None
-        return str(row["source_url"])
+        return self._get_scalar(webtoon_name, "source_url", default=None, coerce=str)
 
     def set_source_url(self, webtoon_name: str, source_url: str):
-        logger.info("Saving source URL for %s", webtoon_name)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET source_url = ? WHERE webtoon_name = ?",
-            (source_url, webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "source_url", source_url, log_message="Saving source URL for %s: %s")
 
     def clear_source_url(self, webtoon_name: str):
-        logger.info("Clearing source URL for %s", webtoon_name)
-        conn = get_connection()
-        conn.execute(
-            "UPDATE webtoon_settings SET source_url = NULL WHERE webtoon_name = ?",
-            (webtoon_name,)
-        )
-        conn.commit()
+        self._clear_scalar(webtoon_name, "source_url", log_message="Clearing source URL for %s")
 
     def get_category(self, webtoon_name: str) -> str | None:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT category FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        if row is None or not row["category"]:
-            return None
-        return str(row["category"])
+        return self._get_scalar(webtoon_name, "category", default=None, coerce=str)
 
     def set_category(self, webtoon_name: str, category: str):
         normalized = str(category).strip()
-        logger.info("Setting category for %s to %s", webtoon_name, normalized)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET category = ? WHERE webtoon_name = ?",
-            (normalized, webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "category", normalized, log_message="Setting category for %s to %s")
 
     def clear_category(self, webtoon_name: str):
-        logger.info("Clearing category for %s", webtoon_name)
-        conn = get_connection()
-        conn.execute(
-            "UPDATE webtoon_settings SET category = NULL WHERE webtoon_name = ?",
-            (webtoon_name,)
-        )
-        conn.commit()
+        self._clear_scalar(webtoon_name, "category", log_message="Clearing category for %s")
 
     def get_last_update_at(self, webtoon_name: str) -> int | None:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT last_update_at FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        if row is None or row["last_update_at"] is None:
-            return None
-        return int(row["last_update_at"])
+        return self._get_scalar(webtoon_name, "last_update_at", default=None, coerce=int)
 
     def set_last_update_at(self, webtoon_name: str, timestamp: int):
-        logger.info("Setting last update timestamp for %s to %d", webtoon_name, timestamp)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET last_update_at = ? WHERE webtoon_name = ?",
-            (int(timestamp), webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "last_update_at", int(timestamp), log_message="Setting last update timestamp for %s to %s")
 
     def get_latest_new_chapter(self, webtoon_name: str) -> str | None:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT latest_new_chapter FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        if row is None or not row["latest_new_chapter"]:
-            return None
-        return str(row["latest_new_chapter"])
+        return self._get_scalar(webtoon_name, "latest_new_chapter", default=None, coerce=str)
 
     def set_latest_new_chapter(self, webtoon_name: str, chapter: str):
-        logger.info("Setting latest new chapter for %s to %s", webtoon_name, chapter)
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET latest_new_chapter = ? WHERE webtoon_name = ?",
-            (str(chapter), webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "latest_new_chapter", str(chapter), log_message="Setting latest new chapter for %s to %s")
 
     def clear_latest_new_chapter(self, webtoon_name: str):
-        logger.info("Clearing latest new chapter for %s", webtoon_name)
-        conn = get_connection()
-        conn.execute(
-            "UPDATE webtoon_settings SET latest_new_chapter = NULL WHERE webtoon_name = ?",
-            (webtoon_name,)
-        )
-        conn.commit()
+        self._clear_scalar(webtoon_name, "latest_new_chapter", log_message="Clearing latest new chapter for %s")
 
     def get(self, webtoon_name: str) -> str | None:
-        conn = get_connection()
-        row = conn.execute(
-            "SELECT custom_thumbnail FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
-        ).fetchone()
-        return row["custom_thumbnail"] if row and row["custom_thumbnail"] else None
+        return self._get_scalar(webtoon_name, "custom_thumbnail", default=None)
 
     def set(self, webtoon_name: str, image_path: str) -> str:
         logger.info("Saving custom thumbnail for %s from %s", webtoon_name, image_path)
@@ -361,12 +250,7 @@ class WebtoonSettingsStore:
             except OSError as e:
                 logger.warning("Could not delete cached thumbnail for %s", webtoon_name, exc_info=e)
 
-        conn = get_connection()
-        conn.execute(
-            "UPDATE webtoon_settings SET custom_thumbnail = NULL WHERE webtoon_name = ?",
-            (webtoon_name,)
-        )
-        conn.commit()
+        self._clear_scalar(webtoon_name, "custom_thumbnail")
 
     def rename_webtoon(self, old_name: str, new_name: str):
         logger.info("Renaming settings from %s to %s", old_name, new_name)
@@ -392,7 +276,7 @@ class WebtoonSettingsStore:
         conn = get_connection()
         row = conn.execute(
             "SELECT * FROM webtoon_settings WHERE webtoon_name = ?",
-            (old_name,)
+            (old_name,),
         ).fetchone()
         if row is None:
             return
@@ -413,11 +297,11 @@ class WebtoonSettingsStore:
                 row["bookmarked_chapters"],
                 row["last_update_at"],
                 row["latest_new_chapter"],
-            )
+            ),
         )
         conn.execute(
             "DELETE FROM webtoon_settings WHERE webtoon_name = ?",
-            (old_name,)
+            (old_name,),
         )
         conn.commit()
 
@@ -435,15 +319,9 @@ class WebtoonSettingsStore:
         conn = get_connection()
         conn.execute(
             "DELETE FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,)
+            (webtoon_name,),
         )
         conn.commit()
 
     def _persist_custom_thumbnail(self, webtoon_name: str, path: str):
-        conn = get_connection()
-        self._ensure_row(conn, webtoon_name)
-        conn.execute(
-            "UPDATE webtoon_settings SET custom_thumbnail = ? WHERE webtoon_name = ?",
-            (path, webtoon_name)
-        )
-        conn.commit()
+        self._set_scalar(webtoon_name, "custom_thumbnail", path)
