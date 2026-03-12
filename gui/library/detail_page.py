@@ -2,7 +2,7 @@ import os
 import re
 import time
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QToolButton, QMessageBox
@@ -44,8 +44,8 @@ from gui.common.styles import (
     SECONDARY_META_LABEL_STYLE,
 )
 from gui.downloader.download_widgets import SpinnerCircle
-from update_utils import cooldown_remaining
-from webtoon_settings_store import get_instance as get_webtoon_settings
+from core.update_utils import cooldown_remaining
+from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 from gui.settings.settings_page import load_library_path
 

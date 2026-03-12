@@ -5,8 +5,8 @@ import pkgutil
 import sys
 from pathlib import Path
 
-from app_logging import get_logger
-from app_paths import external_scrapers_path
+from core.app_logging import get_logger
+from core.app_paths import external_scrapers_path
 from .base import BaseScraper
 
 logger = get_logger(__name__)

@@ -1,7 +1,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from gui.common.styles import (
     ERROR_LABEL_STYLE,
     PAGE_BG_STYLE,

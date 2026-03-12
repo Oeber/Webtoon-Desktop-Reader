@@ -4,7 +4,7 @@ import time
 from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QSlider, QMessageBox
@@ -20,8 +20,8 @@ from gui.common.styles import (
     VIEWER_ZOOM_LABEL_STYLE,
 )
 from gui.downloader.download_widgets import SpinnerCircle
-from progress_store import get_instance as get_progress_store
-from webtoon_settings_store import get_instance as get_webtoon_settings
+from stores.progress_store import get_instance as get_progress_store
+from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.settings.settings_page import load_setting, save_setting
 
 FILMSTRIP_W   = 40

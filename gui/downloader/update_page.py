@@ -1,7 +1,7 @@
 import os
 import time
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QLabel, QLineEdit
 
@@ -10,9 +10,9 @@ from gui.downloader.download_widgets import UpdateEntry as BaseUpdateEntry
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path
-from library_manager import scan_library
-from update_utils import cooldown_remaining
-from webtoon_settings_store import get_instance as get_webtoon_settings
+from library.library_manager import scan_library
+from core.update_utils import cooldown_remaining
+from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 
 logger = get_logger(__name__)

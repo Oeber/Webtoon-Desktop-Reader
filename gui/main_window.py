@@ -8,8 +8,8 @@ from PySide6.QtCore import QSize
 import time
 
 import qtawesome as qta
-from app_logging import get_logger
-from webtoon_settings_store import get_instance as get_webtoon_settings
+from core.app_logging import get_logger
+from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.common.styles import SIDEBAR_BUTTON_STYLE, SIDEBAR_STYLE
 
 from gui.library.library_page import LibraryPage

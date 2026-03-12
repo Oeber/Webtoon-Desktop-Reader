@@ -6,7 +6,7 @@ from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, 
 import qtawesome as qta
 import time
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from gui.common.styles import (
     CARD_ACTION_BUTTON_DISABLED_STYLE,
     CARD_ACTION_BUTTON_STYLE,

@@ -1,0 +1,25 @@
+2026-03-12 18:34:39 [INFO] core.app_logging: Logging initialized at F:\reader\core\data\logs\current.log
+2026-03-12 18:34:39 [INFO] __main__: Windows AppUserModelID set to reader.desktop.app
+2026-03-12 18:34:39 [INFO] __main__: QApplication created
+2026-03-12 18:34:39 [WARNING] __main__: Application icon not found at F:\reader\core\imgs\logo.png
+2026-03-12 18:34:39 [INFO] gui.main_window: Initializing main window
+2026-03-12 18:34:39 [INFO] stores.db: Opening SQLite connection at F:\reader\core\data\reader.db
+2026-03-12 18:34:39 [INFO] stores.db: Database ready
+2026-03-12 18:34:39 [INFO] gui.library.library_page: Loading library page contents
+2026-03-12 18:34:39 [INFO] library.library_manager: Scanning library at F:\reader\core\webtoons
+2026-03-12 18:34:39 [WARNING] library.library_manager: Library path does not exist: F:\reader\core\webtoons
+2026-03-12 18:34:39 [INFO] gui.downloader.page_base: Initializing download history page base: Downloader
+2026-03-12 18:34:39 [INFO] gui.downloader.download_service: DownloadService initialized
+2026-03-12 18:34:39 [INFO] gui.downloader.page_base: Initializing download history page base: Updates
+2026-03-12 18:34:39 [INFO] gui.downloader.download_service: DownloadService initialized
+2026-03-12 18:34:39 [INFO] gui.downloader.update_page: Refreshing update entries
+2026-03-12 18:34:39 [INFO] library.library_manager: Scanning library at F:\reader\core\webtoons
+2026-03-12 18:34:39 [WARNING] library.library_manager: Library path does not exist: F:\reader\core\webtoons
+2026-03-12 18:34:39 [INFO] gui.library.library_page: Attaching shared update service to library page
+2026-03-12 18:34:39 [INFO] gui.library.library_page: Attaching manual download service to library page
+2026-03-12 18:34:39 [INFO] gui.library.detail_page: Attaching shared update service to detail page
+2026-03-12 18:34:40 [INFO] __main__: Main window shown
+2026-03-12 18:34:43 [INFO] gui.main_window: Stopping background tasks before app exit
+2026-03-12 18:34:43 [INFO] gui.downloader.download_service: Shutting down DownloadService
+2026-03-12 18:34:43 [INFO] gui.downloader.download_service: Shutting down DownloadService
+2026-03-12 18:34:43 [INFO] gui.viewer.viewer_page: Shutting down viewer background workers

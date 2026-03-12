@@ -18,9 +18,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_settings_store import get_instance as get_app_settings_store
-from app_logging import archived_log_paths, current_log_path, get_logger
-from app_paths import default_library_path
+from stores.app_settings_store import get_instance as get_app_settings_store
+from core.app_logging import archived_log_paths, current_log_path, get_logger
+from core.app_paths import default_library_path
 from gui.common.styles import (
     BUTTON_STYLE,
     CHECKBOX_STYLE,

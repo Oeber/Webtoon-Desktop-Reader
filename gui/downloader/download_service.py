@@ -11,19 +11,19 @@ import requests
 from bs4 import BeautifulSoup
 from PySide6.QtCore import QObject, Signal
 
-from app_logging import get_logger
-from app_paths import data_path
-from download_history_store import get_instance as get_download_history
+from core.app_logging import get_logger
+from core.app_paths import data_path
+from stores.download_history_store import get_instance as get_download_history
 from gui.downloader.helpers import (
     SUPPORTED_IMAGE_EXTENSIONS,
     detect_url_type,
     extract_episode_number,
     sanitize_webtoon_name,
 )
-from library_manager import build_webtoon_from_folder, preferred_thumbnail_path
+from library.library_manager import build_webtoon_from_folder, preferred_thumbnail_path
 from scrapers.base import ScraperError
 from scrapers.registry import get_scraper
-from webtoon_settings_store import get_instance as get_webtoon_settings
+from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 logger = get_logger(__name__)
 

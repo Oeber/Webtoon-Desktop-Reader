@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QPixmap
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from gui.common.styles import (
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
@@ -49,16 +49,16 @@ from gui.settings.settings_page import (
     load_setting,
     save_setting,
 )
-from library_categories import (
+from library.library_categories import (
     load_custom_categories,
     load_section_order,
     save_custom_categories,
     save_section_order,
 )
-from library_manager import build_webtoon_from_folder, scan_library
-from progress_store import get_instance as get_progress_store
-from update_utils import cooldown_remaining
-from webtoon_settings_store import get_instance as get_webtoon_settings
+from library.library_manager import build_webtoon_from_folder, scan_library
+from stores.progress_store import get_instance as get_progress_store
+from core.update_utils import cooldown_remaining
+from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 
 CARD_SPACING = 16

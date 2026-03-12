@@ -4,7 +4,7 @@ from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from gui.common.styles import INPUT_STYLE
 from rapidfuzz import fuzz
 

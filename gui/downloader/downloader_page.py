@@ -1,7 +1,7 @@
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
-from app_logging import get_logger
-from download_history_store import get_instance as get_download_history
+from core.app_logging import get_logger
+from stores.download_history_store import get_instance as get_download_history
 from gui.common.styles import SECTION_LABEL_STYLE
 from gui.downloader.download_widgets import BTN_STYLE, INPUT_STYLE, CancellableDownloadEntry, HistoryDownloadEntry
 from gui.downloader.page_base import DownloadHistoryPageBase

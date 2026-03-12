@@ -6,7 +6,7 @@ import shutil
 
 import qtawesome as qta
 
-from app_logging import get_logger
+from core.app_logging import get_logger
 from gui.common.styles import (
     DELETE_BUTTON_STYLE,
     EDIT_DIALOG_DELETE_BOX_STYLE,
@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from gui.library.thumbnail_dialog import ThumbnailDialog
 from gui.settings.settings_page import LIBRARY_USE_CATEGORIES_KEY, load_library_path, load_setting
-from library_categories import load_custom_categories, save_custom_categories
+from library.library_categories import load_custom_categories, save_custom_categories
 
 
 CARD_W = 140

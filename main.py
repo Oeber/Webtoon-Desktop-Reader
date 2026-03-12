@@ -2,8 +2,8 @@ import sys
 import ctypes
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
-from app_logging import setup_logging, get_logger
-from app_paths import resource_path
+from core.app_logging import setup_logging, get_logger
+from core.app_paths import resource_path
 from gui.main_window import MainWindow
 
 setup_logging()
