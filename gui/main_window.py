@@ -93,6 +93,7 @@ class MainWindow(QMainWindow):
         self.library.attach_update_service(self.updates.service)
         self.library.attach_manual_download_service(self.downloader.service)
         self.detail.attach_update_service(self.updates.service)
+        self.downloader.attach_history_service(self.updates.service)
         self.stack.addWidget(self.downloader)
         self.stack.addWidget(self.updates)
         self.btn_downloader = QPushButton()

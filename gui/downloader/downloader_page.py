@@ -1,7 +1,9 @@
-from PySide6.QtWidgets import QHBoxLayout, QLineEdit, QPushButton
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from app_logging import get_logger
-from gui.downloader.download_widgets import BTN_STYLE, INPUT_STYLE, CancellableDownloadEntry
+from download_history_store import get_instance as get_download_history
+from gui.common.styles import SECTION_LABEL_STYLE
+from gui.downloader.download_widgets import BTN_STYLE, INPUT_STYLE, CancellableDownloadEntry, HistoryDownloadEntry
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.settings.settings_page import load_library_path
 
@@ -11,7 +13,8 @@ logger = get_logger(__name__)
 class DownloaderPage(DownloadHistoryPageBase):
 
     def __init__(self, main_window):
-        super().__init__(main_window, "Downloader", "History")
+        super().__init__(main_window, "Downloader", "History", history_kind="download")
+        self.history_store = get_download_history()
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -36,7 +39,24 @@ class DownloaderPage(DownloadHistoryPageBase):
         row.addWidget(self.download_btn)
         row.addWidget(self.cancel_btn)
         self.layout().insertLayout(1, row)
+
+        self.activity_label = QLabel("Recent activity")
+        self.activity_label.setStyleSheet(SECTION_LABEL_STYLE)
+        self.history_layout.addWidget(self.activity_label)
+
+        self.activity_section = QWidget()
+        self.activity_section.setStyleSheet("background: transparent;")
+        self.activity_list = QVBoxLayout(self.activity_section)
+        self.activity_list.setContentsMargins(0, 0, 0, 0)
+        self.activity_list.setSpacing(8)
+        self.history_layout.addWidget(self.activity_section)
+
+        self.refresh_recent_activity()
         self._sync_controls()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self.refresh_recent_activity()
 
     def _start_download(self):
         url = self.url_input.text()
@@ -62,6 +82,7 @@ class DownloaderPage(DownloadHistoryPageBase):
             entry.deleteLater()
             self._remove_entry(entry)
             self.set_error_text(error)
+            self.refresh_recent_activity()
             return error
 
         self.set_error_text("")
@@ -83,6 +104,12 @@ class DownloaderPage(DownloadHistoryPageBase):
 
     def _on_download_finished(self, name: str, status: str):
         logger.info("Manual download finished for %s with status=%s", name, status)
+        entry = self._entry_for(name)
+        if entry is not None:
+            self.history_layout.removeWidget(entry)
+            entry.deleteLater()
+            self._remove_entry(entry)
+        self.refresh_recent_activity()
         self._sync_controls()
 
     def _open_downloaded_webtoon_detail(self, webtoon_name: str):
@@ -102,3 +129,35 @@ class DownloaderPage(DownloadHistoryPageBase):
 
     def _sync_controls(self):
         self.cancel_btn.setEnabled(self.service.is_busy())
+
+    def attach_history_service(self, service):
+        service.download_started.connect(lambda _name: self.refresh_recent_activity())
+        service.name_resolved.connect(lambda _old_name, _new_name: self.refresh_recent_activity())
+        service.download_finished.connect(lambda _name, _status: self.refresh_recent_activity())
+        service.status_changed.connect(lambda _name, _status: self.refresh_recent_activity())
+
+    def refresh_recent_activity(self):
+        while self.activity_list.count():
+            item = self.activity_list.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        for entry_data in self.history_store.list_entries():
+            if (
+                entry_data.get("kind") == "download"
+                and self.service.has_active_download(entry_data.get("name", ""))
+            ):
+                continue
+            entry = HistoryDownloadEntry(
+                entry_data.get("name", ""),
+                entry_data.get("kind", "download"),
+                entry_data.get("status", "Ready"),
+                entry_data.get("updated_at"),
+                entry_data.get("source_url", ""),
+                on_open=self._open_downloaded_webtoon_detail,
+            )
+            thumb_path = self.service.preferred_thumbnail_for(entry.name)
+            if thumb_path:
+                entry.set_thumbnail(thumb_path)
+            self.activity_list.addWidget(entry)

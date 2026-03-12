@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, Signal
 
 from app_logging import get_logger
 from app_paths import data_path
+from download_history_store import get_instance as get_download_history
 from gui.downloader.helpers import (
     SUPPORTED_IMAGE_EXTENSIONS,
     detect_url_type,
@@ -55,9 +56,11 @@ class DownloadService(QObject):
     download_finished = Signal(str, str)
     library_changed = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, history_kind: str = "download"):
         super().__init__(parent)
         self.settings_store = get_webtoon_settings()
+        self.history_store = get_download_history()
+        self.history_kind = history_kind
         self._jobs: dict[str, DownloadJob] = {}
         self._jobs_lock = threading.Lock()
 
@@ -99,6 +102,7 @@ class DownloadService(QObject):
 
         logger.info("Starting download url=%s preferred_name=%s output=%s", url, preferred_name, output_path)
         job = DownloadJob(initial_name, self._normalized_source_url(url))
+        self.history_store.upsert(self.history_kind, job.initial_name, "Downloading", job.source_url)
         with self._jobs_lock:
             self._jobs[job.initial_name] = job
         self.download_started.emit(job.initial_name)
@@ -174,9 +178,11 @@ class DownloadService(QObject):
             os.makedirs(job.temp_dir, exist_ok=True)
 
             if preferred_name:
+                self.history_store.rename(self.history_kind, job.initial_name, name, job.source_url, "Downloading")
                 self.name_resolved.emit(job.initial_name, name)
             else:
                 name = self._resolve_name(url)
+                self.history_store.rename(self.history_kind, job.initial_name, name, job.source_url, "Downloading")
                 self.name_resolved.emit(job.initial_name, name)
 
             job.active_name = name
@@ -199,6 +205,7 @@ class DownloadService(QObject):
             status = "Completed"
             self.library_changed.emit(saved_name)
         except DownloadCancelled:
+            self._save_source_url(job.active_name or name, job.source_url)
             status = "Cancelled"
         except FileNotFoundError:
             logger.error("Download failed because required file/tool was missing")
@@ -210,6 +217,7 @@ class DownloadService(QObject):
             shutil.rmtree(job.temp_dir, ignore_errors=True)
             with self._jobs_lock:
                 self._jobs.pop(job.initial_name, None)
+            self.history_store.upsert(self.history_kind, job.active_name or name, status, job.source_url)
             logger.info("Download finished for %s with status=%s", job.active_name or name, status)
             self.status_changed.emit(job.active_name or name, status)
             self.download_finished.emit(job.active_name or name, status)
@@ -464,8 +472,7 @@ class DownloadService(QObject):
                 raise ScraperError(f"Chapter download failed completely: {chapter.title}")
 
             any_chapter_succeeded = True
-            if had_existing_chapters:
-                latest_new_chapter_name = chapter_dir_name
+            latest_new_chapter_name = chapter_dir_name
             completed_chapters += 1
             self._emit_progress(job, series_name, completed_chapters, total_chapters)
             self.library_changed.emit(series_name)
@@ -580,8 +587,7 @@ class DownloadService(QObject):
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
             completed_now.add(episode_no)
-            if had_existing_chapters:
-                latest_new_chapter_name = f"Chapter {episode_no}"
+            latest_new_chapter_name = f"Chapter {episode_no}"
         else:
             for filename in all_files:
                 match = re.match(r"^(\d+)", filename)
@@ -594,8 +600,7 @@ class DownloadService(QObject):
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
                 completed_now.add(chapter_num)
-                if had_existing_chapters:
-                    latest_new_chapter_name = f"Chapter {chapter_num}"
+                latest_new_chapter_name = f"Chapter {chapter_num}"
 
         if missing_chapters:
             final_current = sum(1 for chapter in missing_chapters if chapter in completed_now)

@@ -28,6 +28,7 @@ from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 CARD_WIDTH = 180
 CARD_HEIGHT = 270
 CARD_RADIUS = 12
+CARD_DRAG_DISTANCE = 5
 logger = get_logger(__name__)
 
 
@@ -550,7 +551,7 @@ class WebtoonCard(QWidget):
         if not (event.buttons() & Qt.LeftButton):
             super().mouseMoveEvent(event)
             return
-        if (event.position().toPoint() - self._press_pos).manhattanLength() < 10:
+        if (event.position().toPoint() - self._press_pos).manhattanLength() < CARD_DRAG_DISTANCE:
             super().mouseMoveEvent(event)
             return
 
@@ -579,7 +580,14 @@ class WebtoonCard(QWidget):
         drag = QDrag(self)
         drag.setMimeData(mime)
         if self.image_label.pixmap() is not None:
-            drag.setPixmap(self.image_label.pixmap().scaled(72, 108, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            preview = self.image_label.pixmap().scaled(
+                max(96, int(self.card_width * 0.7)),
+                max(144, int(self.card_height * 0.7)),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            drag.setPixmap(preview)
+            drag.setHotSpot(QPoint(preview.width() // 2, preview.height() // 2))
         self._press_pos = None
         self._press_open_candidate = False
         self._drag_executed = drag.exec(Qt.MoveAction) != Qt.IgnoreAction

@@ -16,11 +16,11 @@ logger = get_logger(__name__)
 
 class DownloadHistoryPageBase(QWidget):
 
-    def __init__(self, main_window, title_text: str, section_text: str):
+    def __init__(self, main_window, title_text: str, section_text: str, history_kind: str):
         super().__init__()
         logger.info("Initializing download history page base: %s", title_text)
         self.main_window = main_window
-        self.service = DownloadService(self)
+        self.service = DownloadService(self, history_kind=history_kind)
         self._entries_by_name = {}
 
         self._connect_service_signals()

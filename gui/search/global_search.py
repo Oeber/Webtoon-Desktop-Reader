@@ -571,7 +571,6 @@ class GlobalSearchDialog(QDialog):
         if action == "download":
             url = item.data(ITEM_WEBTOON_ROLE)
             logger.info("Global search command selected download for %s", url)
-            self.main_window.open_downloader()
             error = self.main_window.downloader.start_download_from_url(url)
             if error is None:
                 self.close()

@@ -27,7 +27,7 @@ class UpdateEntry(BaseUpdateEntry):
 class UpdatePage(DownloadHistoryPageBase):
 
     def __init__(self, main_window):
-        super().__init__(main_window, "Updates", "Saved source URLs")
+        super().__init__(main_window, "Updates", "Saved source URLs", history_kind="update")
         self.settings_store = get_webtoon_settings()
         self._candidates = []
         self._pending_search = ""

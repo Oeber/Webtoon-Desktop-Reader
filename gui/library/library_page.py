@@ -4,7 +4,7 @@ import shutil
 import time
 from types import SimpleNamespace
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
+from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QPixmap
 
 from app_logging import get_logger
 from gui.common.styles import (
@@ -41,7 +42,12 @@ from gui.common.styles import (
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path, load_setting, save_setting
-from library_categories import load_custom_categories, save_custom_categories
+from library_categories import (
+    load_custom_categories,
+    load_section_order,
+    save_custom_categories,
+    save_section_order,
+)
 from library_manager import build_webtoon_from_folder, scan_library
 from progress_store import get_instance as get_progress_store
 from update_utils import cooldown_remaining
@@ -53,6 +59,8 @@ PAGE_PADDING = 24
 CARD_SCALE_MIN = 70
 CARD_SCALE_MAX = 140
 CARD_SCALE_KEY = "library_card_scale"
+SECTION_DRAG_DISTANCE = 5
+SECTION_REORDER_EDGE = 18
 SECTION_DOWNLOADS = "__downloads__"
 SECTION_NEW = "__new__"
 SECTION_BOOKMARKED = "__bookmarked__"
@@ -68,6 +76,7 @@ class CategorySection(QFrame):
         title: str,
         on_toggle,
         on_drop,
+        on_reorder=None,
         on_menu=None,
         parent=None,
     ):
@@ -76,13 +85,18 @@ class CategorySection(QFrame):
         self._title = title
         self._on_toggle = on_toggle
         self._on_drop = on_drop
+        self._on_reorder = on_reorder
         self._on_menu = on_menu
         self._collapsed = False
         self._drop_active = False
+        self._reorder_drop_active = False
+        self._drop_side = None
+        self._drag_start_pos = None
+        self._header_dragging = False
 
         self.setFrameShape(QFrame.NoFrame)
         self.setStyleSheet(TRANSPARENT_BG_STYLE)
-        self.setAcceptDrops(callable(on_drop))
+        self.setAcceptDrops(callable(on_drop) or callable(on_reorder))
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -91,6 +105,14 @@ class CategorySection(QFrame):
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(8)
+
+        self.drag_handle_btn = QPushButton("::")
+        self.drag_handle_btn.setCursor(Qt.OpenHandCursor if callable(on_reorder) else Qt.ArrowCursor)
+        self.drag_handle_btn.setFixedSize(24, 24)
+        self.drag_handle_btn.setStyleSheet(SECTION_MENU_BUTTON_STYLE)
+        self.drag_handle_btn.setVisible(callable(on_reorder))
+        self.drag_handle_btn.installEventFilter(self)
+        header_row.addWidget(self.drag_handle_btn, 0, Qt.AlignVCenter)
 
         self.header_btn = QPushButton()
         self.header_btn.setCursor(Qt.PointingHandCursor)
@@ -115,7 +137,7 @@ class CategorySection(QFrame):
 
         self.empty_state = QLabel("Drop titles here")
         self.empty_state.setAlignment(Qt.AlignCenter)
-        self.empty_state.setMinimumHeight(88)
+        self.empty_state.setMinimumSize(CARD_WIDTH + 16, int(CARD_WIDTH * (270 / 180)) + 16)
         self.empty_state.setStyleSheet("")
         self.empty_state.hide()
         self.content_layout.addWidget(self.empty_state)
@@ -128,6 +150,10 @@ class CategorySection(QFrame):
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.content_layout.addWidget(self.grid_host)
         root.addWidget(self.content)
+
+        self.drop_indicator = QFrame(self)
+        self.drop_indicator.hide()
+        self.drop_indicator.setStyleSheet("background: rgba(92, 142, 255, 0.95); border-radius: 2px;")
 
         self._apply_drop_style()
         self.set_title(title, 0)
@@ -145,6 +171,12 @@ class CategorySection(QFrame):
         self.empty_state.setVisible(visible)
         self.grid_host.setVisible(not visible)
 
+    def set_empty_card_size(self, card_width: int):
+        width = max(120, int(card_width)) + 16
+        height = int(max(120, int(card_width)) * (270 / 180)) + 16
+        self.empty_state.setMinimumSize(width, height)
+        self.empty_state.setMaximumWidth(width)
+
     def _toggle(self):
         self.set_collapsed(not self._collapsed)
         if callable(self._on_toggle):
@@ -155,6 +187,13 @@ class CategorySection(QFrame):
             self._on_menu(self)
 
     def dragEnterEvent(self, event):
+        if callable(self._on_reorder) and event.mimeData().hasFormat("application/x-library-category-section"):
+            dragged_key = bytes(event.mimeData().data("application/x-library-category-section")).decode("utf-8", errors="ignore")
+            drop_side = self._drop_side_for_pos(event.position().toPoint())
+            if dragged_key and dragged_key != self.section_key and drop_side is not None:
+                self._set_reorder_drop_state(True, drop_side)
+                event.acceptProposedAction()
+                return
         if callable(self._on_drop) and event.mimeData().hasFormat("application/x-webtoon-names"):
             self._drop_active = True
             self._apply_drop_style()
@@ -163,6 +202,15 @@ class CategorySection(QFrame):
         super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
+        if callable(self._on_reorder) and event.mimeData().hasFormat("application/x-library-category-section"):
+            drop_side = self._drop_side_for_pos(event.position().toPoint())
+            if drop_side is not None:
+                self._set_reorder_drop_state(True, drop_side)
+                event.acceptProposedAction()
+                return
+            self._set_reorder_drop_state(False, None)
+            event.ignore()
+            return
         if callable(self._on_drop) and event.mimeData().hasFormat("application/x-webtoon-names"):
             event.acceptProposedAction()
             return
@@ -170,10 +218,20 @@ class CategorySection(QFrame):
 
     def dragLeaveEvent(self, event):
         self._drop_active = False
+        self._set_reorder_drop_state(False, None)
         self._apply_drop_style()
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
+        if callable(self._on_reorder) and event.mimeData().hasFormat("application/x-library-category-section"):
+            dragged_key = bytes(event.mimeData().data("application/x-library-category-section")).decode("utf-8", errors="ignore")
+            insert_after = self._drop_side == "right"
+            self._set_reorder_drop_state(False, None)
+            if dragged_key and dragged_key != self.section_key and self._on_reorder(dragged_key, self.section_key, insert_after):
+                event.acceptProposedAction()
+                return
+            event.ignore()
+            return
         if not callable(self._on_drop) or not event.mimeData().hasFormat("application/x-webtoon-names"):
             super().dropEvent(event)
             return
@@ -193,11 +251,103 @@ class CategorySection(QFrame):
         self._apply_drop_style()
         event.ignore()
 
+    def eventFilter(self, watched, event):
+        if watched is self.drag_handle_btn and callable(self._on_reorder):
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self._drag_start_pos = event.position().toPoint()
+                self._header_dragging = False
+                self.drag_handle_btn.setCursor(Qt.ClosedHandCursor)
+            elif event.type() == QEvent.MouseMove:
+                if (
+                    self._drag_start_pos is not None
+                    and (event.buttons() & Qt.LeftButton)
+                    and (event.position().toPoint() - self._drag_start_pos).manhattanLength() >= SECTION_DRAG_DISTANCE
+                ):
+                    self._header_dragging = True
+                    self._start_section_drag()
+                    self._drag_start_pos = None
+                    return True
+            elif event.type() == QEvent.MouseButtonRelease:
+                self._drag_start_pos = None
+                self.drag_handle_btn.setCursor(Qt.OpenHandCursor)
+                if self._header_dragging:
+                    self._header_dragging = False
+                    return True
+                self._header_dragging = False
+        return super().eventFilter(watched, event)
+
+    def _start_section_drag(self):
+        mime = QMimeData()
+        mime.setData("application/x-library-category-section", self.section_key.encode("utf-8"))
+        drag = QDrag(self.header_btn)
+        drag.setMimeData(mime)
+        preview = self._build_drag_preview()
+        drag.setPixmap(preview)
+        drag.setHotSpot(QPoint(min(24, preview.width() // 4), min(16, preview.height() // 2)))
+        drag.exec(Qt.MoveAction)
+
+    def _build_drag_preview(self) -> QPixmap:
+        title = self._title or self.section_key
+        count_text = self.header_btn.text().rsplit("(", 1)[-1].rstrip(")") if "(" in self.header_btn.text() else ""
+        subtitle = f"{title} ({count_text})" if count_text else title
+        font = QFont(self.header_btn.font())
+        font.setPointSize(max(font.pointSize(), 11))
+        font.setBold(True)
+        metrics = QFontMetrics(font)
+        width = min(320, max(180, metrics.horizontalAdvance(subtitle) + 34))
+        height = 40
+        preview = QPixmap(width, height)
+        preview.fill(Qt.transparent)
+
+        painter = QPainter(preview)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor(28, 31, 36, 240))
+        painter.setPen(QPen(QColor(92, 142, 255, 220), 2))
+        painter.drawRoundedRect(1, 1, width - 2, height - 2, 10, 10)
+        painter.setPen(QColor("#f3f6fb"))
+        painter.setFont(font)
+        painter.drawText(14, 26, subtitle)
+        painter.end()
+        return preview
+
     def _apply_drop_style(self):
         border = "rgba(92, 142, 255, 0.75)" if self._drop_active else "rgba(255, 255, 255, 0.08)"
         background = "rgba(55, 90, 150, 0.16)" if self._drop_active else "rgba(255, 255, 255, 0.025)"
         text = "#d8e4ff" if self._drop_active else "#747b86"
         self.empty_state.setStyleSheet(section_empty_state_style(border, background, text))
+        self._update_drop_indicator()
+
+    def _set_reorder_drop_state(self, active: bool, side: str | None):
+        active = bool(active)
+        if self._reorder_drop_active == active and self._drop_side == side:
+            return
+        self._reorder_drop_active = active
+        self._drop_side = side
+        self._update_drop_indicator()
+
+    def _update_drop_indicator(self):
+        if self._reorder_drop_active and self._drop_side in {"left", "right"}:
+            self.drop_indicator.setGeometry(
+                0 if self._drop_side == "left" else max(0, self.width() - 4),
+                6,
+                4,
+                max(24, self.height() - 12),
+            )
+            self.drop_indicator.show()
+            self.drop_indicator.raise_()
+        else:
+            self.drop_indicator.hide()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_drop_indicator()
+
+    def _drop_side_for_pos(self, pos: QPoint) -> str | None:
+        if pos.x() <= SECTION_REORDER_EDGE:
+            return "left"
+        if pos.x() >= max(SECTION_REORDER_EDGE, self.width() - SECTION_REORDER_EDGE):
+            return "right"
+        return None
 
 
 class LibraryPage(QWidget):
@@ -225,6 +375,7 @@ class LibraryPage(QWidget):
         self._pending_card_scale = self._card_scale
         self._selected_webtoons = set()
         self._category_names = []
+        self._section_order = []
         self._collapsed_sections = {}
         self._section_widgets = {}
         self._section_cards = {}
@@ -360,6 +511,7 @@ class LibraryPage(QWidget):
             scan_library(load_library_path(), self.settings_store)
         )
         self._category_names = self._load_custom_categories()
+        self._section_order = self._reconcile_section_order(load_section_order())
         self._prune_selection()
         self._rebuild_sections()
 
@@ -400,6 +552,9 @@ class LibraryPage(QWidget):
 
     def _save_custom_categories(self):
         save_custom_categories(self._category_names)
+
+    def _save_section_order(self):
+        save_section_order(self._section_order)
 
     def _card_width(self) -> int:
         return max(120, int(CARD_WIDTH * (self._card_scale / 100.0)))
@@ -484,6 +639,7 @@ class LibraryPage(QWidget):
                 title,
                 on_toggle=self._on_section_toggled,
                 on_drop=self._handle_section_drop if drop_key is not None else None,
+                on_reorder=self._handle_section_reorder,
                 on_menu=self._show_section_menu if section_key not in {
                     SECTION_DOWNLOADS,
                     SECTION_NEW,
@@ -493,7 +649,7 @@ class LibraryPage(QWidget):
                 parent=self.container,
             )
             self._section_widgets[section_key] = section
-            self.sections_layout.addWidget(section)
+            section.set_empty_card_size(self._card_width())
 
             cards = []
             for webtoon in webtoons:
@@ -513,12 +669,12 @@ class LibraryPage(QWidget):
                     download_placeholder=is_download_placeholder,
                     parent=section.grid_host,
                 )
+                self._cards_by_name[webtoon.name] = card
                 if is_download_placeholder:
                     state = self._active_manual_downloads.get(webtoon.name, {})
                     card.set_download_progress(state.get("current", 0), state.get("total", 0))
                 else:
                     card.set_selected(webtoon.name in self._selected_webtoons)
-                    self._cards_by_name[webtoon.name] = card
                 cards.append(card)
                 self._cards.append(card)
 
@@ -606,12 +762,23 @@ class LibraryPage(QWidget):
                 col = index % section_cols
                 section.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
 
-            hide_empty = bool(search_text) or section_key in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED}
+            hide_empty = bool(search_text) or section_key in {
+                SECTION_DOWNLOADS,
+                SECTION_NEW,
+                SECTION_BOOKMARKED,
+                SECTION_UNCATEGORIZED,
+            }
             should_show = bool(visible_cards) or not hide_empty
             section.setVisible(should_show)
+            section.set_empty_card_size(self._card_width())
             section.set_empty_state(
                 not search_text
-                and section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED}
+                and section_key not in {
+                    SECTION_DOWNLOADS,
+                    SECTION_NEW,
+                    SECTION_BOOKMARKED,
+                    SECTION_UNCATEGORIZED,
+                }
                 and len(cards) == 0
             )
             section.set_title(section._title, len(visible_cards) if search_text else len(cards))
@@ -644,12 +811,9 @@ class LibraryPage(QWidget):
 
     def _ordered_section_keys(self) -> list[str]:
         ordered = []
-        for system_key in (SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED):
-            if system_key in self._section_widgets:
-                ordered.append(system_key)
-        for category in self._category_names:
-            if category in self._section_widgets and category not in ordered:
-                ordered.append(category)
+        for section_key in self._section_order:
+            if section_key in self._section_widgets and section_key not in ordered:
+                ordered.append(section_key)
         for section_key in self._section_widgets:
             if section_key not in ordered:
                 ordered.append(section_key)
@@ -706,8 +870,10 @@ class LibraryPage(QWidget):
             return None
         if category not in self._category_names:
             self._category_names.append(category)
-            self._category_names.sort(key=str.lower)
             self._save_custom_categories()
+            if category not in self._section_order:
+                self._section_order.append(category)
+                self._save_section_order()
         return category
 
     def _rename_category(self, old_name: str, new_name: str):
@@ -718,12 +884,13 @@ class LibraryPage(QWidget):
             QMessageBox.information(self, "Category exists", "A category with that name already exists.")
             return
         self._category_names = [normalized if name == old_name else name for name in self._category_names]
-        self._category_names.sort(key=str.lower)
+        self._section_order = [normalized if name == old_name else name for name in self._section_order]
         for webtoon in self._webtoons:
             if getattr(webtoon, "category", None) == old_name:
                 self.settings_store.set_category(webtoon.name, normalized)
                 webtoon.category = normalized
         self._save_custom_categories()
+        self._save_section_order()
         self._rebuild_sections()
 
     def _delete_category(self, category: str):
@@ -737,11 +904,13 @@ class LibraryPage(QWidget):
         if answer != QMessageBox.Yes:
             return
         self._category_names = [name for name in self._category_names if name != category]
+        self._section_order = [name for name in self._section_order if name != category]
         for webtoon in self._webtoons:
             if getattr(webtoon, "category", None) == category:
                 self.settings_store.clear_category(webtoon.name)
                 webtoon.category = None
         self._save_custom_categories()
+        self._save_section_order()
         self._rebuild_sections()
 
     def _drag_selection_for(self, webtoon_name: str) -> list[str]:
@@ -759,6 +928,36 @@ class LibraryPage(QWidget):
             self._assign_category_to_webtoons(names, section_key)
             return True
         return False
+
+    def _handle_section_reorder(self, dragged_key: str, target_key: str, insert_after: bool = False) -> bool:
+        if dragged_key == target_key:
+            return False
+        if dragged_key not in self._section_order or target_key not in self._section_order:
+            return False
+
+        ordered = [name for name in self._section_order if name != dragged_key]
+        target_index = ordered.index(target_key)
+        if insert_after:
+            target_index += 1
+        ordered.insert(target_index, dragged_key)
+        self._section_order = ordered
+        self._save_section_order()
+        self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))
+        return True
+
+    def _reconcile_section_order(self, stored_order: list[str]) -> list[str]:
+        available = [
+            SECTION_DOWNLOADS,
+            SECTION_NEW,
+            SECTION_BOOKMARKED,
+            SECTION_UNCATEGORIZED,
+            *self._category_names,
+        ]
+        ordered = [section for section in stored_order if section in available]
+        for section in available:
+            if section not in ordered:
+                ordered.append(section)
+        return ordered
 
     def _assign_category_to_webtoons(self, names: list[str], category: str | None):
         normalized = self._create_category(category) if category else None
@@ -785,7 +984,6 @@ class LibraryPage(QWidget):
                 self._section_cards[old_section].remove(card)
             self._add_section_widget(new_section)
             self._section_cards.setdefault(new_section, []).append(card)
-        self._remove_empty_custom_sections()
         self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))
         self._clear_selection()
 
@@ -1113,6 +1311,8 @@ class LibraryPage(QWidget):
             "thumbnail": "",
             "existing": self._has_webtoon(name),
         }
+        if self._sync_manual_download_placeholders():
+            return
         self._sync_manual_download_cards()
 
     def _on_manual_download_renamed(self, old_name: str, name: str):
@@ -1122,6 +1322,8 @@ class LibraryPage(QWidget):
         )
         state["existing"] = bool(state.get("existing")) or self._has_webtoon(name)
         self._active_manual_downloads[name] = state
+        if self._sync_manual_download_placeholders():
+            return
         old_card = self._card_for(old_name)
         if old_card is not None:
             old_card.clear_download_progress()
@@ -1148,17 +1350,22 @@ class LibraryPage(QWidget):
             {"current": 0, "total": 0, "thumbnail": "", "existing": self._has_webtoon(name)},
         )
         state["thumbnail"] = path or ""
+        if self._sync_manual_download_placeholders():
+            return
         card = self._card_for(name)
         if card is not None:
             card.set_thumbnail(path)
 
     def _on_manual_download_finished(self, name: str, status: str):
         self._active_manual_downloads.pop(name, None)
-        if status == "Completed":
+        partial_webtoon = build_webtoon_from_folder(load_library_path(), name, self.settings_store)
+        if status == "Completed" or partial_webtoon is not None:
             if self.isVisible():
                 self.load_library()
             else:
                 self._pending_reload = True
+            return
+        if self._sync_manual_download_placeholders():
             return
         card = self._card_for(name)
         if card is not None:
@@ -1222,6 +1429,26 @@ class LibraryPage(QWidget):
 
     def _has_webtoon(self, webtoon_name: str) -> bool:
         return any(webtoon.name == webtoon_name for webtoon in self._webtoons)
+
+    def _active_placeholder_names(self) -> set[str]:
+        return {
+            card.webtoon.name
+            for card in self._cards
+            if getattr(card, "_download_placeholder", False)
+        }
+
+    def _expected_placeholder_names(self) -> set[str]:
+        return {
+            name
+            for name, state in self._active_manual_downloads.items()
+            if not bool(state.get("existing"))
+        }
+
+    def _sync_manual_download_placeholders(self) -> bool:
+        if self._active_placeholder_names() == self._expected_placeholder_names():
+            return False
+        self._rebuild_sections()
+        return True
 
     def _should_hide_in_progress_manual_download(self, webtoon_name: str) -> bool:
         state = self._active_manual_downloads.get(webtoon_name)

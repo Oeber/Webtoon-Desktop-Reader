@@ -32,6 +32,13 @@ def format_last_updated(timestamp: int | None) -> str:
     return f"Last updated: {stamp}"
 
 
+def format_last_activity(timestamp: int | None) -> str:
+    if timestamp is None:
+        return "Last activity: Never"
+    stamp = datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+    return f"Last activity: {stamp}"
+
+
 class SpinnerCircle(QWidget):
 
     def __init__(self, parent=None):
@@ -309,4 +316,38 @@ class UpdateEntry(DownloadEntry):
 
     def _refresh_sub_label(self):
         self.sub_label.setText(f"{self.source_url}\n{format_last_updated(self.last_update_at)}")
+        self.sub_label.show()
+
+
+class HistoryDownloadEntry(DownloadEntry):
+
+    def __init__(
+        self,
+        name: str,
+        kind: str,
+        status: str,
+        updated_at: int | None,
+        source_url: str = "",
+        on_open=None,
+    ):
+        super().__init__(name, on_open=on_open)
+        self.kind = kind
+        self.updated_at = updated_at
+        self.source_url = source_url or ""
+        self.sub_label.setWordWrap(True)
+        self._refresh_sub_label()
+        self.set_status(status)
+
+    def set_status(self, status: str):
+        super().set_status(status)
+        self._refresh_sub_label()
+
+    def _refresh_sub_label(self):
+        kind_label = "Update" if self.kind == "update" else "Manual download"
+        lines = [kind_label, format_last_activity(self.updated_at)]
+        if self.source_url:
+            lines.insert(1, self.source_url)
+        if self.status_label.text() == "Completed":
+            lines.append("Click to open details")
+        self.sub_label.setText("\n".join(lines))
         self.sub_label.show()
