@@ -1,14 +1,16 @@
 import os
 import re
+import time
+from bisect import bisect_right
 from concurrent.futures import ThreadPoolExecutor
 
 from app_logging import get_logger
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea,
-    QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication, QSlider, QMessageBox
+    QPushButton, QComboBox, QHBoxLayout, QDialog, QSlider, QMessageBox
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage
-from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QImageReader
+from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect, QSize
 
 from gui.common.styles import (
     VIEWER_RESUME_CONTINUE_BUTTON_STYLE,
@@ -17,6 +19,7 @@ from gui.common.styles import (
     VIEWER_ZOOM_BUTTON_STYLE,
     VIEWER_ZOOM_LABEL_STYLE,
 )
+from gui.downloader.download_widgets import SpinnerCircle
 from progress_store import get_instance as get_progress_store
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.settings.settings_page import load_setting, save_setting
@@ -36,6 +39,12 @@ TILE_MAX_H    = 120
 LAZY_WINDOW   = 2000
 BATCH_MS      = 16
 NUM_WORKERS   = 8
+PREVIEW_WORKERS = 2
+PANEL_WORKERS = 1
+PREVIEW_EAGER_COUNT = 4
+PREVIEW_BATCH_SIZE = 16
+PREVIEW_BATCH_MS = 24
+SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 logger = get_logger(__name__)
 
 
@@ -80,6 +89,16 @@ class ContinueDialog(QDialog):
         self.accept()
 
 
+def _format_bytes(size: int) -> str:
+    units = ("B", "KB", "MB", "GB")
+    value = float(max(0, int(size)))
+    for unit in units:
+        if value < 1024.0 or unit == units[-1]:
+            return f"{value:.1f} {unit}"
+        value /= 1024.0
+    return f"{value:.1f} GB"
+
+
 class ImageLoader(QObject):
     image_ready = Signal(int, QPixmap)
     preview_ready = Signal(int, QPixmap, int, int)  # index, thumb, natural_width, natural_height
@@ -88,6 +107,8 @@ class ImageLoader(QObject):
     def __init__(self):
         super().__init__()
         self.executor = ThreadPoolExecutor(max_workers=NUM_WORKERS)
+        self.preview_executor = ThreadPoolExecutor(max_workers=PREVIEW_WORKERS)
+        self.panel_executor = ThreadPoolExecutor(max_workers=PANEL_WORKERS)
         self._cancelled = False
         self._queued = set()
         self._preview_queued = set()
@@ -103,6 +124,8 @@ class ImageLoader(QObject):
     def shutdown(self):
         self.cancel()
         self.executor.shutdown(wait=False, cancel_futures=True)
+        self.preview_executor.shutdown(wait=False, cancel_futures=True)
+        self.panel_executor.shutdown(wait=False, cancel_futures=True)
 
     def load(self, index: int, path: str, width: int):
         if index in self._queued:
@@ -115,14 +138,30 @@ class ImageLoader(QObject):
         if index in self._preview_queued or index in self._queued:
             return
         self._preview_queued.add(index)
-        self.executor.submit(self._preview_task, index, path, max_w)
+        self.preview_executor.submit(self._preview_task, index, path, max_w)
 
     def _load_task(self, index: int, path: str):
         if self._cancelled:
             return
+        started = time.perf_counter()
         pixmap = QPixmap(path)
         if pixmap.isNull():
+            logger.warning("Viewer image load failed index=%d path=%s", index, path)
             return
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
+            file_size = 0
+        logger.info(
+            "Viewer image loaded index=%d path=%s dims=%dx%d file_size=%s load_ms=%.2f",
+            index,
+            path,
+            pixmap.width(),
+            pixmap.height(),
+            _format_bytes(file_size),
+            elapsed_ms,
+        )
         if not self._cancelled:
             self.image_ready.emit(index, pixmap)
 
@@ -137,7 +176,7 @@ class ImageLoader(QObject):
             self.preview_ready.emit(index, thumb, pixmap.width(), pixmap.height())
 
     def build_panel_starts(self, generation: int, payload: list):
-        self.executor.submit(self._panel_task, generation, payload)
+        self.panel_executor.submit(self._panel_task, generation, payload)
 
     def _panel_task(self, generation: int, payload: list):
         MIN_BLANK = 18
@@ -211,9 +250,10 @@ class ImageLoader(QObject):
 
 class ChapterPreview(QWidget):
 
-    def __init__(self, scroll_area: QScrollArea, parent=None):
+    def __init__(self, scroll_area: QScrollArea, metrics_provider=None, parent=None):
         super().__init__(parent)
         self.scroll_area = scroll_area
+        self.metrics_provider = metrics_provider
         self.image_labels = []
         self.setFixedWidth(PREVIEW_W)
         self.setCursor(Qt.PointingHandCursor)
@@ -232,6 +272,8 @@ class ChapterPreview(QWidget):
         self.update()
 
     def _scaled_label_height(self, label) -> int:
+        if self.metrics_provider is not None:
+            return self.metrics_provider.scaled_label_height(label)
         natural_w = getattr(label, '_natural_width', 0)
         natural_h = getattr(label, '_natural_height', 0)
         image_width = max(1, int(self.scroll_area.viewport().width() * self._zoom))
@@ -240,6 +282,8 @@ class ChapterPreview(QWidget):
         return max(1, label.height())
 
     def _total_content_height(self) -> int:
+        if self.metrics_provider is not None:
+            return self.metrics_provider.total_content_height()
         return sum(self._scaled_label_height(label) for label in self.image_labels)
 
     def _tile_height(self) -> int:
@@ -269,6 +313,8 @@ class ChapterPreview(QWidget):
         if not self.image_labels:
             return 0
         scroll_top = self.scroll_area.verticalScrollBar().value()
+        if self.metrics_provider is not None:
+            return self.metrics_provider.image_index_at_offset(scroll_top)
         cumulative = 0
         for i, label in enumerate(self.image_labels):
             h = self._scaled_label_height(label)
@@ -406,7 +452,10 @@ class ChapterPreview(QWidget):
     def _jump_to_image(self, index: int):
         if not self.image_labels or index >= len(self.image_labels):
             return
-        cumulative = sum(self._scaled_label_height(self.image_labels[i]) for i in range(index))
+        if self.metrics_provider is not None:
+            cumulative = self.metrics_provider.cumulative_height_before(index)
+        else:
+            cumulative = sum(self._scaled_label_height(self.image_labels[i]) for i in range(index))
         bar = self.scroll_area.verticalScrollBar()
         bar.setValue(max(0, min(cumulative, bar.maximum())))
 
@@ -474,6 +523,12 @@ class ViewerPage(QWidget):
         self._resize_anchor_px = 0
 
         self._pending_batch: dict[int, QPixmap] = {}
+        self._chapter_image_cache: dict[str, tuple[int, list[str]]] = {}
+        self._chapter_image_info_cache: dict[str, tuple[int, list[tuple[str, int, int, int]]]] = {}
+        self._queued_preview_indexes: set[int] = set()
+        self._pending_preview_queue: list[int] = []
+        self._label_heights: list[int] = []
+        self._prefix_heights: list[int] = [0]
 
         self.loader = ImageLoader()
         self.loader.image_ready.connect(self._on_image_ready)
@@ -494,6 +549,11 @@ class ViewerPage(QWidget):
         self._panel_warm_timer.setSingleShot(True)
         self._panel_warm_timer.setInterval(180)
         self._panel_warm_timer.timeout.connect(self._warm_panel_cache)
+
+        self._preview_timer = QTimer()
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.setInterval(PREVIEW_BATCH_MS)
+        self._preview_timer.timeout.connect(self._drain_preview_queue)
 
         self._zoom = load_setting("viewer_zoom", 0.5)
         self.auto_skip_enabled = load_setting("viewer_auto_skip", True)
@@ -590,7 +650,7 @@ class ViewerPage(QWidget):
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        self.preview = ChapterPreview(self.scroll)
+        self.preview = ChapterPreview(self.scroll, metrics_provider=self)
 
         content_row.addWidget(self.scroll)
         content_row.addWidget(self.preview)
@@ -621,6 +681,10 @@ class ViewerPage(QWidget):
         self.preview.installEventFilter(self)
 
         self.image_labels = []
+        self._label_pool: list[QLabel] = []
+        self._chapter_load_total = 0
+        self._chapter_load_loaded = 0
+        self._chapter_loading_active = False
 
         self.scroll.verticalScrollBar().valueChanged.connect(self.check_visible_images)
         self.scroll.verticalScrollBar().valueChanged.connect(self.preview.update)
@@ -634,6 +698,27 @@ class ViewerPage(QWidget):
         )
         self._did_immediate_first_paint = False
 
+        self.loading_overlay = QWidget(self.scroll.viewport())
+        self.loading_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 150);")
+        self.loading_overlay.hide()
+        overlay_layout = QVBoxLayout(self.loading_overlay)
+        overlay_layout.setContentsMargins(24, 24, 24, 24)
+        overlay_layout.setSpacing(10)
+        overlay_layout.setAlignment(Qt.AlignCenter)
+
+        self.loading_spinner = SpinnerCircle(self.loading_overlay)
+        self.loading_spinner.set_spinning()
+        self.loading_label = QLabel("Loading chapter...")
+        self.loading_label.setAlignment(Qt.AlignCenter)
+        self.loading_label.setStyleSheet("color: #f2f2f2; font-size: 16px; font-weight: 600;")
+        self.loading_detail_label = QLabel("")
+        self.loading_detail_label.setAlignment(Qt.AlignCenter)
+        self.loading_detail_label.setStyleSheet("color: #bdbdbd; font-size: 12px;")
+
+        overlay_layout.addWidget(self.loading_spinner, 0, Qt.AlignCenter)
+        overlay_layout.addWidget(self.loading_label)
+        overlay_layout.addWidget(self.loading_detail_label)
+
     def load_webtoon(self, webtoon, start_chapter: int = 0, start_scroll: float = 0.0):
         logger.info(
             "Viewer loading webtoon=%s chapter_index=%d start_scroll=%.3f",
@@ -644,12 +729,12 @@ class ViewerPage(QWidget):
         webtoon.path = os.path.abspath(webtoon.path)
         self.webtoon = webtoon
         self._unpack_restore(start_scroll)
-        self._apply_webtoon_settings(webtoon)
+        self._apply_webtoon_settings(webtoon, rescale_existing=False)
         self._repopulate_chapter_selector()
         self.current_chapter_index = start_chapter
         self._load_chapter_no_prompt(start_chapter)
 
-    def _apply_webtoon_settings(self, webtoon):
+    def _apply_webtoon_settings(self, webtoon, rescale_existing: bool = True):
         """Apply per-webtoon settings (zoom, hide filler). Called whenever a webtoon is opened."""
         logger.info("Applying viewer settings for %s", webtoon.name)
         # Hide filler
@@ -659,10 +744,10 @@ class ViewerPage(QWidget):
         override = self.settings_store.get_zoom_override(webtoon.name)
         if override is not None:
             self._zoom_override_active = True
-            self._set_zoom(override)
+            self._set_zoom(override, rescale_existing=rescale_existing)
         else:
             self._zoom_override_active = False
-            self._set_zoom(load_setting("viewer_zoom", 0.5))
+            self._set_zoom(load_setting("viewer_zoom", 0.5), rescale_existing=rescale_existing)
         self._zoom_reset_btn.setEnabled(self._zoom_override_active)
 
     def _current_packed_position(self) -> float:
@@ -677,9 +762,57 @@ class ViewerPage(QWidget):
             return max(1, int(image_width * (natural_h / natural_w)))
         return max(1, label.height())
 
+    def scaled_label_height(self, label) -> int:
+        return self._scaled_label_height(label)
+
+    def _reset_layout_metrics(self):
+        self._label_heights = []
+        self._prefix_heights = [0]
+
+    def _set_label_height_cache(self, index: int, height: int):
+        if index < 0 or index >= len(self.image_labels):
+            return
+        height = max(1, int(height))
+        if index >= len(self._label_heights):
+            self._label_heights.extend([0] * (index + 1 - len(self._label_heights)))
+        if self._label_heights[index] == height:
+            return
+        self._label_heights[index] = height
+        self._rebuild_prefix_heights()
+
+    def _rebuild_prefix_heights(self):
+        prefix = [0]
+        running = 0
+        for height in self._label_heights:
+            running += max(1, int(height))
+            prefix.append(running)
+        self._prefix_heights = prefix
+
+    def cumulative_height_before(self, index: int) -> int:
+        if index <= 0:
+            return 0
+        if index < len(self._prefix_heights):
+            return self._prefix_heights[index]
+        return self._prefix_heights[-1]
+
+    def total_content_height(self) -> int:
+        return self._prefix_heights[-1] if self._prefix_heights else 0
+
+    def image_index_at_offset(self, scroll_top: int) -> int:
+        if not self.image_labels:
+            return 0
+        idx = bisect_right(self._prefix_heights, max(0, int(scroll_top))) - 1
+        return max(0, min(len(self.image_labels) - 1, idx))
+
     def _packed_position_at(self, scroll_top: int, zoom: float | None = None) -> float:
         if not self.image_labels:
             return 0.0
+        if zoom is None or abs(zoom - self._zoom) < 0.0001:
+            idx = self.image_index_at_offset(scroll_top)
+            cumulative = self.cumulative_height_before(idx)
+            h = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx], zoom)
+            offset_frac = ((scroll_top - cumulative) / h) if h > 0 else 0.0
+            return idx + offset_frac
         scroll_top = max(0, scroll_top)
         cumulative = 0
         for i, label in enumerate(self.image_labels):
@@ -729,10 +862,9 @@ class ViewerPage(QWidget):
             self._restore_image_index = None
 
     def _jump_to_packed(self, idx: int, offset_frac: float, anchor_px: int = 0) -> bool:
-        cumulative = sum(self._scaled_label_height(self.image_labels[i]) for i in range(idx))
-        target_px = cumulative + int(self._scaled_label_height(self.image_labels[idx]) * offset_frac) - max(0, anchor_px)
-
-        QApplication.processEvents()
+        cumulative = self.cumulative_height_before(idx)
+        height = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx])
+        target_px = cumulative + int(height * offset_frac) - max(0, anchor_px)
 
         bar = self.scroll.verticalScrollBar()
         bar.setValue(max(0, min(target_px, bar.maximum())))
@@ -742,6 +874,8 @@ class ViewerPage(QWidget):
     def _on_image_ready(self, index: int, pixmap: QPixmap):
         if index >= len(self.image_labels):
             return
+        self._chapter_load_loaded += 1
+        self._update_loading_overlay()
 
         # Only do one immediate paint per chapter load.
         # Everything else should go through the batch path so restore logic runs.
@@ -751,12 +885,14 @@ class ViewerPage(QWidget):
             label._natural_width = pixmap.width()
             label._natural_height = pixmap.height()
             self._apply_pixmap_to_label(label)
+            self._set_label_height_cache(index, label.height())
 
             self._did_immediate_first_paint = True
 
             self.preview.notify_image_loaded()
             self.check_visible_images()
             self._panel_warm_timer.start()
+            self._hide_loading_overlay()
 
             # Restore might already be possible for very small saved positions.
             self._apply_restore()
@@ -783,6 +919,7 @@ class ViewerPage(QWidget):
                 label._natural_width = pixmap.width()
                 label._natural_height = pixmap.height()
                 self._apply_pixmap_to_label(label)
+                self._set_label_height_cache(index, label.height())
                 if restore_idx is not None and index <= restore_idx:
                     needs_restore_check = True
         finally:
@@ -870,23 +1007,30 @@ class ViewerPage(QWidget):
     def clear_images(self):
         self._batch_timer.stop()
         self._panel_warm_timer.stop()
+        self._preview_timer.stop()
         self._pending_batch.clear()
+        self._pending_preview_queue.clear()
+        self._queued_preview_indexes.clear()
         self._did_immediate_first_paint = False
 
         self.loader.cancel()
         self.loader.reset()
-        self.scroll.takeWidget()
-
-        for label in self.image_labels:
-            label.deleteLater()
+        while self.image_layout.count():
+            item = self.image_layout.takeAt(0)
+            widget = item.widget()
+            if widget is None:
+                continue
+            widget.clear()
+            widget.hide()
+            widget._source_pixmap = None
+            widget._preview_pixmap = None
+            widget._natural_width = 0
+            widget._natural_height = 0
+            widget._file_size = 0
+            widget.img_path = ""
+            self._label_pool.append(widget)
         self.image_labels = []
-
-        self.container = QWidget()
-        self.container.installEventFilter(self)
-        self.image_layout = QVBoxLayout(self.container)
-        self.image_layout.setSpacing(0)
-        self.image_layout.setContentsMargins(0, 0, 0, 0)
-        self.scroll.setWidget(self.container)
+        self._reset_layout_metrics()
 
         self.preview.set_image_labels([])
 
@@ -895,18 +1039,65 @@ class ViewerPage(QWidget):
         self._panel_build_generation += 1
         self._panel_build_inflight = False
 
+    def _show_loading_overlay(self, chapter: str, total_images: int = 0):
+        self._chapter_load_total = max(0, int(total_images))
+        self._chapter_load_loaded = 0
+        self._chapter_loading_active = True
+        self.loading_spinner.set_spinning()
+        self.loading_label.setText(f"Loading {chapter}...")
+        if self._chapter_load_total > 0:
+            self.loading_detail_label.setText(f"0 / {self._chapter_load_total} images decoded")
+        else:
+            self.loading_detail_label.setText("Preparing images...")
+        self._position_loading_overlay()
+        self.loading_overlay.show()
+        self.loading_overlay.raise_()
+
+    def _update_loading_overlay(self):
+        if not self._chapter_loading_active:
+            return
+        if self._chapter_load_total > 0:
+            self.loading_detail_label.setText(
+                f"{self._chapter_load_loaded} / {self._chapter_load_total} images decoded"
+            )
+        else:
+            self.loading_detail_label.setText(f"{self._chapter_load_loaded} images decoded")
+
+    def _hide_loading_overlay(self):
+        self._chapter_loading_active = False
+        self.loading_overlay.hide()
+
+    def _position_loading_overlay(self):
+        if not hasattr(self, "loading_overlay"):
+            return
+        self.loading_overlay.setGeometry(self.scroll.viewport().rect())
+
+    def _acquire_image_label(self) -> QLabel:
+        if self._label_pool:
+            label = self._label_pool.pop()
+        else:
+            label = QLabel(self.container)
+            label.setAlignment(Qt.AlignCenter)
+            label.setMinimumHeight(400)
+        label.show()
+        return label
+
     def shutdown(self):
         logger.info("Shutting down viewer background workers")
         self._batch_timer.stop()
         self._panel_warm_timer.stop()
+        self._preview_timer.stop()
+        self._hide_loading_overlay()
         self.loader.shutdown()
 
     def _load_chapter_images(self, chapter):
         self.clear_images()
+        self._show_loading_overlay(chapter)
 
         chapter_path = os.path.join(self.webtoon.path, chapter)
         if not os.path.isdir(chapter_path):
             logger.warning("Viewer chapter path missing: %s", chapter_path)
+            self._hide_loading_overlay()
             QMessageBox.information(
                 self,
                 "Chapter missing",
@@ -914,13 +1105,11 @@ class ViewerPage(QWidget):
             )
             return
 
-        image_files = sorted(
-            f for f in os.listdir(chapter_path)
-            if f.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
-        )
+        image_infos = self._get_chapter_image_infos(chapter)
 
-        if not image_files:
+        if not image_infos:
             logger.warning("Viewer chapter has no readable images: %s", chapter_path)
+            self._hide_loading_overlay()
             QMessageBox.information(
                 self,
                 "Chapter empty",
@@ -928,17 +1117,26 @@ class ViewerPage(QWidget):
             )
             return
 
-        for img_file in image_files:
-            label = QLabel()
-            label.img_path = os.path.join(chapter_path, img_file)
+        self._show_loading_overlay(chapter, total_images=len(image_infos))
+        target_width = self._image_width()
+
+        for img_path, natural_w, natural_h, file_size in image_infos:
+            label = self._acquire_image_label()
+            label.img_path = img_path
             label._source_pixmap = None
             label._preview_pixmap = None
-            label._natural_width = 0
-            label._natural_height = 0
-            label.setAlignment(Qt.AlignCenter)
-            label.setMinimumHeight(400)
+            label._natural_width = natural_w
+            label._natural_height = natural_h
+            label._file_size = file_size
+            if natural_w > 0 and natural_h > 0:
+                placeholder_height = max(100, int(target_width * (natural_h / natural_w)))
+            else:
+                placeholder_height = 400
+            label.setFixedHeight(placeholder_height)
             self.image_layout.addWidget(label)
             self.image_labels.append(label)
+        self._label_heights = [label.height() for label in self.image_labels]
+        self._rebuild_prefix_heights()
         logger.info("Viewer queued %d images for %s / %s", len(self.image_labels), self.webtoon.name, chapter)
 
         self.preview.set_image_labels(self.image_labels)
@@ -946,15 +1144,83 @@ class ViewerPage(QWidget):
         self.check_visible_images()
         QTimer.singleShot(0, self.check_visible_images)
 
-        # Immediately queue small thumbnails for all images so the preview
-        # strip populates quickly regardless of scroll position.
-        for idx, label in enumerate(self.image_labels):
-            self.loader.load_preview(idx, label.img_path)
+        self._queue_initial_previews()
 
         if self._restore_image_index is not None:
             self._preload_restore_target()
 
         self.setFocus()
+
+    def _chapter_cache_entry(self, chapter: str) -> tuple[str, int]:
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        try:
+            mtime_ns = os.stat(chapter_path).st_mtime_ns
+        except OSError:
+            mtime_ns = -1
+        return chapter_path, mtime_ns
+
+    def _get_chapter_image_paths(self, chapter: str) -> list[str]:
+        chapter_path, mtime_ns = self._chapter_cache_entry(chapter)
+        cached = self._chapter_image_cache.get(chapter_path)
+        if cached is not None and cached[0] == mtime_ns:
+            return list(cached[1])
+
+        image_paths = sorted(
+            entry.path
+            for entry in os.scandir(chapter_path)
+            if entry.is_file() and entry.name.lower().endswith(SUPPORTED_VIEWER_EXTENSIONS)
+        )
+        self._chapter_image_cache[chapter_path] = (mtime_ns, image_paths)
+        return list(image_paths)
+
+    def _get_chapter_image_infos(self, chapter: str) -> list[tuple[str, int, int, int]]:
+        chapter_path, mtime_ns = self._chapter_cache_entry(chapter)
+        cached = self._chapter_image_info_cache.get(chapter_path)
+        if cached is not None and cached[0] == mtime_ns:
+            return list(cached[1])
+
+        infos = []
+        for path in self._get_chapter_image_paths(chapter):
+            reader = QImageReader(path)
+            size = reader.size()
+            if not size.isValid():
+                size = QSize(0, 0)
+            try:
+                file_size = os.path.getsize(path)
+            except OSError:
+                file_size = 0
+            infos.append((path, max(0, size.width()), max(0, size.height()), file_size))
+
+        self._chapter_image_info_cache[chapter_path] = (mtime_ns, infos)
+        return list(infos)
+
+    def _queue_preview_index(self, index: int):
+        if index < 0 or index >= len(self.image_labels) or index in self._queued_preview_indexes:
+            return
+        self._queued_preview_indexes.add(index)
+        self.loader.load_preview(index, self.image_labels[index].img_path)
+
+    def _queue_initial_previews(self):
+        eager_count = min(len(self.image_labels), PREVIEW_EAGER_COUNT)
+        for index in range(eager_count):
+            self._queue_preview_index(index)
+
+        self._pending_preview_queue = list(range(eager_count, len(self.image_labels)))
+        if self._pending_preview_queue:
+            self._preview_timer.start()
+
+    def _drain_preview_queue(self):
+        if not self._pending_preview_queue:
+            return
+
+        batch = self._pending_preview_queue[:PREVIEW_BATCH_SIZE]
+        del self._pending_preview_queue[:PREVIEW_BATCH_SIZE]
+
+        for index in batch:
+            self._queue_preview_index(index)
+
+        if self._pending_preview_queue:
+            self._preview_timer.start()
 
     def _preload_restore_target(self):
         idx = self._restore_image_index
@@ -967,20 +1233,22 @@ class ViewerPage(QWidget):
     def check_visible_images(self):
         viewport_top = self.scroll.verticalScrollBar().value()
         viewport_bottom = viewport_top + self.scroll.viewport().height()
+        if not self.image_labels:
+            return
 
-        cumulative = 0
-        for i, label in enumerate(self.image_labels):
-            h = self._scaled_label_height(label)
-            pos = cumulative
-            cumulative += h
+        start_index = self.image_index_at_offset(max(0, viewport_top - LAZY_WINDOW))
+        end_index = min(
+            len(self.image_labels) - 1,
+            self.image_index_at_offset(viewport_bottom + LAZY_WINDOW),
+        )
 
-            if pos + h < viewport_top - LAZY_WINDOW:
-                continue
-            if pos > viewport_bottom + LAZY_WINDOW:
-                continue
+        for i in range(start_index, end_index + 1):
+            label = self.image_labels[i]
             if getattr(label, '_source_pixmap', None) is not None:
+                self._queue_preview_index(i)
                 continue
 
+            self._queue_preview_index(i)
             self.loader.load(i, label.img_path, 0)
 
     def _zoom_out(self):
@@ -1004,9 +1272,11 @@ class ViewerPage(QWidget):
         self._zoom_override_active = True
         self._zoom_reset_btn.setEnabled(True)
 
-    def _set_zoom(self, zoom: float, update_slider: bool = True):
+    def _set_zoom(self, zoom: float, update_slider: bool = True, rescale_existing: bool = True):
         previous_zoom = self._zoom
-        self._zoom = max(0.25, min(1.0, zoom))
+        next_zoom = max(0.25, min(1.0, zoom))
+        changed = abs(next_zoom - previous_zoom) > 0.0001
+        self._zoom = next_zoom
 
         self._zoom_slider.blockSignals(True)
         self._zoom_slider.setValue(int(self._zoom * 100))
@@ -1015,7 +1285,8 @@ class ViewerPage(QWidget):
         self._zoom_label.setText(f"{int(self._zoom * 100)}%")
 
         self.preview.set_zoom(self._zoom)
-        self.rescale_images(previous_zoom)
+        if rescale_existing and changed and self.image_labels:
+            self.rescale_images(previous_zoom)
 
     def _image_width(self) -> int:
         return max(1, int(self.scroll.viewport().width() * self._zoom))
@@ -1038,8 +1309,9 @@ class ViewerPage(QWidget):
 
         self.container.setUpdatesEnabled(False)
         try:
-            for label in self.image_labels:
+            for index, label in enumerate(self.image_labels):
                 self._apply_pixmap_to_label(label)
+                self._set_label_height_cache(index, label.height())
         finally:
             self.container.setUpdatesEnabled(True)
 
@@ -1134,6 +1406,7 @@ class ViewerPage(QWidget):
 
     def resizeEvent(self, event):
         self._resize_timer.start()
+        self._position_loading_overlay()
         super().resizeEvent(event)
 
     def _invalidate_panel_cache(self):
@@ -1187,6 +1460,7 @@ class ViewerPage(QWidget):
             aspect = natural_h / natural_w
             scaled_h = max(100, int(self._image_width() * aspect))
             label.setFixedHeight(scaled_h)
+            self._set_label_height_cache(index, scaled_h)
         self.preview.notify_image_loaded()
 
     def _get_panel_starts(self) -> list[int]:
@@ -1195,7 +1469,7 @@ class ViewerPage(QWidget):
         return self._panel_starts
 
     def _total_content_height(self) -> int:
-        return sum(self._scaled_label_height(label) for label in self.image_labels)
+        return self.total_content_height()
 
     def _merge_close_targets(self, targets: list[int], min_gap: int) -> list[int]:
         if not targets:

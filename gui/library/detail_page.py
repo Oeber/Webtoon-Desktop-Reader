@@ -116,6 +116,7 @@ class DetailPage(QWidget):
         self.settings_store = get_webtoon_settings()
         self._update_service = None
         self._chapter_display_order = []
+        self._chapter_dir_cache: tuple[str, int, list[str]] | None = None
         self._update_progress_current = 0
         self._update_progress_total = 0
         self._update_timer = QTimer(self)
@@ -359,6 +360,7 @@ class DetailPage(QWidget):
     def load_webtoon(self, webtoon, progress_store):
         logger.info("Loading detail page for %s", webtoon.name)
         self.webtoon        = webtoon
+        self.webtoon.path = os.path.abspath(webtoon.path)
         self.progress_store = progress_store
         self.progress_map   = progress_store.get_progress_map(webtoon.name)
         self.bookmarked_chapters = self.settings_store.get_bookmarked_chapters(webtoon.name)
@@ -366,6 +368,7 @@ class DetailPage(QWidget):
         self.latest_new_chapter = self.settings_store.get_latest_new_chapter(webtoon.name)
         self.webtoon_bookmarked = self.settings_store.get_bookmarked(webtoon.name)
         self._chapter_display_order = self._ordered_chapters_for_display(webtoon.chapters)
+        self._chapter_dir_cache = None
         self._update_progress_current = 0
         self._update_progress_total = 0
         self.show_only_bookmarked = False
@@ -785,15 +788,38 @@ class DetailPage(QWidget):
             base.reverse()
         return base
 
+    def _get_disk_chapter_dirs(self) -> list[str]:
+        if self.webtoon is None:
+            return []
+
+        path = self.webtoon.path
+        try:
+            mtime_ns = os.stat(path).st_mtime_ns
+        except OSError:
+            return []
+
+        cached = self._chapter_dir_cache
+        if cached is not None and cached[0] == path and cached[1] == mtime_ns:
+            return list(cached[2])
+
+        chapter_dirs = sorted(
+            (
+                entry.name
+                for entry in os.scandir(path)
+                if entry.is_dir()
+            ),
+            key=chapter_sort_key,
+        )
+        self._chapter_dir_cache = (path, mtime_ns, chapter_dirs)
+        return list(chapter_dirs)
+
     def _refresh_webtoon_from_disk(self, preserve_display_order: bool = False) -> bool:
         if self.webtoon is None:
             return False
 
-        chapter_dirs = [
-            entry for entry in os.listdir(self.webtoon.path)
-            if os.path.isdir(os.path.join(self.webtoon.path, entry))
-        ]
-        chapter_dirs.sort(key=chapter_sort_key)
+        chapter_dirs = self._get_disk_chapter_dirs()
+        if not chapter_dirs and not os.path.isdir(self.webtoon.path):
+            return False
 
         if chapter_dirs == list(self.webtoon.chapters):
             return True
