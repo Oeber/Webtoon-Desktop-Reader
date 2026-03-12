@@ -49,6 +49,7 @@ class WebtoonCard(QWidget):
         on_open,
         on_changed,
         on_update=None,
+        on_select=None,
         card_width: int = CARD_WIDTH,
     ):
         super().__init__()
@@ -59,6 +60,7 @@ class WebtoonCard(QWidget):
         self.on_open = on_open
         self.on_changed = on_changed
         self.on_update = on_update
+        self.on_select = on_select
 
         self._latest_connected = False
         self._lastread_connected = False
@@ -68,6 +70,7 @@ class WebtoonCard(QWidget):
         self._update_button_label = ""
         self._update_menu = None
         self._update_action = None
+        self._selected = False
         self.card_width = max(120, card_width)
         self.card_height = int(self.card_width * (CARD_HEIGHT / CARD_WIDTH))
 
@@ -131,6 +134,16 @@ class WebtoonCard(QWidget):
         self.update_btn.hide()
         self.update_btn.clicked.connect(self._trigger_update)
         self._set_update_button_idle()
+
+        self.select_btn = QPushButton()
+        self.select_btn.setParent(self.image_container)
+        self.select_btn.setCheckable(True)
+        self.select_btn.setFixedSize(28, 28)
+        self.select_btn.move(6, self.card_height - 34)
+        self.select_btn.setCursor(Qt.PointingHandCursor)
+        self.select_btn.clicked.connect(self._toggle_selected_from_button)
+        self._apply_select_button_style()
+        self._refresh_select_button()
 
         self.progress_overlay = QWidget(self.image_container)
         self.progress_overlay.setFixedSize(84, 84)
@@ -288,6 +301,14 @@ class WebtoonCard(QWidget):
         self._load_thumbnail(webtoon.thumbnail)
         self._refresh_badges()
 
+    def set_selected(self, selected: bool):
+        self._selected = bool(selected)
+        self.select_btn.blockSignals(True)
+        self.select_btn.setChecked(self._selected)
+        self.select_btn.blockSignals(False)
+        self._refresh_select_button()
+        self._apply_border_style(hovered=self.underMouse())
+
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
         menu.setStyleSheet("""
@@ -370,7 +391,10 @@ class WebtoonCard(QWidget):
         super().leaveEvent(event)
 
     def _apply_border_style(self, hovered: bool):
-        color = "#666" if hovered else "#2a2a2a"
+        if self._selected:
+            color = "#2979ff"
+        else:
+            color = "#666" if hovered else "#2a2a2a"
         self.image_label.setStyleSheet(f"""
             QLabel {{
                 background-color: #1e1e1e;
@@ -387,7 +411,7 @@ class WebtoonCard(QWidget):
 
             target = self.childAt(event.position().toPoint())
             while target is not None and target is not self:
-                if target in (self.dots_btn, self.latest_btn, self.lastread_btn, self.update_btn):
+                if target in (self.dots_btn, self.latest_btn, self.lastread_btn, self.update_btn, self.select_btn):
                     event.accept()
                     return
                 target = target.parentWidget()
@@ -465,6 +489,33 @@ class WebtoonCard(QWidget):
             self.update_btn.setText("")
             self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
             self.update_btn.setIconSize(QSize(12, 12))
+
+    def _toggle_selected_from_button(self):
+        self._selected = self.select_btn.isChecked()
+        self._refresh_select_button()
+        self._apply_border_style(hovered=self.underMouse())
+        if callable(self.on_select):
+            self.on_select(self.webtoon.name, self._selected)
+
+    def _apply_select_button_style(self):
+        self.select_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0,0,0,0.65);
+                color: #fff;
+                border: none;
+                border-radius: 14px;
+                padding: 0;
+            }
+            QPushButton:hover { background: rgba(80,80,80,0.90); }
+            QPushButton:checked { background: rgba(41,121,255,0.95); }
+        """)
+
+    def _refresh_select_button(self):
+        if self._selected:
+            self.select_btn.setIcon(qta.icon("fa5s.check", color="#ffffff"))
+        else:
+            self.select_btn.setIcon(qta.icon("fa5s.circle", color="#ffffff"))
+        self.select_btn.setIconSize(QSize(12, 12))
 
     def _clear_menu_refs(self):
         self._update_menu = None

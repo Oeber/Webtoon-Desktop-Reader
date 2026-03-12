@@ -1,8 +1,10 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGridLayout, QScrollArea, QHBoxLayout, QLabel, QSlider,
+    QWidget, QVBoxLayout, QGridLayout, QScrollArea, QHBoxLayout, QLabel, QSlider, QPushButton,
 )
-from PySide6.QtWidgets import QApplication, QLineEdit
+from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 from PySide6.QtCore import Qt, QTimer
+import os
+import shutil
 import time
 
 from app_logging import get_logger
@@ -41,6 +43,7 @@ class LibraryPage(QWidget):
         self._block_input_until = 0.0
         self._pending_reload = False
         self._card_scale = int(load_setting(CARD_SCALE_KEY, 100))
+        self._selected_webtoons = set()
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -74,6 +77,68 @@ class LibraryPage(QWidget):
         controls.addWidget(self.size_value_label)
 
         root_layout.addLayout(controls)
+
+        self.batch_bar = QWidget()
+        self.batch_bar.setStyleSheet("""
+            QWidget {
+                background: #171717;
+                border-top: 1px solid #242424;
+                border-bottom: 1px solid #242424;
+            }
+        """)
+        batch_layout = QHBoxLayout(self.batch_bar)
+        batch_layout.setContentsMargins(PAGE_PADDING, 10, PAGE_PADDING, 10)
+        batch_layout.setSpacing(10)
+
+        self.batch_label = QLabel("")
+        self.batch_label.setStyleSheet("color: #d0d0d0; font-size: 12px;")
+        batch_layout.addWidget(self.batch_label)
+
+        self.mark_completed_btn = QPushButton("Mark Completed")
+        self.mark_completed_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a2a2a;
+                color: #f0f0f0;
+                border: 1px solid #343434;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #333333; }
+        """)
+        self.mark_completed_btn.clicked.connect(self._mark_selected_completed)
+        batch_layout.addWidget(self.mark_completed_btn)
+
+        self.update_selected_btn = QPushButton("Update Selected")
+        self.update_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
+        self.update_selected_btn.clicked.connect(self._update_selected)
+        batch_layout.addWidget(self.update_selected_btn)
+
+        self.delete_selected_btn = QPushButton("Delete Selected")
+        self.delete_selected_btn.setStyleSheet("""
+            QPushButton {
+                background: #4a1f1f;
+                color: #ffffff;
+                border: 1px solid #703030;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #5a2727; }
+        """)
+        self.delete_selected_btn.clicked.connect(self._delete_selected)
+        batch_layout.addWidget(self.delete_selected_btn)
+
+        self.clear_selection_btn = QPushButton("Clear")
+        self.clear_selection_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
+        self.clear_selection_btn.clicked.connect(self._clear_selection)
+        batch_layout.addWidget(self.clear_selection_btn)
+        batch_layout.addStretch()
+
+        self.batch_bar.hide()
+        root_layout.addWidget(self.batch_bar)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -110,6 +175,7 @@ class LibraryPage(QWidget):
         logger.info("Loading library page contents")
         self._pending_reload = False
         self._webtoons = scan_library(load_library_path(), self.settings_store)
+        self._prune_selection()
         self._rebuild_grid(self._columns_for_width(self.width()))
 
     def showEvent(self, event):
@@ -150,12 +216,15 @@ class LibraryPage(QWidget):
                 on_open=self._open_detail,
                 on_changed=self._reload_after_edit,
                 on_update=self._start_update,
+                on_select=self._on_card_selected,
                 card_width=self._card_width(),
             )
+            card.set_selected(webtoon.name in self._selected_webtoons)
             self._cards.append(card)
             self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
 
         self._sync_update_controls()
+        self._sync_batch_actions()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -260,6 +329,119 @@ class LibraryPage(QWidget):
             else:
                 card.set_update_enabled(True, "Update this webtoon")
             card.set_update_status("Ready")
+
+    def _on_card_selected(self, webtoon_name: str, selected: bool):
+        if selected:
+            self._selected_webtoons.add(webtoon_name)
+        else:
+            self._selected_webtoons.discard(webtoon_name)
+        self._sync_batch_actions()
+
+    def _sync_batch_actions(self):
+        count = len(self._selected_webtoons)
+        self.batch_bar.setVisible(count > 0)
+        if count <= 0:
+            return
+        self.batch_label.setText(f"{count} selected")
+        all_completed = all(
+            self.settings_store.get_completed(name)
+            for name in self._selected_webtoons
+        )
+        self.mark_completed_btn.setText("Mark Ongoing" if all_completed else "Mark Completed")
+        updatable = any(
+            self.settings_store.get_source_url(name) and not self.settings_store.get_completed(name)
+            for name in self._selected_webtoons
+        )
+        self.update_selected_btn.setEnabled(updatable)
+
+    def _clear_selection(self):
+        self._selected_webtoons.clear()
+        for card in self._cards:
+            card.set_selected(False)
+        self._sync_batch_actions()
+
+    def _prune_selection(self):
+        valid_names = {webtoon.name for webtoon in self._webtoons}
+        self._selected_webtoons = {
+            name for name in self._selected_webtoons
+            if name in valid_names
+        }
+
+    def _mark_selected_completed(self):
+        selected = sorted(self._selected_webtoons)
+        if not selected:
+            return
+        all_completed = all(
+            self.settings_store.get_completed(name)
+            for name in selected
+        )
+        for name in selected:
+            self.settings_store.set_completed(name, not all_completed)
+        logger.info(
+            "Marked %d selected webtoons as %s",
+            len(selected),
+            "ongoing" if all_completed else "completed",
+        )
+        self.load_library()
+        self._apply_filter()
+        self._clear_selection()
+
+    def _update_selected(self):
+        selected = [
+            webtoon.name
+            for webtoon in self._webtoons
+            if webtoon.name in self._selected_webtoons
+        ]
+        if not selected:
+            return
+        for name in selected:
+            if self.settings_store.get_completed(name):
+                continue
+            if not self.settings_store.get_source_url(name):
+                continue
+            self._start_update(name)
+        self._clear_selection()
+
+    def _delete_selected(self):
+        selected = sorted(self._selected_webtoons)
+        if not selected:
+            return
+
+        if len(selected) == 1:
+            message = f"Delete '{selected[0]}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings."
+        else:
+            message = (
+                f"Delete {len(selected)} webtoons from the library?\n\n"
+                "This removes their folders, progress, thumbnail overrides, and saved settings."
+            )
+
+        answer = QMessageBox.question(
+            self,
+            "Delete selected webtoons",
+            message,
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        library_path = load_library_path()
+        deleted_count = 0
+        for name in selected:
+            try:
+                webtoon_path = os.path.join(library_path, name)
+                if os.path.isdir(webtoon_path):
+                    shutil.rmtree(webtoon_path)
+                self.progress_store.clear(name)
+                self.settings_store.delete_webtoon(name)
+                deleted_count += 1
+            except Exception as e:
+                logger.error("Failed to delete selected webtoon %s", name, exc_info=e)
+
+        logger.info("Deleted %d selected webtoons", deleted_count)
+        self.load_library()
+        self._apply_filter()
+        self._clear_selection()
 
     def _on_update_started(self, name: str):
         self._sync_update_controls()
