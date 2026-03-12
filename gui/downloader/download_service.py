@@ -19,7 +19,6 @@ from gui.downloader.helpers import (
     detect_url_type,
     extract_episode_number,
     sanitize_webtoon_name,
-    series_url_from_chapter_url,
 )
 from scrapers.base import ScraperError
 from scrapers.registry import get_scraper
@@ -153,7 +152,7 @@ class DownloadService(QObject):
         try:
             scraper = get_scraper(url)
             series = scraper.get_series_info(
-                url if detect_url_type(url) == "series" else series_url_from_chapter_url(url)
+                url if not scraper.is_chapter_url(url) else scraper.series_url_from_chapter_url(url)
             )
             return sanitize_webtoon_name(series.title)
         except Exception:
@@ -226,10 +225,10 @@ class DownloadService(QObject):
 
         scraper = get_scraper(url)
         headers = scraper.get_request_headers(url)
-        url_type = detect_url_type(url)
+        url_type = "chapter" if scraper.is_chapter_url(url) else "series"
 
         if url_type == "chapter":
-            series_url = series_url_from_chapter_url(url)
+            series_url = scraper.series_url_from_chapter_url(url)
             series = scraper.get_series_info(series_url)
             chapter_list = [c for c in series.chapters if c.url.rstrip("/") == url.rstrip("/")]
             if not chapter_list:
