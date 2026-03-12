@@ -5,6 +5,7 @@
 *.db
 *.bak
 *.json 
+*.log
 
 
 !/scrapers 
