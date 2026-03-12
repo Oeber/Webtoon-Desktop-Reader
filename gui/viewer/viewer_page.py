@@ -6,11 +6,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app_logging import get_logger
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QScrollArea,
+    QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QSlider, QMessageBox
 )
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QImageReader
-from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect, QSize
+from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QObject, QRect, QSize
 
 from gui.common.styles import (
     VIEWER_RESUME_CONTINUE_BUTTON_STYLE,
@@ -506,6 +506,8 @@ class ChapterPreview(QWidget):
 
 
 class ViewerPage(QWidget):
+    chapter_loading_started = Signal(str, str)
+    chapter_loading_finished = Signal(str, str)
 
     def __init__(self, main_window):
         super().__init__()
@@ -981,6 +983,7 @@ class ViewerPage(QWidget):
     def _load_chapter_no_prompt(self, index):
         if not self.webtoon:
             return
+        self._progress_save_timer.stop()
         self.current_chapter_index = index
         chapter = self.webtoon.chapters[index]
         logger.info("Viewer loading chapter without prompt: %s / %s", self.webtoon.name, chapter)
@@ -1043,6 +1046,8 @@ class ViewerPage(QWidget):
         self._chapter_load_total = max(0, int(total_images))
         self._chapter_load_loaded = 0
         self._chapter_loading_active = True
+        if self.webtoon is not None:
+            self.chapter_loading_started.emit(self.webtoon.name, chapter)
         self.loading_spinner.set_spinning()
         self.loading_label.setText(f"Loading {chapter}...")
         if self._chapter_load_total > 0:
@@ -1052,6 +1057,7 @@ class ViewerPage(QWidget):
         self._position_loading_overlay()
         self.loading_overlay.show()
         self.loading_overlay.raise_()
+        QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
     def _update_loading_overlay(self):
         if not self._chapter_loading_active:
@@ -1064,8 +1070,13 @@ class ViewerPage(QWidget):
             self.loading_detail_label.setText(f"{self._chapter_load_loaded} images decoded")
 
     def _hide_loading_overlay(self):
+        chapter = None
+        if self.webtoon is not None and 0 <= self.current_chapter_index < len(self.webtoon.chapters):
+            chapter = self.webtoon.chapters[self.current_chapter_index]
         self._chapter_loading_active = False
         self.loading_overlay.hide()
+        if self.webtoon is not None and chapter is not None:
+            self.chapter_loading_finished.emit(self.webtoon.name, chapter)
 
     def _position_loading_overlay(self):
         if not hasattr(self, "loading_overlay"):
@@ -1180,7 +1191,7 @@ class ViewerPage(QWidget):
             return list(cached[1])
 
         infos = []
-        for path in self._get_chapter_image_paths(chapter):
+        for index, path in enumerate(self._get_chapter_image_paths(chapter), start=1):
             reader = QImageReader(path)
             size = reader.size()
             if not size.isValid():
@@ -1190,6 +1201,8 @@ class ViewerPage(QWidget):
             except OSError:
                 file_size = 0
             infos.append((path, max(0, size.width()), max(0, size.height()), file_size))
+            if index % 8 == 0 and self._chapter_loading_active:
+                QApplication.processEvents(QEventLoop.ExcludeUserInputEvents)
 
         self._chapter_image_info_cache[chapter_path] = (mtime_ns, infos)
         return list(infos)

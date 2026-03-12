@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QMainWindow, QStackedWidget,
-    QWidget, QHBoxLayout, QPushButton, QVBoxLayout, QMessageBox
+    QApplication, QWidget, QHBoxLayout, QPushButton, QVBoxLayout, QMessageBox, QLabel
 )
 
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, Qt
@@ -18,6 +18,7 @@ from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
 from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
+from gui.downloader.download_widgets import SpinnerCircle
 from gui.search.global_search import GlobalSearchDialog
 
 logger = get_logger(__name__)
@@ -123,6 +124,27 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.stack)
 
         self.setCentralWidget(root)
+        self._chapter_loading_overlay = QWidget(self.stack)
+        self._chapter_loading_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 140);")
+        self._chapter_loading_overlay.hide()
+        chapter_overlay_layout = QVBoxLayout(self._chapter_loading_overlay)
+        chapter_overlay_layout.setContentsMargins(24, 24, 24, 24)
+        chapter_overlay_layout.setSpacing(10)
+        chapter_overlay_layout.setAlignment(Qt.AlignCenter)
+
+        self._chapter_loading_spinner = SpinnerCircle(self._chapter_loading_overlay)
+        self._chapter_loading_spinner.set_spinning()
+        self._chapter_loading_label = QLabel("Loading chapter...")
+        self._chapter_loading_label.setAlignment(Qt.AlignCenter)
+        self._chapter_loading_label.setStyleSheet("color: #f2f2f2; font-size: 16px; font-weight: 600;")
+        self._chapter_loading_detail_label = QLabel("")
+        self._chapter_loading_detail_label.setAlignment(Qt.AlignCenter)
+        self._chapter_loading_detail_label.setStyleSheet("color: #bdbdbd; font-size: 12px;")
+
+        chapter_overlay_layout.addWidget(self._chapter_loading_spinner, 0, Qt.AlignCenter)
+        chapter_overlay_layout.addWidget(self._chapter_loading_label)
+        chapter_overlay_layout.addWidget(self._chapter_loading_detail_label)
+
         self.global_search = GlobalSearchDialog(self)
         self.global_search_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
         self.global_search_shortcut.setContext(Qt.ApplicationShortcut)
@@ -133,6 +155,8 @@ class MainWindow(QMainWindow):
         self._download_sidebar_spin = qta.Spin(self.btn_downloader)
         self._connect_download_sidebar_signals(self.downloader.service, "manual")
         self._connect_download_sidebar_signals(self.updates.service, "updates")
+        self.viewer.chapter_loading_started.connect(self._on_viewer_chapter_loading_started)
+        self.viewer.chapter_loading_finished.connect(self._on_viewer_chapter_loading_finished)
         self._refresh_download_sidebar_indicator()
 
     def iconSizeHint(self) -> QSize:
@@ -152,15 +176,18 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
 
     def open_library(self):
+        self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.library.refresh_dynamic_state()
         self.stack.setCurrentWidget(self.library)
 
     def open_downloader(self):
+        self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.downloader)
 
     def open_settings(self):
+        self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.settings)
 
@@ -169,6 +196,7 @@ class MainWindow(QMainWindow):
         if not force and time.monotonic() < self._suppress_detail_open_until:
             logger.info("Suppressed detail open for %s", webtoon.name)
             return
+        self._hide_chapter_loading_overlay()
         logger.info("Opening detail page for %s", webtoon.name)
         self.library.refresh_progress()
         self.detail.load_webtoon(webtoon, self.library.progress_store)
@@ -199,6 +227,7 @@ class MainWindow(QMainWindow):
                                  start_scroll=scroll_pct)
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
+        self._hide_chapter_loading_overlay()
 
     def open_chapter_with_prompt(self, webtoon, chapter_index: int):
         """
@@ -215,9 +244,11 @@ class MainWindow(QMainWindow):
         self.viewer._pending_scroll_pct = 0.0
         opened = self.viewer._load_chapter_with_prompt(chapter_index)
         if not opened:
+            self._hide_chapter_loading_overlay()
             return
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
+        self._hide_chapter_loading_overlay()
 
     def open_viewer(self, webtoon):
         """Legacy: open viewer from chapter 0."""
@@ -225,9 +256,33 @@ class MainWindow(QMainWindow):
 
     def open_updates(self):
         logger.info("Opening updates page")
+        self._hide_chapter_loading_overlay()
         self.updates.refresh_entries()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.updates)
+
+    def _position_chapter_loading_overlay(self):
+        self._chapter_loading_overlay.setGeometry(self.stack.rect())
+
+    def _show_chapter_loading_overlay(self, webtoon_name: str, chapter: str):
+        self._position_chapter_loading_overlay()
+        self._chapter_loading_spinner.set_spinning()
+        self._chapter_loading_label.setText(f"Loading {chapter}...")
+        self._chapter_loading_detail_label.setText(webtoon_name)
+        self._chapter_loading_overlay.show()
+        self._chapter_loading_overlay.raise_()
+        QApplication.processEvents()
+
+    def _hide_chapter_loading_overlay(self):
+        self._chapter_loading_overlay.hide()
+
+    def _on_viewer_chapter_loading_started(self, webtoon_name: str, chapter: str):
+        if self.stack.currentWidget() is self.viewer:
+            return
+        self._show_chapter_loading_overlay(webtoon_name, chapter)
+
+    def _on_viewer_chapter_loading_finished(self, webtoon_name: str, chapter: str):
+        self._hide_chapter_loading_overlay()
     
     def toggle_sidebar(self):
         if self.sidebar_open:
@@ -400,3 +455,7 @@ class MainWindow(QMainWindow):
             return
         self.shutdown_background_tasks()
         super().closeEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_chapter_loading_overlay()
