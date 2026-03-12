@@ -1,9 +1,8 @@
-import json
 import threading
 import time
 
 from core.app_logging import get_logger
-from core.app_paths import data_path
+from stores.db import get_connection
 
 
 logger = get_logger(__name__)
@@ -21,14 +20,21 @@ def get_instance() -> "DownloadHistoryStore":
 class DownloadHistoryStore:
 
     def __init__(self):
-        self._path = data_path("download_history.json")
         self._lock = threading.Lock()
         self._max_entries = 200
 
     def list_entries(self) -> list[dict]:
         with self._lock:
-            entries = self._read_entries()
-        return sorted(entries, key=lambda entry: int(entry.get("updated_at") or 0), reverse=True)
+            rows = get_connection().execute(
+                """
+                SELECT kind, name, source_url, status, created_at, updated_at
+                FROM download_history
+                ORDER BY updated_at DESC
+                LIMIT ?
+                """,
+                (self._max_entries,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def upsert(self, kind: str, name: str, status: str, source_url: str = ""):
         name = (name or "").strip()
@@ -37,25 +43,27 @@ class DownloadHistoryStore:
 
         timestamp = int(time.time())
         with self._lock:
-            entries = self._read_entries()
-            current = self._find_entry(entries, kind, name)
-            if current is None:
-                current = {
-                    "kind": kind,
-                    "name": name,
-                    "source_url": source_url or "",
-                    "status": status,
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                }
-                entries.append(current)
-            else:
-                current["status"] = status
-                current["updated_at"] = timestamp
-                if source_url:
-                    current["source_url"] = source_url
-
-            self._write_entries(entries)
+            conn = get_connection()
+            existing = conn.execute(
+                """
+                SELECT created_at, source_url
+                FROM download_history
+                WHERE kind = ? AND name = ?
+                """,
+                (kind, name),
+            ).fetchone()
+            created_at = timestamp if existing is None else int(existing["created_at"] or timestamp)
+            next_source_url = source_url or (existing["source_url"] if existing is not None else "") or ""
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO download_history
+                (kind, name, source_url, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (kind, name, next_source_url, status, created_at, timestamp),
+            )
+            self._trim_entries(conn)
+            conn.commit()
 
     def rename(self, kind: str, old_name: str, new_name: str, source_url: str = "", status: str | None = None):
         old_name = (old_name or "").strip()
@@ -65,55 +73,67 @@ class DownloadHistoryStore:
 
         timestamp = int(time.time())
         with self._lock:
-            entries = self._read_entries()
-            current = self._find_entry(entries, kind, old_name)
-            target = self._find_entry(entries, kind, new_name)
+            conn = get_connection()
+            current = conn.execute(
+                """
+                SELECT kind, name, source_url, status, created_at, updated_at
+                FROM download_history
+                WHERE kind = ? AND name = ?
+                """,
+                (kind, old_name),
+            ).fetchone()
+            target = conn.execute(
+                """
+                SELECT kind, name, source_url, status, created_at, updated_at
+                FROM download_history
+                WHERE kind = ? AND name = ?
+                """,
+                (kind, new_name),
+            ).fetchone()
 
             if current is None and target is None:
                 return
 
             if current is None:
-                current = target
-            elif target is not None and target is not current:
-                entries.remove(target)
+                source_row = target
+            else:
+                source_row = current
 
-            current["name"] = new_name
-            current["updated_at"] = timestamp
-            if status:
-                current["status"] = status
-            if source_url:
-                current["source_url"] = source_url
+            next_status = status or source_row["status"] or "Ready"
+            next_source_url = source_url or source_row["source_url"] or ""
+            created_at = int(source_row["created_at"] or timestamp)
 
-            self._write_entries(entries)
+            conn.execute(
+                "DELETE FROM download_history WHERE kind = ? AND name = ?",
+                (kind, old_name),
+            )
+            if target is not None:
+                conn.execute(
+                    "DELETE FROM download_history WHERE kind = ? AND name = ?",
+                    (kind, new_name),
+                )
 
-    def _find_entry(self, entries: list[dict], kind: str, name: str) -> dict | None:
-        for entry in entries:
-            if entry.get("kind") == kind and entry.get("name") == name:
-                return entry
-        return None
+            conn.execute(
+                """
+                INSERT INTO download_history
+                (kind, name, source_url, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (kind, new_name, next_source_url, next_status, created_at, timestamp),
+            )
+            self._trim_entries(conn)
+            conn.commit()
 
-    def _read_entries(self) -> list[dict]:
-        if not self._path.exists():
-            return []
-
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-        except Exception:
-            logger.exception("Failed to read download history from %s", self._path)
-            return []
-
-        if not isinstance(data, list):
-            return []
-        return [entry for entry in data if isinstance(entry, dict)]
-
-    def _write_entries(self, entries: list[dict]):
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        trimmed = sorted(
-            entries,
-            key=lambda entry: int(entry.get("updated_at") or 0),
-            reverse=True,
-        )[:self._max_entries]
-        self._path.write_text(
-            json.dumps(trimmed, indent=2, ensure_ascii=True),
-            encoding="utf-8",
+    def _trim_entries(self, conn):
+        conn.execute(
+            """
+            DELETE FROM download_history
+            WHERE (kind, name) IN (
+                SELECT kind, name
+                FROM download_history
+                ORDER BY updated_at DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (self._max_entries,),
         )

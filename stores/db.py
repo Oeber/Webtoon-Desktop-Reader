@@ -68,6 +68,19 @@ def _create_schema(conn: sqlite3.Connection):
             value          TEXT,
             updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
+
+        CREATE TABLE IF NOT EXISTS download_history (
+            kind           TEXT NOT NULL,
+            name           TEXT NOT NULL,
+            source_url     TEXT NOT NULL DEFAULT '',
+            status         TEXT NOT NULL DEFAULT 'Ready',
+            created_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            PRIMARY KEY (kind, name)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_download_history_updated_at
+            ON download_history(updated_at DESC);
     """)
     _ensure_column(conn, "webtoon_settings", "hide_filler", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "webtoon_settings", "completed", "INTEGER NOT NULL DEFAULT 0")
@@ -80,6 +93,10 @@ def _create_schema(conn: sqlite3.Connection):
     _ensure_column(conn, "webtoon_settings", "last_update_at", "INTEGER")
     _ensure_column(conn, "webtoon_settings", "latest_new_chapter", "TEXT")
     _ensure_column(conn, "app_settings", "updated_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
+    _ensure_column(conn, "download_history", "source_url", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "download_history", "status", "TEXT NOT NULL DEFAULT 'Ready'")
+    _ensure_column(conn, "download_history", "created_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
+    _ensure_column(conn, "download_history", "updated_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
     conn.commit()
 
 
