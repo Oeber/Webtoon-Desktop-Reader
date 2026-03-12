@@ -1,0 +1,6 @@
+PySide6
+qtawesome
+Pillow
+requests
+beautifulsoup4
+rapidfuzz
