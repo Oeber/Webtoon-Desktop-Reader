@@ -69,4 +69,27 @@ def _create_schema(conn: sqlite3.Connection):
             updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
     """)
+    _ensure_column(conn, "webtoon_settings", "hide_filler", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "webtoon_settings", "completed", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "webtoon_settings", "bookmarked", "INTEGER NOT NULL DEFAULT 0")
+    _ensure_column(conn, "webtoon_settings", "zoom_override", "REAL")
+    _ensure_column(conn, "webtoon_settings", "custom_thumbnail", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "source_url", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "category", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "bookmarked_chapters", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "last_update_at", "INTEGER")
+    _ensure_column(conn, "webtoon_settings", "latest_new_chapter", "TEXT")
+    _ensure_column(conn, "app_settings", "updated_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
     conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, column_def: str):
+    columns = {
+        row["name"]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name in columns:
+        return
+
+    logger.info("Adding missing column %s.%s", table_name, column_name)
+    conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
