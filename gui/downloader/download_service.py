@@ -672,6 +672,9 @@ class DownloadService(QObject):
             path=webtoon_dir,
             thumbnail=thumb or "",
             chapters=chapter_dirs,
+            category=self.settings_store.get_category(webtoon_name),
+            is_bookmarked=self.settings_store.get_bookmarked(webtoon_name),
+            has_new_chapter=bool(self.settings_store.get_latest_new_chapter(webtoon_name)),
         )
 
     def preferred_thumbnail_for(self, webtoon_name: str) -> str | None:

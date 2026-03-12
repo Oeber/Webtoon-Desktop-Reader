@@ -8,12 +8,14 @@ from app_paths import data_path
 logger = get_logger(__name__)
 
 class Webtoon:
-    def __init__(self, name, path, chapters, thumbnail, category=None):
+    def __init__(self, name, path, chapters, thumbnail, category=None, is_bookmarked=False, has_new_chapter=False):
         self.name = name
         self.path = path
         self.chapters = chapters
         self.thumbnail = thumbnail
         self.category = category
+        self.is_bookmarked = bool(is_bookmarked)
+        self.has_new_chapter = bool(has_new_chapter)
 
 
 def scan_library(library_path: str, settings_store) -> list[Webtoon]:
@@ -52,6 +54,9 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
 
         # Resolve thumbnail: custom override → auto-generated
         custom = settings_store.get(webtoon_name)
+        category = settings_store.get_category(webtoon_name)
+        is_bookmarked = settings_store.get_bookmarked(webtoon_name)
+        has_new_chapter = bool(settings_store.get_latest_new_chapter(webtoon_name))
         if custom and os.path.exists(custom):
             thumbnail = custom
         else:
@@ -66,7 +71,9 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
                 webtoon_path,
                 chapters,
                 thumbnail,
-                settings_store.get_category(webtoon_name),
+                category,
+                is_bookmarked=is_bookmarked,
+                has_new_chapter=has_new_chapter,
             )
         )
 

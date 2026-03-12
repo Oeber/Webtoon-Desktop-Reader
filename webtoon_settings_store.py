@@ -95,6 +95,14 @@ class WebtoonSettingsStore:
         ).fetchone()
         return bool(row["completed"]) if row else False
 
+    def get_bookmarked(self, webtoon_name: str) -> bool:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT bookmarked FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        return bool(row["bookmarked"]) if row else False
+
     def set_hide_filler(self, webtoon_name: str, value: bool):
         logger.info("Setting hide_filler for %s to %s", webtoon_name, value)
         conn = get_connection()
@@ -115,10 +123,25 @@ class WebtoonSettingsStore:
         )
         conn.commit()
 
+    def set_bookmarked(self, webtoon_name: str, value: bool):
+        logger.info("Setting bookmarked for %s to %s", webtoon_name, value)
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            "UPDATE webtoon_settings SET bookmarked = ? WHERE webtoon_name = ?",
+            (int(value), webtoon_name)
+        )
+        conn.commit()
+
     def toggle_completed(self, webtoon_name: str) -> bool:
         completed = not self.get_completed(webtoon_name)
         self.set_completed(webtoon_name, completed)
         return completed
+
+    def toggle_bookmarked(self, webtoon_name: str) -> bool:
+        bookmarked = not self.get_bookmarked(webtoon_name)
+        self.set_bookmarked(webtoon_name, bookmarked)
+        return bookmarked
 
     def get_bookmarked_chapters(self, webtoon_name: str) -> set[str]:
         conn = get_connection()
@@ -376,12 +399,13 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, zoom_override, custom_thumbnail, source_url, category, bookmarked_chapters, last_update_at, latest_new_chapter)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, category, bookmarked_chapters, last_update_at, latest_new_chapter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
                 row["completed"],
+                row["bookmarked"],
                 row["zoom_override"],
                 custom_path,
                 row["source_url"],

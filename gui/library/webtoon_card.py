@@ -91,6 +91,7 @@ class WebtoonCard(QWidget):
         self._current_update_status = None
         self._selected = False
         self._show_selection_controls = False
+        self._bookmarked = bool(getattr(webtoon, "is_bookmarked", False))
         self.card_width = max(120, card_width)
         self.card_height = int(self.card_width * (CARD_HEIGHT / CARD_WIDTH))
         self._root_layout = None
@@ -193,6 +194,17 @@ class WebtoonCard(QWidget):
         self._apply_select_button_style()
         self._refresh_select_button()
         self._refresh_select_visibility()
+
+        self.bookmark_btn = QPushButton()
+        self.bookmark_btn.setParent(self.image_container)
+        self.bookmark_btn.setCheckable(True)
+        self.bookmark_btn.setFixedSize(28, 28)
+        self.bookmark_btn.move(self.card_width - 34, self.card_height - 34)
+        self.bookmark_btn.setCursor(Qt.PointingHandCursor)
+        self.bookmark_btn.clicked.connect(self._toggle_bookmarked_from_button)
+        self._apply_bookmark_button_style()
+        self._refresh_bookmark_button()
+        self._refresh_bookmark_visibility()
 
         self.progress_overlay = QWidget(self.image_container)
         self.progress_overlay.setFixedSize(84, 84)
@@ -395,10 +407,13 @@ class WebtoonCard(QWidget):
 
     def refresh_webtoon(self, webtoon):
         self.webtoon = webtoon
+        self._bookmarked = bool(getattr(webtoon, "is_bookmarked", False))
         self.title_label.setText(webtoon.name)
         self.title_label.setToolTip(webtoon.name)
         self._load_thumbnail(webtoon.thumbnail)
         self._refresh_badges()
+        self._refresh_bookmark_button()
+        self._refresh_bookmark_visibility()
 
     def update_card_size(self, card_width: int):
         card_width = max(120, int(card_width))
@@ -415,6 +430,7 @@ class WebtoonCard(QWidget):
         self.image_label.setFixedSize(self.card_width, self.card_height)
         self.dots_btn.move(self.card_width - 34, 6)
         self.select_btn.move(6, self.card_height - 34)
+        self.bookmark_btn.move(self.card_width - 34, self.card_height - 34)
         self.title_label.setFixedWidth(max(80, self.card_width - 42))
         self.latest_btn.setFixedWidth(self.card_width)
         self.lastread_btn.setFixedWidth(self.card_width)
@@ -422,6 +438,7 @@ class WebtoonCard(QWidget):
         self._load_thumbnail(self.webtoon.thumbnail)
         self._apply_border_style(hovered=self.underMouse())
         self._refresh_select_visibility()
+        self._refresh_bookmark_visibility()
         self.setUpdatesEnabled(True)
         self.update()
 
@@ -441,6 +458,7 @@ class WebtoonCard(QWidget):
             return
         self._show_selection_controls = bool(visible)
         self._refresh_select_visibility()
+        self._refresh_bookmark_visibility()
 
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
@@ -470,6 +488,14 @@ class WebtoonCard(QWidget):
         )
         completed_action.triggered.connect(self._toggle_completed)
         menu.addAction(completed_action)
+
+        bookmarked = self.settings_store.get_bookmarked(self.webtoon.name)
+        bookmark_action = QAction(
+            "Remove Bookmark" if bookmarked else "Bookmark",
+            self,
+        )
+        bookmark_action.triggered.connect(self._toggle_bookmarked)
+        menu.addAction(bookmark_action)
 
         if self._manual_download_active:
             cancel_action = QAction("Cancel Download", self)
@@ -517,6 +543,16 @@ class WebtoonCard(QWidget):
         if callable(self.on_changed):
             self.on_changed()
 
+    def _toggle_bookmarked(self):
+        bookmarked = self.settings_store.toggle_bookmarked(self.webtoon.name)
+        logger.info("Toggled webtoon bookmark for %s to %s", self.webtoon.name, bookmarked)
+        self._bookmarked = bookmarked
+        self.webtoon.is_bookmarked = bookmarked
+        self._refresh_bookmark_button()
+        self._refresh_bookmark_visibility()
+        if callable(self.on_changed):
+            self.on_changed()
+
     def _delete_webtoon(self):
         logger.info("Card delete requested for %s", self.webtoon.name)
         if callable(self.on_delete):
@@ -537,6 +573,7 @@ class WebtoonCard(QWidget):
         elif self._update_available:
             self.update_btn.show()
         self._refresh_select_visibility()
+        self._refresh_bookmark_visibility()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
@@ -551,6 +588,7 @@ class WebtoonCard(QWidget):
         if self._update_available and not self.progress_overlay.isVisible() and not self._manual_download_active:
             self.update_btn.hide()
         self._refresh_select_visibility()
+        self._refresh_bookmark_visibility()
         super().leaveEvent(event)
 
     def _apply_border_style(self, hovered: bool):
@@ -582,6 +620,7 @@ class WebtoonCard(QWidget):
                     self.lastread_btn,
                     self.update_btn,
                     self.select_btn,
+                    self.bookmark_btn,
                     self.cancel_download_btn,
                 ):
                     event.accept()
@@ -612,6 +651,7 @@ class WebtoonCard(QWidget):
                 self.lastread_btn,
                 self.update_btn,
                 self.select_btn,
+                self.bookmark_btn,
                 self.cancel_download_btn,
             ):
                 super().mouseMoveEvent(event)
@@ -725,6 +765,11 @@ class WebtoonCard(QWidget):
         if callable(self.on_select):
             self.on_select(self.webtoon.name, self._selected)
 
+    def _toggle_bookmarked_from_button(self):
+        if self._download_placeholder:
+            return
+        self._toggle_bookmarked()
+
     def set_download_progress(self, current: int, total: int):
         self._manual_download_active = True
         self.cancel_download_btn.show()
@@ -753,6 +798,7 @@ class WebtoonCard(QWidget):
         self.dots_btn.hide()
         self.update_btn.hide()
         self.select_btn.hide()
+        self.bookmark_btn.hide()
         self.latest_btn.hide()
         self.lastread_btn.hide()
         self.new_chip.hide()
@@ -777,6 +823,19 @@ class WebtoonCard(QWidget):
             QPushButton:checked { background: rgba(41,121,255,0.95); }
         """)
 
+    def _apply_bookmark_button_style(self):
+        self.bookmark_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(0,0,0,0.65);
+                color: #fff;
+                border: none;
+                border-radius: 14px;
+                padding: 0;
+            }
+            QPushButton:hover { background: rgba(80,80,80,0.90); }
+            QPushButton:checked { background: rgba(245,196,81,0.95); }
+        """)
+
     def _refresh_select_button(self):
         if self._selected:
             self.select_btn.setIcon(qta.icon("fa5s.check", color="#ffffff"))
@@ -784,12 +843,27 @@ class WebtoonCard(QWidget):
             self.select_btn.setIcon(qta.icon("fa5s.circle", color="#ffffff"))
         self.select_btn.setIconSize(QSize(12, 12))
 
+    def _refresh_bookmark_button(self):
+        self.bookmark_btn.blockSignals(True)
+        self.bookmark_btn.setChecked(self._bookmarked)
+        self.bookmark_btn.blockSignals(False)
+        color = "#ffffff" if self._bookmarked else "#f5c451"
+        self.bookmark_btn.setIcon(qta.icon("fa5s.star", color=color))
+        self.bookmark_btn.setIconSize(QSize(12, 12))
+
     def _refresh_select_visibility(self):
         if self._download_placeholder:
             self.select_btn.hide()
             return
         visible = self._selected or self._show_selection_controls or self.underMouse()
         self.select_btn.setVisible(visible)
+
+    def _refresh_bookmark_visibility(self):
+        if self._download_placeholder:
+            self.bookmark_btn.hide()
+            return
+        visible = self._bookmarked or self._show_selection_controls or self.underMouse()
+        self.bookmark_btn.setVisible(visible)
 
     def _clear_menu_refs(self):
         self._update_menu = None

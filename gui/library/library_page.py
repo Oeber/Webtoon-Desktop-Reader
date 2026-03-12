@@ -40,6 +40,8 @@ CARD_SCALE_MAX = 140
 CARD_SCALE_KEY = "library_card_scale"
 CATEGORY_KEY = "library_custom_categories"
 SECTION_DOWNLOADS = "__downloads__"
+SECTION_NEW = "__new__"
+SECTION_BOOKMARKED = "__bookmarked__"
 SECTION_UNCATEGORIZED = "__uncategorized__"
 logger = get_logger(__name__)
 
@@ -241,6 +243,7 @@ class LibraryPage(QWidget):
         self._collapsed_sections = {}
         self._section_widgets = {}
         self._section_cards = {}
+        self._section_layout_cols = 0
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -308,6 +311,11 @@ class LibraryPage(QWidget):
         self.mark_completed_btn.clicked.connect(self._mark_selected_completed)
         batch_layout.addWidget(self.mark_completed_btn)
 
+        self.bookmark_selected_btn = QPushButton("Bookmark Selected")
+        self.bookmark_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
+        self.bookmark_selected_btn.clicked.connect(self._toggle_selected_bookmarked)
+        batch_layout.addWidget(self.bookmark_selected_btn)
+
         self.update_selected_btn = QPushButton("Update Selected")
         self.update_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.update_selected_btn.clicked.connect(self._update_selected)
@@ -350,10 +358,10 @@ class LibraryPage(QWidget):
         self.container.setContextMenuPolicy(Qt.CustomContextMenu)
         self.container.customContextMenuRequested.connect(self._show_library_context_menu)
 
-        self.sections_layout = QVBoxLayout(self.container)
+        self.sections_layout = QGridLayout(self.container)
         self.sections_layout.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, PAGE_PADDING)
         self.sections_layout.setSpacing(18)
-        self.sections_layout.setAlignment(Qt.AlignTop)
+        self.sections_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
         self.scroll.setWidget(self.container)
         root_layout.addWidget(self.scroll, 1)
@@ -400,8 +408,26 @@ class LibraryPage(QWidget):
             card._refresh_badges()
 
     def refresh_dynamic_state(self):
+        self._refresh_webtoon_flags()
         self._sync_update_controls()
         self._sync_manual_download_cards()
+
+    def _refresh_webtoon_flags(self):
+        section_changed = False
+        for webtoon in self._webtoons:
+            old_section = self._section_key_for_webtoon(webtoon)
+            webtoon.category = self.settings_store.get_category(webtoon.name)
+            webtoon.is_bookmarked = self.settings_store.get_bookmarked(webtoon.name)
+            webtoon.has_new_chapter = bool(self.settings_store.get_latest_new_chapter(webtoon.name))
+            new_section = self._section_key_for_webtoon(webtoon)
+            section_changed = section_changed or old_section != new_section
+            card = self._cards_by_name.get(webtoon.name)
+            if card is not None:
+                card.refresh_webtoon(webtoon)
+        if section_changed:
+            self._rebuild_sections()
+            return
+        self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))
 
     def _load_custom_categories(self) -> list[str]:
         raw = load_setting(CATEGORY_KEY, "[]")
@@ -452,17 +478,39 @@ class LibraryPage(QWidget):
         if placeholders:
             defs.append((SECTION_DOWNLOADS, "Active Downloads", placeholders, None))
 
-        uncategorized = [webtoon for webtoon in self._webtoons if not getattr(webtoon, "category", None)]
+        new_webtoons = [
+            webtoon for webtoon in self._webtoons
+            if self._section_key_for_webtoon(webtoon) == SECTION_NEW
+        ]
+        defs.append((SECTION_NEW, "New", new_webtoons, None))
+
+        bookmarked_webtoons = [
+            webtoon for webtoon in self._webtoons
+            if self._section_key_for_webtoon(webtoon) == SECTION_BOOKMARKED
+        ]
+        defs.append((SECTION_BOOKMARKED, "Bookmarked", bookmarked_webtoons, None))
+
+        uncategorized = [
+            webtoon for webtoon in self._webtoons
+            if self._section_key_for_webtoon(webtoon) == SECTION_UNCATEGORIZED
+        ]
         defs.append((SECTION_UNCATEGORIZED, "Uncategorized", uncategorized, SECTION_UNCATEGORIZED))
 
         for category in self._category_names:
-            webtoons = [webtoon for webtoon in self._webtoons if getattr(webtoon, "category", None) == category]
+            webtoons = [
+                webtoon for webtoon in self._webtoons
+                if self._section_key_for_webtoon(webtoon) == category
+            ]
             defs.append((category, category, webtoons, category))
         return defs
 
     def _section_key_for_webtoon(self, webtoon) -> str:
         if getattr(webtoon, "_download_placeholder", False):
             return SECTION_DOWNLOADS
+        if getattr(webtoon, "has_new_chapter", False):
+            return SECTION_NEW
+        if getattr(webtoon, "is_bookmarked", False):
+            return SECTION_BOOKMARKED
         category = getattr(webtoon, "category", None)
         return category or SECTION_UNCATEGORIZED
 
@@ -475,7 +523,7 @@ class LibraryPage(QWidget):
                 title,
                 on_toggle=self._on_section_toggled,
                 on_drop=self._handle_section_drop if drop_key is not None else None,
-                on_menu=self._show_section_menu if section_key != SECTION_UNCATEGORIZED else None,
+                on_menu=self._show_section_menu if section_key not in {SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED} else None,
                 parent=self.container,
             )
             self._section_widgets[section_key] = section
@@ -511,7 +559,6 @@ class LibraryPage(QWidget):
             self._section_cards[section_key] = cards
             section.set_collapsed(self._collapsed_sections.get(section_key, False))
 
-        self.sections_layout.addStretch(1)
         self._relayout_sections(self._current_cols)
         self._sync_update_controls()
         self._sync_manual_download_cards()
@@ -520,21 +567,19 @@ class LibraryPage(QWidget):
     def _add_section_widget(self, section_key: str):
         if section_key in self._section_widgets:
             return self._section_widgets[section_key]
-        title = "Uncategorized" if section_key == SECTION_UNCATEGORIZED else section_key
+        title = {
+            SECTION_NEW: "New",
+            SECTION_BOOKMARKED: "Bookmarked",
+            SECTION_UNCATEGORIZED: "Uncategorized",
+        }.get(section_key, section_key)
         section = CategorySection(
             section_key,
             title,
             on_toggle=self._on_section_toggled,
-            on_drop=self._handle_section_drop if section_key != SECTION_DOWNLOADS else None,
-            on_menu=self._show_section_menu if section_key not in {SECTION_DOWNLOADS, SECTION_UNCATEGORIZED} else None,
+            on_drop=self._handle_section_drop if section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED} else None,
+            on_menu=self._show_section_menu if section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED} else None,
             parent=self.container,
         )
-        insert_at = max(0, self.sections_layout.count() - 1)
-        if section_key == SECTION_UNCATEGORIZED:
-            insert_at = 0
-            if SECTION_DOWNLOADS in self._section_widgets:
-                insert_at = 1
-        self.sections_layout.insertWidget(insert_at, section)
         self._section_widgets[section_key] = section
         self._section_cards[section_key] = []
         section.set_collapsed(self._collapsed_sections.get(section_key, False))
@@ -542,7 +587,7 @@ class LibraryPage(QWidget):
 
     def _remove_empty_custom_sections(self):
         for section_key in list(self._section_widgets.keys()):
-            if section_key in {SECTION_DOWNLOADS, SECTION_UNCATEGORIZED}:
+            if section_key in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED}:
                 continue
             if self._section_cards.get(section_key):
                 continue
@@ -555,6 +600,10 @@ class LibraryPage(QWidget):
             columns = self._columns_for_width(self.width())
         columns = max(1, columns)
         self._current_cols = columns
+        self._clear_section_positions()
+        self._section_layout_cols = columns
+        for col in range(columns):
+            self.sections_layout.setColumnStretch(col, 1)
 
         scores = {}
         search_text = self._pending_search.strip()
@@ -564,7 +613,10 @@ class LibraryPage(QWidget):
                 for score, webtoon in rank_webtoons(self._all_display_webtoons(), search_text)
             }
 
-        for section_key, section in self._section_widgets.items():
+        layout_row = 0
+        layout_col = 0
+        for section_key in self._ordered_section_keys():
+            section = self._section_widgets[section_key]
             while section.grid.count():
                 section.grid.takeAt(0)
 
@@ -582,22 +634,60 @@ class LibraryPage(QWidget):
                     key=lambda card: (-scores.get(card.webtoon.name, 0), card.webtoon.name.lower())
                 )
 
+            section_cols = self._section_span_for(section_key, len(visible_cards), columns)
             for index, card in enumerate(visible_cards):
-                row = index // columns
-                col = index % columns
+                row = index // section_cols
+                col = index % section_cols
                 section.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
 
-            hide_empty = bool(search_text) or section_key == SECTION_DOWNLOADS
-            section.setVisible(bool(visible_cards) or not hide_empty)
+            hide_empty = bool(search_text) or section_key in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED}
+            should_show = bool(visible_cards) or not hide_empty
+            section.setVisible(should_show)
             section.set_empty_state(
                 not search_text
-                and section_key != SECTION_DOWNLOADS
+                and section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED}
                 and len(cards) == 0
             )
             section.set_title(section._title, len(visible_cards) if search_text else len(cards))
             section.set_collapsed(self._collapsed_sections.get(section_key, False))
+            if not should_show:
+                continue
+            if layout_col + section_cols > columns:
+                layout_row += 1
+                layout_col = 0
+            self.sections_layout.addWidget(section, layout_row, layout_col, 1, section_cols, Qt.AlignTop | Qt.AlignLeft)
+            layout_col += section_cols
+            if layout_col >= columns:
+                layout_row += 1
+                layout_col = 0
 
         self.container.updateGeometry()
+
+    def _clear_section_positions(self):
+        while self.sections_layout.count():
+            self.sections_layout.takeAt(0)
+
+    def _section_span_for(self, section_key: str, visible_count: int, total_columns: int) -> int:
+        if total_columns <= 1:
+            return 1
+        if self._collapsed_sections.get(section_key, False):
+            return 1
+        if visible_count <= 0:
+            return 1
+        return max(1, min(total_columns, visible_count))
+
+    def _ordered_section_keys(self) -> list[str]:
+        ordered = []
+        for system_key in (SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED):
+            if system_key in self._section_widgets:
+                ordered.append(system_key)
+        for category in self._category_names:
+            if category in self._section_widgets and category not in ordered:
+                ordered.append(category)
+        for section_key in self._section_widgets:
+            if section_key not in ordered:
+                ordered.append(section_key)
+        return ordered
 
     def _all_display_webtoons(self):
         return list(self._webtoons)
@@ -901,11 +991,14 @@ class LibraryPage(QWidget):
         self.batch_label.setText(f"{count} selected")
         all_completed = all(self.settings_store.get_completed(name) for name in self._selected_webtoons)
         self.mark_completed_btn.setText("Mark Ongoing" if all_completed else "Mark Completed")
+        all_bookmarked = all(self.settings_store.get_bookmarked(name) for name in self._selected_webtoons)
+        self.bookmark_selected_btn.setText("Remove Bookmark" if all_bookmarked else "Bookmark Selected")
         updatable = any(
             self.settings_store.get_source_url(name) and not self.settings_store.get_completed(name)
             for name in self._selected_webtoons
         )
         self.update_selected_btn.setEnabled(updatable)
+        self.bookmark_selected_btn.setEnabled(True)
         self.move_selected_btn.setEnabled(True)
 
     def _clear_selection(self):
@@ -927,6 +1020,18 @@ class LibraryPage(QWidget):
         all_completed = all(self.settings_store.get_completed(name) for name in selected)
         for name in selected:
             self.settings_store.set_completed(name, not all_completed)
+        self.load_library()
+        self._apply_filter()
+        self._clear_selection()
+
+    def _toggle_selected_bookmarked(self):
+        selected = sorted(self._selected_webtoons)
+        if not selected:
+            return
+        all_bookmarked = all(self.settings_store.get_bookmarked(name) for name in selected)
+        new_value = not all_bookmarked
+        for name in selected:
+            self.settings_store.set_bookmarked(name, new_value)
         self.load_library()
         self._apply_filter()
         self._clear_selection()

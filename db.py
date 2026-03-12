@@ -62,6 +62,7 @@ def _create_schema(conn: sqlite3.Connection):
             webtoon_name      TEXT PRIMARY KEY,
             hide_filler       INTEGER NOT NULL DEFAULT 0,
             completed         INTEGER NOT NULL DEFAULT 0,
+            bookmarked        INTEGER NOT NULL DEFAULT 0,
             zoom_override     REAL,
             custom_thumbnail  TEXT,
             source_url        TEXT,
@@ -89,6 +90,7 @@ def _migrate_columns(conn: sqlite3.Connection):
     added = False
     for col, definition in [
         ("completed", "INTEGER NOT NULL DEFAULT 0"),
+        ("bookmarked", "INTEGER NOT NULL DEFAULT 0"),
         ("zoom_override",    "REAL"),
         ("custom_thumbnail", "TEXT"),
         ("source_url",       "TEXT"),

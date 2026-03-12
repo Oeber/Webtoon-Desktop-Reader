@@ -83,6 +83,7 @@ class DetailPage(QWidget):
         self.bookmarked_chapters = set()
         self.selected_chapters = set()
         self.latest_new_chapter = None
+        self.webtoon_bookmarked = False
         self.settings_store = get_webtoon_settings()
         self._update_service = None
         self._chapter_display_order = []
@@ -130,8 +131,23 @@ class DetailPage(QWidget):
         """)
         self.edit_btn.clicked.connect(self._open_edit_dialog)
 
+        self.bookmark_btn = QPushButton("  Bookmark")
+        self.bookmark_btn.setIconSize(QSize(14, 14))
+        self.bookmark_btn.setCursor(Qt.PointingHandCursor)
+        self.bookmark_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #aaa;
+                border: none;
+                font-size: 14px;
+            }
+            QPushButton:hover { color: #fff; }
+        """)
+        self.bookmark_btn.clicked.connect(self._toggle_webtoon_bookmark)
+
         tb_layout.addWidget(self.back_btn)
         tb_layout.addStretch()
+        tb_layout.addWidget(self.bookmark_btn)
         tb_layout.addWidget(self.edit_btn)
         root.addWidget(top_bar)
 
@@ -436,6 +452,7 @@ class DetailPage(QWidget):
         self.bookmarked_chapters = self.settings_store.get_bookmarked_chapters(webtoon.name)
         self.selected_chapters = set()
         self.latest_new_chapter = self.settings_store.get_latest_new_chapter(webtoon.name)
+        self.webtoon_bookmarked = self.settings_store.get_bookmarked(webtoon.name)
         self._chapter_display_order = self._ordered_chapters_for_display(webtoon.chapters)
         self._update_progress_current = 0
         self._update_progress_total = 0
@@ -450,6 +467,7 @@ class DetailPage(QWidget):
         self.hide_specials_btn.setIconSize(QSize(12, 12))
 
         self.title_label.setText(webtoon.name)
+        self._sync_webtoon_bookmark_button()
         self._update_chapter_count_label()
         self._sync_update_button()
 
@@ -677,6 +695,23 @@ class DetailPage(QWidget):
             parts.append(f"{len(self.bookmarked_chapters)} bookmarked")
 
         self.chapter_count_label.setText(" | ".join(parts))
+
+    def _sync_webtoon_bookmark_button(self):
+        if self.webtoon_bookmarked:
+            self.bookmark_btn.setText("  Bookmarked")
+        else:
+            self.bookmark_btn.setText("  Bookmark")
+        color = "#f5c451" if self.webtoon_bookmarked else "#aaaaaa"
+        self.bookmark_btn.setIcon(qta.icon("fa5s.star", color=color))
+
+    def _toggle_webtoon_bookmark(self):
+        if self.webtoon is None:
+            return
+        self.webtoon_bookmarked = self.settings_store.toggle_bookmarked(self.webtoon.name)
+        self.webtoon.is_bookmarked = self.webtoon_bookmarked
+        logger.info("Detail page toggled webtoon bookmark for %s to %s", self.webtoon.name, self.webtoon_bookmarked)
+        self._sync_webtoon_bookmark_button()
+        self.main_window.library.refresh_dynamic_state()
 
     def _apply_bookmark_icon(self, button: QToolButton, is_bookmarked: bool):
         color = "#f5c451" if is_bookmarked else "#666666"
