@@ -10,6 +10,7 @@ logger = get_logger(__name__)
 DB_PATH           = "data/reader.db"
 THUMBNAILS_JSON   = "data/thumbnails.json"
 PROGRESS_JSON     = "data/progress.json"
+APP_CONFIG_JSON   = "config.json"
 
 _connection: sqlite3.Connection | None = None
 
@@ -39,6 +40,7 @@ def _init_db() -> sqlite3.Connection:
     _migrate_json(conn)
     _migrate_columns(conn)
     _migrate_thumbnails_table(conn)
+    _migrate_app_config_json(conn)
     logger.info("Database ready")
 
     return conn
@@ -58,11 +60,18 @@ def _create_schema(conn: sqlite3.Connection):
         CREATE TABLE IF NOT EXISTS webtoon_settings (
             webtoon_name      TEXT PRIMARY KEY,
             hide_filler       INTEGER NOT NULL DEFAULT 0,
+            completed         INTEGER NOT NULL DEFAULT 0,
             zoom_override     REAL,
             custom_thumbnail  TEXT,
             source_url        TEXT,
             bookmarked_chapters TEXT,
             last_update_at    INTEGER
+        );
+
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key            TEXT PRIMARY KEY,
+            value          TEXT,
+            updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
     """)
     conn.commit()
@@ -76,6 +85,7 @@ def _migrate_columns(conn: sqlite3.Connection):
     }
     added = False
     for col, definition in [
+        ("completed", "INTEGER NOT NULL DEFAULT 0"),
         ("zoom_override",    "REAL"),
         ("custom_thumbnail", "TEXT"),
         ("source_url",       "TEXT"),
@@ -120,6 +130,41 @@ def _migrate_thumbnails_table(conn: sqlite3.Connection):
 def _migrate_json(conn: sqlite3.Connection):
     _migrate_thumbnails_json(conn)
     _migrate_progress_json(conn)
+
+
+def _migrate_app_config_json(conn: sqlite3.Connection):
+    if not os.path.exists(APP_CONFIG_JSON):
+        return
+
+    try:
+        with open(APP_CONFIG_JSON, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        logger.error("Could not migrate config.json", exc_info=e)
+        return
+
+    if not isinstance(data, dict):
+        _backup_json(APP_CONFIG_JSON)
+        return
+
+    migrated = 0
+    for key, value in data.items():
+        conn.execute(
+            """INSERT OR IGNORE INTO app_settings (key, value, updated_at)
+               VALUES (?, ?, strftime('%s', 'now'))""",
+            (str(key), _serialize_app_setting(value)),
+        )
+        migrated += 1
+
+    conn.commit()
+    logger.info("Migrated %d app settings from config.json", migrated)
+    _backup_json(APP_CONFIG_JSON)
+
+
+def _serialize_app_setting(value) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    return str(value)
 
 
 def _migrate_thumbnails_json(conn: sqlite3.Connection):

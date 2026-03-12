@@ -1,5 +1,5 @@
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGridLayout, QScrollArea,
+    QWidget, QVBoxLayout, QGridLayout, QScrollArea, QHBoxLayout, QLabel, QSlider,
 )
 from PySide6.QtWidgets import QApplication, QLineEdit
 from PySide6.QtCore import Qt, QTimer
@@ -12,12 +12,15 @@ from progress_store import get_instance as get_progress_store
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.search.global_search import rank_webtoons
-from gui.settings.settings_page import load_library_path
+from gui.settings.settings_page import load_library_path, load_setting, save_setting
 
 
 CARD_SPACING  = 16
 PAGE_PADDING  = 24
 UPDATE_COOLDOWN_SECONDS = 30
+CARD_SCALE_MIN = 70
+CARD_SCALE_MAX = 140
+CARD_SCALE_KEY = "library_card_scale"
 logger = get_logger(__name__)
 
 
@@ -34,14 +37,43 @@ class LibraryPage(QWidget):
         self._current_cols = 0
         self._pending_search = ""
         self._update_service = None
-        self._active_update_name = None
         self._ignore_open_until = 0.0
         self._block_input_until = 0.0
         self._pending_reload = False
+        self._card_scale = int(load_setting(CARD_SCALE_KEY, 100))
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+        root_layout.setSpacing(12)
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, 0)
+        controls.setSpacing(12)
+
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search webtoons...")
+        self.search.setFixedHeight(36)
+        self.search.setStyleSheet(SEARCH_INPUT_STYLE)
+        controls.addWidget(self.search, 1)
+
+        self.size_label = QLabel("Library size")
+        self.size_label.setStyleSheet("color: #aaaaaa; font-size: 12px;")
+        controls.addWidget(self.size_label)
+
+        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider.setRange(CARD_SCALE_MIN, CARD_SCALE_MAX)
+        self.size_slider.setValue(self._card_scale)
+        self.size_slider.setFixedWidth(140)
+        self.size_slider.setToolTip("Smaller cards fit more items per row")
+        self.size_slider.valueChanged.connect(self._on_size_slider_changed)
+        controls.addWidget(self.size_slider)
+
+        self.size_value_label = QLabel(f"{self._card_scale}%")
+        self.size_value_label.setFixedWidth(42)
+        self.size_value_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        controls.addWidget(self.size_value_label)
+
+        root_layout.addLayout(controls)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
@@ -56,17 +88,9 @@ class LibraryPage(QWidget):
         self.grid.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, PAGE_PADDING)
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
 
-        #Search
         self.scroll.setWidget(self.container)
         root_layout.addWidget(self.scroll)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search webtoons...")
-        self.search.setFixedHeight(36)
 
-        self.search.setStyleSheet(SEARCH_INPUT_STYLE)
-
-        root_layout.addWidget(self.search)
-        #Debounce for search
         self._search_timer = QTimer()
         self._search_timer.setSingleShot(True)
         self._search_timer.timeout.connect(self._apply_filter)
@@ -98,9 +122,13 @@ class LibraryPage(QWidget):
         for card in self._cards:
             card._refresh_badges()
 
+    def _card_width(self) -> int:
+        return max(120, int(CARD_WIDTH * (self._card_scale / 100.0)))
+
     def _columns_for_width(self, width: int) -> int:
-        available = max(width - PAGE_PADDING * 2, CARD_WIDTH + 16)
-        return max(1, available // (CARD_WIDTH + 16 + CARD_SPACING))
+        card_width = self._card_width()
+        available = max(width - PAGE_PADDING * 2, card_width + 16)
+        return max(1, available // (card_width + 16 + CARD_SPACING))
 
     def _rebuild_grid(self, columns: int):
         while self.grid.count():
@@ -122,6 +150,7 @@ class LibraryPage(QWidget):
                 on_open=self._open_detail,
                 on_changed=self._reload_after_edit,
                 on_update=self._start_update,
+                card_width=self._card_width(),
             )
             self._cards.append(card)
             self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
@@ -165,6 +194,10 @@ class LibraryPage(QWidget):
     def _start_update(self, webtoon_name: str):
         if self._update_service is None:
             return
+        if self.settings_store.get_completed(webtoon_name):
+            logger.info("Update blocked for completed webtoon %s", webtoon_name)
+            self._sync_update_controls()
+            return
 
         source_url = self.settings_store.get_source_url(webtoon_name)
         if not source_url:
@@ -187,7 +220,6 @@ class LibraryPage(QWidget):
             self._sync_update_controls()
             return
 
-        self._active_update_name = webtoon_name
         self._suppress_card_open(1.0)
         self._block_library_input(1.0)
         self.main_window.suppress_detail_open(1.0)
@@ -201,22 +233,21 @@ class LibraryPage(QWidget):
         return max(0, UPDATE_COOLDOWN_SECONDS - elapsed)
 
     def _sync_update_controls(self):
-        busy = self._update_service.is_busy() if self._update_service is not None else False
-
         for card in self._cards:
             has_source = bool(self.settings_store.get_source_url(card.webtoon.name))
+            is_completed = self.settings_store.get_completed(card.webtoon.name)
+            update_allowed = has_source and not is_completed
             card.set_update_available(has_source)
-            if not has_source:
+            if is_completed:
+                card.set_update_available(False)
+                card.set_update_status("Ready")
+                continue
+            if not update_allowed:
                 continue
 
-            if busy and card.webtoon.name == self._active_update_name:
+            if self._update_service is not None and self._update_service.has_active_download(card.webtoon.name):
                 card.set_update_enabled(False, "Update in progress")
                 card.set_update_status("Downloading")
-                continue
-
-            if busy:
-                card.set_update_enabled(False, "Another update is already running")
-                card.set_update_status("Ready")
                 continue
 
             remaining = self._cooldown_remaining(card.webtoon.name)
@@ -230,7 +261,7 @@ class LibraryPage(QWidget):
                 card.set_update_enabled(True, "Update this webtoon")
             card.set_update_status("Ready")
 
-    def _on_update_started(self):
+    def _on_update_started(self, name: str):
         self._sync_update_controls()
 
     def _on_update_finished(self, name: str, status: str):
@@ -240,16 +271,15 @@ class LibraryPage(QWidget):
         self._suppress_card_open(2.0)
         self._block_library_input(2.0)
         self.main_window.suppress_detail_open(2.0)
-        self._active_update_name = None
         self._sync_update_controls()
 
-    def _on_update_library_changed(self):
+    def _on_update_library_changed(self, name: str):
         logger.info("Library page noticed library_changed from update service")
         self._suppress_card_open(2.0)
         self._block_library_input(2.0)
         self.main_window.suppress_detail_open(2.0)
-        if self.isVisible() and self._active_update_name:
-            if not self._refresh_updated_webtoon(self._active_update_name):
+        if self.isVisible():
+            if not self._refresh_updated_webtoon(name):
                 self.load_library()
         else:
             self._pending_reload = True
@@ -315,6 +345,18 @@ class LibraryPage(QWidget):
         logger.info("Scheduling library filter for query='%s'", text.strip())
         self._pending_search = text
         self._search_timer.start(150)
+
+    def _on_size_slider_changed(self, value: int):
+        value = max(CARD_SCALE_MIN, min(CARD_SCALE_MAX, value))
+        if value == self._card_scale:
+            self.size_value_label.setText(f"{value}%")
+            return
+        self._card_scale = value
+        self.size_value_label.setText(f"{value}%")
+        save_setting(CARD_SCALE_KEY, value)
+        logger.info("Library card scale changed: %d%%", value)
+        self._rebuild_grid(self._columns_for_width(self.width()))
+        self._apply_filter()
 
     def _apply_filter(self):
         text = self._pending_search.strip()

@@ -1,5 +1,4 @@
 import html
-import json
 import os
 import re
 
@@ -19,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app_settings_store import get_instance as get_app_settings_store
 from app_logging import archived_log_paths, current_log_path, get_logger
 from gui.common.styles import (
     BUTTON_STYLE,
@@ -32,7 +32,6 @@ from gui.common.styles import (
 
 logger = get_logger(__name__)
 
-CONFIG_FILE = "config.json"
 DEFAULT_PATH = "webtoons"
 
 LABEL_STYLE = "color: #aaaaaa; font-size: 12px;"
@@ -71,46 +70,23 @@ LOG_VIEW_STYLE = """
 """ + VERTICAL_SCROLLBAR_STYLE
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
+_app_settings = get_app_settings_store()
 
 
 def load_library_path() -> str:
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get("library_path", DEFAULT_PATH)
-    except FileNotFoundError:
-        return DEFAULT_PATH
+    return str(_app_settings.get("library_path", DEFAULT_PATH))
 
 
 def save_library_path(path: str):
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        data = {}
-    data["library_path"] = path
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    _app_settings.set("library_path", path)
 
 
 def load_setting(key: str, default):
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            return json.load(f).get(key, default)
-    except FileNotFoundError:
-        return default
+    return _app_settings.get(key, default)
 
 
 def save_setting(key: str, value):
-    try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        data = {}
-
-    data[key] = value
-
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    _app_settings.set(key, value)
 
 
 class SettingsPage(QWidget):

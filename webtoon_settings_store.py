@@ -86,6 +86,14 @@ class WebtoonSettingsStore:
         ).fetchone()
         return bool(row["hide_filler"]) if row else False
 
+    def get_completed(self, webtoon_name: str) -> bool:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT completed FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        return bool(row["completed"]) if row else False
+
     def set_hide_filler(self, webtoon_name: str, value: bool):
         logger.info("Setting hide_filler for %s to %s", webtoon_name, value)
         conn = get_connection()
@@ -95,6 +103,21 @@ class WebtoonSettingsStore:
             (int(value), webtoon_name)
         )
         conn.commit()
+
+    def set_completed(self, webtoon_name: str, value: bool):
+        logger.info("Setting completed for %s to %s", webtoon_name, value)
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            "UPDATE webtoon_settings SET completed = ? WHERE webtoon_name = ?",
+            (int(value), webtoon_name)
+        )
+        conn.commit()
+
+    def toggle_completed(self, webtoon_name: str) -> bool:
+        completed = not self.get_completed(webtoon_name)
+        self.set_completed(webtoon_name, completed)
+        return completed
 
     def get_bookmarked_chapters(self, webtoon_name: str) -> set[str]:
         conn = get_connection()
@@ -293,11 +316,12 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, zoom_override, custom_thumbnail, source_url, bookmarked_chapters, last_update_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, zoom_override, custom_thumbnail, source_url, bookmarked_chapters, last_update_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
+                row["completed"],
                 row["zoom_override"],
                 custom_path,
                 row["source_url"],

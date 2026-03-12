@@ -191,6 +191,9 @@ class EditWebtoonDialog(QDialog):
         self.hide_filler_input = QCheckBox("Hide filler chapters for this webtoon")
         form.addRow(self._form_label("Filler"), self._field_row(self.hide_filler_input))
 
+        self.completed_input = QCheckBox("Mark this webtoon as completed")
+        form.addRow(self._form_label("Status"), self._field_row(self.completed_input))
+
         right.addWidget(form_frame)
 
         delete_box = QFrame()
@@ -255,6 +258,9 @@ class EditWebtoonDialog(QDialog):
 
         self.hide_filler_input.setChecked(
             self.settings_store.get_hide_filler(self.webtoon.name)
+        )
+        self.completed_input.setChecked(
+            self.settings_store.get_completed(self.webtoon.name)
         )
         self._update_thumbnail_preview()
 
@@ -338,6 +344,10 @@ class EditWebtoonDialog(QDialog):
             self.settings_store.set_hide_filler(
                 self.webtoon.name,
                 self.hide_filler_input.isChecked(),
+            )
+            self.settings_store.set_completed(
+                self.webtoon.name,
+                self.completed_input.isChecked(),
             )
 
             if self._zoom_dirty:

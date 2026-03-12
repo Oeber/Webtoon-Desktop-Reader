@@ -254,6 +254,39 @@ class DownloadEntry(QFrame):
         super().mousePressEvent(event)
 
 
+class CancellableDownloadEntry(DownloadEntry):
+
+    def __init__(self, name: str, on_open=None, on_cancel=None):
+        super().__init__(name, on_open=on_open)
+        self.on_cancel = on_cancel
+
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.setStyleSheet(BTN_STYLE)
+        self.cancel_btn.setFixedWidth(100)
+        self.cancel_btn.clicked.connect(self._cancel_requested)
+        self.cancel_btn.hide()
+
+        controls = QWidget()
+        controls.setStyleSheet("background: transparent; border: none;")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        controls_layout.addWidget(self.status_label, alignment=Qt.AlignRight)
+        controls_layout.addWidget(self.cancel_btn, alignment=Qt.AlignRight)
+
+        self.layout().removeWidget(self.status_label)
+        self.layout().addWidget(controls)
+
+    def set_status(self, status: str):
+        super().set_status(status)
+        self.cancel_btn.setVisible(status == "Downloading")
+        self.cancel_btn.setEnabled(status == "Downloading")
+
+    def _cancel_requested(self):
+        if callable(self.on_cancel):
+            self.on_cancel(self)
+
+
 class UpdateEntry(DownloadEntry):
 
     def __init__(self, webtoon_name: str, source_url: str, last_update_at: int | None, on_update):

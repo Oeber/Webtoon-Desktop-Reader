@@ -21,7 +21,7 @@ class DownloadHistoryPageBase(QWidget):
         logger.info("Initializing download history page base: %s", title_text)
         self.main_window = main_window
         self.service = DownloadService(self)
-        self._active_entry = None
+        self._entries_by_name = {}
 
         self._connect_service_signals()
         self._build_page_shell(title_text, section_text)
@@ -70,36 +70,53 @@ class DownloadHistoryPageBase(QWidget):
         self.scroll.setWidget(self.history_container)
         layout.addWidget(self.scroll)
 
+    def _register_entry(self, entry):
+        self._entries_by_name[entry.name] = entry
+
+    def _remove_entry(self, entry):
+        if entry is None:
+            return
+        if self._entries_by_name.get(entry.name) is entry:
+            self._entries_by_name.pop(entry.name, None)
+
+    def _entry_for(self, name: str):
+        return self._entries_by_name.get(name)
+
     def _on_status_changed(self, name: str, status: str):
-        if self._active_entry and self._active_entry.name == name:
-            self._active_entry.set_status(status)
+        entry = self._entry_for(name)
+        if entry is not None:
+            entry.set_status(status)
             if status == "Completed":
                 thumb_path = self.service.preferred_thumbnail_for(name)
                 if thumb_path:
-                    self._active_entry.set_thumbnail(thumb_path)
+                    entry.set_thumbnail(thumb_path)
 
-    def _on_name_resolved(self, name: str):
-        if self._active_entry:
-            self._active_entry.name = name
-            self._active_entry.name_label.setText(name)
+    def _on_name_resolved(self, old_name: str, name: str):
+        entry = self._entries_by_name.pop(old_name, None)
+        if entry is not None:
+            entry.name = name
+            entry.name_label.setText(name)
+            self._entries_by_name[name] = entry
 
             thumb_path = self.service.preferred_thumbnail_for(name)
             if thumb_path:
-                self._active_entry.set_thumbnail(thumb_path)
+                entry.set_thumbnail(thumb_path)
 
     def _on_progress_changed(self, name: str, current: int, total: int):
-        if self._active_entry and self._active_entry.name == name:
-            self._active_entry.set_progress(current, total)
+        entry = self._entry_for(name)
+        if entry is not None:
+            entry.set_progress(current, total)
 
     def _on_thumbnail_resolved(self, name: str, path: str):
-        if self._active_entry and self._active_entry.name == name and path:
-            self._active_entry.set_thumbnail(path)
+        entry = self._entry_for(name)
+        if entry is not None and path:
+            entry.set_thumbnail(path)
 
-    def _on_library_changed(self):
+    def _on_library_changed(self, name: str):
         logger.info("Download service reported library_changed")
         self.main_window.library.load_library()
 
-    def _on_download_started(self):
+    def _on_download_started(self, name: str):
         raise NotImplementedError
 
     def _on_download_finished(self, name: str, status: str):

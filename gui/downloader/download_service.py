@@ -4,6 +4,7 @@ import shutil
 import subprocess
 import threading
 import time
+import uuid
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
@@ -31,77 +32,108 @@ class DownloadCancelled(Exception):
     pass
 
 
+class DownloadJob:
+
+    def __init__(self, initial_name: str):
+        self.initial_name = initial_name
+        self.active_name = initial_name
+        self.cancel_requested = False
+        self.process = None
+        self.temp_dir = os.path.join("data", "_download_temp", f"job-{uuid.uuid4().hex}")
+
+
 class DownloadService(QObject):
     status_changed = Signal(str, str)
-    name_resolved = Signal(str)
+    name_resolved = Signal(str, str)
     progress_changed = Signal(str, int, int)
     thumbnail_resolved = Signal(str, str)
-    download_started = Signal()
+    download_started = Signal(str)
     download_finished = Signal(str, str)
-    library_changed = Signal()
+    library_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.settings_store = get_webtoon_settings()
-        self._process = None
-        self._busy = False
-        self._cancel_requested = False
-        self._active_name = None
+        self._jobs: dict[str, DownloadJob] = {}
+        self._jobs_lock = threading.Lock()
 
-        temp_dir = os.path.join("data", "_download_temp")
-        if os.path.exists(temp_dir):
-            shutil.rmtree(temp_dir, ignore_errors=True)
+        temp_root = os.path.join("data", "_download_temp")
+        if os.path.exists(temp_root):
+            shutil.rmtree(temp_root, ignore_errors=True)
         logger.info("DownloadService initialized")
 
     def is_busy(self) -> bool:
-        return self._busy
+        with self._jobs_lock:
+            return bool(self._jobs)
 
-    def start_download(self, url: str, output_path: str, preferred_name: str | None = None) -> str | None:
+    def has_active_download(self, name: str) -> bool:
+        normalized = sanitize_webtoon_name(name or "")
+        if not normalized:
+            return False
+        with self._jobs_lock:
+            return any(job.active_name == normalized for job in self._jobs.values())
+
+    def start_download(
+        self,
+        url: str,
+        output_path: str,
+        preferred_name: str | None = None,
+        job_name: str | None = None,
+    ) -> str | None:
         url = (url or "").strip().strip("'\"")
         if not url:
             return "Please enter a URL."
-        if self._busy:
-            return "A download is already in progress."
+
+        initial_name = (
+            sanitize_webtoon_name(job_name)
+            or sanitize_webtoon_name(preferred_name)
+            or sanitize_webtoon_name(url.rstrip("/").split("/")[-1])
+            or "download"
+        )
+        if self.has_active_download(initial_name):
+            return f"'{initial_name}' is already downloading."
 
         logger.info("Starting download url=%s preferred_name=%s output=%s", url, preferred_name, output_path)
-        self._busy = True
-        self._cancel_requested = False
-        self._active_name = sanitize_webtoon_name(preferred_name) or None
-        self.download_started.emit()
+        job = DownloadJob(initial_name)
+        with self._jobs_lock:
+            self._jobs[job.initial_name] = job
+        self.download_started.emit(job.initial_name)
 
         thread = threading.Thread(
             target=self._run_download,
-            args=(url, output_path, preferred_name),
+            args=(job, url, output_path, preferred_name),
             daemon=True,
         )
         thread.start()
         return None
 
-    def cancel_download(self):
-        if not self._busy:
+    def cancel_download(self, name: str | None = None):
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+        if not jobs:
             return
-        logger.warning("Cancelling active download for %s", self._active_name)
-        self._cancel_requested = True
-        if self._process and self._process.poll() is None:
-            self._process.terminate()
+        for job in jobs:
+            if name and job.active_name != sanitize_webtoon_name(name):
+                continue
+            logger.warning("Cancelling active download for %s", job.active_name)
+            job.cancel_requested = True
+            if job.process and job.process.poll() is None:
+                job.process.terminate()
 
-    def _run_download(self, url: str, output_path: str, preferred_name: str | None):
-        name = sanitize_webtoon_name(preferred_name) or "download"
+    def _run_download(self, job: DownloadJob, url: str, output_path: str, preferred_name: str | None):
+        name = sanitize_webtoon_name(preferred_name) or job.initial_name or "download"
         status = "Failed"
 
         try:
-            temp_dir = os.path.join("data", "_download_temp")
-            if os.path.exists(temp_dir):
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            os.makedirs(temp_dir, exist_ok=True)
+            os.makedirs(job.temp_dir, exist_ok=True)
 
             if preferred_name:
-                self.name_resolved.emit(name)
+                self.name_resolved.emit(job.initial_name, name)
             else:
                 name = self._resolve_name(url)
-                self.name_resolved.emit(name)
+                self.name_resolved.emit(job.initial_name, name)
 
-            self._active_name = name
+            job.active_name = name
             logger.info("Resolved download name: %s", name)
 
             try:
@@ -111,14 +143,14 @@ class DownloadService(QObject):
 
             if scraper is not None:
                 logger.info("Using custom scraper for %s", url)
-                saved_name = self._custom_download(url, output_path, target_name=preferred_name)
+                saved_name = self._custom_download(job, url, output_path, target_name=preferred_name)
             else:
                 logger.info("Using gallery-dl fallback for %s", url)
-                saved_name = self._gallery_dl_download(url, output_path, name)
+                saved_name = self._gallery_dl_download(job, url, output_path, name)
 
             self._save_source_url(saved_name, url)
             status = "Completed"
-            self.library_changed.emit()
+            self.library_changed.emit(saved_name)
         except DownloadCancelled:
             status = "Cancelled"
         except FileNotFoundError:
@@ -128,15 +160,12 @@ class DownloadService(QObject):
             logger.error("Download failed for %s", url, exc_info=e)
             status = "Failed"
         finally:
-            temp_dir = os.path.join("data", "_download_temp")
-            shutil.rmtree(temp_dir, ignore_errors=True)
-            self._process = None
-            self._busy = False
-            logger.info("Download finished for %s with status=%s", self._active_name or name, status)
-            self.status_changed.emit(self._active_name or name, status)
-            self.download_finished.emit(self._active_name or name, status)
-            self._active_name = None
-            self._cancel_requested = False
+            shutil.rmtree(job.temp_dir, ignore_errors=True)
+            with self._jobs_lock:
+                self._jobs.pop(job.initial_name, None)
+            logger.info("Download finished for %s with status=%s", job.active_name or name, status)
+            self.status_changed.emit(job.active_name or name, status)
+            self.download_finished.emit(job.active_name or name, status)
 
     def _get_existing_chapters(self, webtoon_dir: str) -> set[int]:
         existing = set()
@@ -175,19 +204,19 @@ class DownloadService(QObject):
         slug = url.rstrip("/").split("/")[-1]
         return sanitize_webtoon_name(slug) or "download"
 
-    def _download_file(self, url: str, dest_path: str, headers: dict, retries: int = 2):
+    def _download_file(self, job: DownloadJob, url: str, dest_path: str, headers: dict, retries: int = 2):
         url = url.strip().rstrip("\\").rstrip("/")
         last_error = None
 
         for attempt in range(retries + 1):
-            if self._cancel_requested:
+            if job.cancel_requested:
                 raise DownloadCancelled()
             try:
                 with requests.get(url, headers=headers, stream=True, timeout=30) as response:
                     response.raise_for_status()
                     with open(dest_path, "wb") as handle:
                         for chunk in response.iter_content(chunk_size=1024 * 64):
-                            if self._cancel_requested:
+                            if job.cancel_requested:
                                 raise DownloadCancelled()
                             if chunk:
                                 handle.write(chunk)
@@ -220,7 +249,7 @@ class DownloadService(QObject):
         except Exception as e:
             logger.warning("Failed to save source URL for '%s'", webtoon_name, exc_info=e)
 
-    def _custom_download(self, url: str, output_path: str, target_name: str | None = None):
+    def _custom_download(self, job: DownloadJob, url: str, output_path: str, target_name: str | None = None):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         scraper = get_scraper(url)
@@ -238,7 +267,8 @@ class DownloadService(QObject):
             chapter_list = series.chapters
 
         series_name = sanitize_webtoon_name(target_name or series.title) or "download"
-        self.name_resolved.emit(series_name)
+        self.name_resolved.emit(job.initial_name, series_name)
+        job.active_name = series_name
         logger.info("Custom scraper resolved series name %s", series_name)
 
         if getattr(series, "cover_url", None):
@@ -263,7 +293,7 @@ class DownloadService(QObject):
         self.progress_changed.emit(series_name, completed_chapters, total_chapters)
 
         for chapter in chapter_list:
-            if self._cancel_requested:
+            if job.cancel_requested:
                 raise DownloadCancelled()
 
             chapter_num = int(chapter.number) if chapter.number is not None else None
@@ -301,7 +331,7 @@ class DownloadService(QObject):
                         success_count += 1
                         continue
 
-                    future = executor.submit(self._download_file, page.image_url, dest_path, headers)
+                    future = executor.submit(self._download_file, job, page.image_url, dest_path, headers)
                     future_to_page[future] = page.image_url
 
                 for future in as_completed(future_to_page):
@@ -336,7 +366,7 @@ class DownloadService(QObject):
                     failure_count,
                 )
 
-        if self._cancel_requested:
+        if job.cancel_requested:
             raise DownloadCancelled()
         if not any_chapter_succeeded and completed_chapters == 0:
             raise ScraperError("No chapters were downloaded")
@@ -349,14 +379,13 @@ class DownloadService(QObject):
 
         return series_name
 
-    def _gallery_dl_download(self, url: str, output_path: str, name: str):
-        temp_dir = os.path.join("data", "_download_temp")
-        os.makedirs(temp_dir, exist_ok=True)
-        logger.info("Starting gallery-dl download for %s into %s", name, temp_dir)
+    def _gallery_dl_download(self, job: DownloadJob, url: str, output_path: str, name: str):
+        os.makedirs(job.temp_dir, exist_ok=True)
+        logger.info("Starting gallery-dl download for %s into %s", name, job.temp_dir)
 
         url_type = detect_url_type(url)
         target_base = os.path.join(output_path, name)
-        cmd = ["gallery-dl", "--verbose", "-D", temp_dir]
+        cmd = ["gallery-dl", "--verbose", "-D", job.temp_dir]
         missing_chapters = []
 
         if url_type == "series":
@@ -376,7 +405,7 @@ class DownloadService(QObject):
 
         cmd.append(url)
 
-        self._process = subprocess.Popen(
+        job.process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=None,
@@ -387,11 +416,11 @@ class DownloadService(QObject):
             last_current = -1
             last_total = -1
 
-            while self._process and self._process.poll() is None:
+            while job.process and job.process.poll() is None:
                 try:
                     if missing_chapters:
                         total = len(missing_chapters)
-                        temp_numbers = self._chapter_numbers_in_temp_dir(temp_dir)
+                        temp_numbers = self._chapter_numbers_in_temp_dir(job.temp_dir)
                         current = sum(1 for chapter in missing_chapters if chapter in temp_numbers)
                         if current != last_current or total != last_total:
                             self.progress_changed.emit(name, current, total)
@@ -404,20 +433,20 @@ class DownloadService(QObject):
         watcher_thread = threading.Thread(target=watch_progress, daemon=True)
         watcher_thread.start()
 
-        if self._process.stdout is not None:
-            for line in self._process.stdout:
+        if job.process.stdout is not None:
+            for line in job.process.stdout:
                 logger.info("gallery-dl: %s", line.strip())
 
-        self._process.wait()
+        job.process.wait()
 
-        if self._cancel_requested:
+        if job.cancel_requested:
             raise DownloadCancelled()
-        if self._process.returncode != 0:
+        if job.process.returncode != 0:
             raise RuntimeError("gallery-dl exited with a non-zero status")
 
         all_files = sorted(
-            f for f in os.listdir(temp_dir)
-            if os.path.isfile(os.path.join(temp_dir, f))
+            f for f in os.listdir(job.temp_dir)
+            if os.path.isfile(os.path.join(job.temp_dir, f))
         )
 
         if not all_files:
@@ -431,7 +460,7 @@ class DownloadService(QObject):
             chapter_dir = os.path.join(target_base, f"Chapter {episode_no}")
             os.makedirs(chapter_dir, exist_ok=True)
             for filename in all_files:
-                src = os.path.join(temp_dir, filename)
+                src = os.path.join(job.temp_dir, filename)
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
             completed_now.add(episode_no)
@@ -443,7 +472,7 @@ class DownloadService(QObject):
                 chapter_num = int(match.group(1))
                 chapter_dir = os.path.join(target_base, f"Chapter {chapter_num}")
                 os.makedirs(chapter_dir, exist_ok=True)
-                src = os.path.join(temp_dir, filename)
+                src = os.path.join(job.temp_dir, filename)
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
                 completed_now.add(chapter_num)

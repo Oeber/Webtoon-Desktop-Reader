@@ -81,7 +81,6 @@ class DetailPage(QWidget):
         self.bookmarked_chapters = set()
         self.settings_store = get_webtoon_settings()
         self._update_service = None
-        self._active_update_name = None
         self._update_timer = QTimer(self)
         self._update_timer.timeout.connect(self._sync_update_button)
         self._update_timer.start(1000)
@@ -666,6 +665,10 @@ class DetailPage(QWidget):
     def _start_update(self):
         if self.webtoon is None or self._update_service is None:
             return
+        if self.settings_store.get_completed(self.webtoon.name):
+            logger.info("Detail page update blocked for completed webtoon %s", self.webtoon.name)
+            self._sync_update_button()
+            return
         source_url = self.settings_store.get_source_url(self.webtoon.name)
         if not source_url:
             return
@@ -683,11 +686,13 @@ class DetailPage(QWidget):
             logger.warning("Failed to start detail-page update for %s: %s", self.webtoon.name, error)
             self._sync_update_button()
             return
-        self._active_update_name = self.webtoon.name
         self._sync_update_button()
 
     def _sync_update_button(self):
         if self.webtoon is None:
+            self.update_btn.hide()
+            return
+        if self.settings_store.get_completed(self.webtoon.name):
             self.update_btn.hide()
             return
         source_url = self.settings_store.get_source_url(self.webtoon.name)
@@ -696,21 +701,16 @@ class DetailPage(QWidget):
             return
 
         self.update_btn.show()
-        busy = self._update_service.is_busy() if self._update_service is not None else False
-        if busy and self._active_update_name == self.webtoon.name:
+        if self._update_service is not None and self._update_service.has_active_download(self.webtoon.name):
             self.update_btn.setEnabled(False)
             self.update_btn.setText("  Updating...")
-            return
-        if busy:
-            self.update_btn.setEnabled(False)
-            self.update_btn.setText("  Update")
             return
 
         remaining = self._cooldown_remaining()
         self.update_btn.setEnabled(remaining == 0)
         self.update_btn.setText(f"  {remaining}s" if remaining > 0 else "  Update")
 
-    def _on_update_started(self):
+    def _on_update_started(self, name: str):
         self._sync_update_button()
 
     def _on_update_finished(self, name: str, status: str):
@@ -718,7 +718,6 @@ class DetailPage(QWidget):
         if status == "Completed" and self.webtoon and name == self.webtoon.name:
             self.settings_store.set_last_update_at(name, int(time.time()))
             self._refresh_webtoon_from_disk()
-        self._active_update_name = None
         self._sync_update_button()
 
     def _on_update_status_changed(self, name: str, status: str):
