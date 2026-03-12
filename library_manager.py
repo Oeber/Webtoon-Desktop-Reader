@@ -3,6 +3,7 @@ import re
 
 from PIL import Image
 from app_logging import get_logger
+from app_paths import data_path
 
 logger = get_logger(__name__)
 
@@ -70,7 +71,7 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
 # Auto-thumbnail generation
 # ---------------------------------------------------------------------------
 
-THUMB_FOLDER = "data/thumbnails"
+THUMB_FOLDER = data_path("thumbnails")
 THUMB_W = 360
 THUMB_H = 540
 
@@ -84,13 +85,13 @@ BLANK_THRESHOLD = 12
 
 def get_or_create_auto_thumbnail(image_path: str, webtoon_name: str) -> str:
 
-    os.makedirs(THUMB_FOLDER, exist_ok=True)
-    thumb_path = os.path.join(THUMB_FOLDER, f"{webtoon_name}.jpg")
+    THUMB_FOLDER.mkdir(parents=True, exist_ok=True)
+    thumb_path = THUMB_FOLDER / f"{webtoon_name}.jpg"
 
-    if os.path.exists(thumb_path):
-        return thumb_path
+    if thumb_path.exists():
+        return str(thumb_path)
 
-    return _generate_auto_thumbnail(image_path, thumb_path)
+    return _generate_auto_thumbnail(image_path, str(thumb_path))
 
 
 def _generate_auto_thumbnail(image_path: str, thumb_path: str) -> str:

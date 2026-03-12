@@ -5,16 +5,19 @@
 *.db
 *.bak
 *.json 
-.venv/
+
 
 !/scrapers 
 
 webtoons/*
 data/*
+build/*
+dist/*
 __pycache__/*
 data/thumbnails/*
 teste/*
 scrapers/sites/*
+.venv/
  
 !/scrapers/sites
 !/scrapers/sites/__init__.py

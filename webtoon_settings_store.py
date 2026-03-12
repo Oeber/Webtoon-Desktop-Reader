@@ -5,10 +5,11 @@ import urllib.error
 import urllib.request
 
 from app_logging import get_logger
+from app_paths import data_path
 from db import get_connection
 
 
-THUMBNAILS_DIR = Path("data/thumbnails")
+THUMBNAILS_DIR = data_path("thumbnails")
 logger = get_logger(__name__)
 
 _instance = None

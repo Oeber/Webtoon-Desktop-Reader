@@ -1,16 +1,17 @@
 import json
-import os
 import sqlite3
+from pathlib import Path
 
 from app_logging import get_logger
+from app_paths import app_root, data_path
 
 
 logger = get_logger(__name__)
 
-DB_PATH           = "data/reader.db"
-THUMBNAILS_JSON   = "data/thumbnails.json"
-PROGRESS_JSON     = "data/progress.json"
-APP_CONFIG_JSON   = "config.json"
+DB_PATH = data_path("reader.db")
+THUMBNAILS_JSON = data_path("thumbnails.json")
+PROGRESS_JSON = data_path("progress.json")
+APP_CONFIG_JSON = app_root() / "config.json"
 
 _connection: sqlite3.Connection | None = None
 
@@ -28,7 +29,7 @@ def get_connection() -> sqlite3.Connection:
 # --------------------------------------------------------------------------- #
 
 def _init_db() -> sqlite3.Connection:
-    os.makedirs("data", exist_ok=True)
+    data_path().mkdir(parents=True, exist_ok=True)
 
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -135,11 +136,11 @@ def _migrate_json(conn: sqlite3.Connection):
 
 
 def _migrate_app_config_json(conn: sqlite3.Connection):
-    if not os.path.exists(APP_CONFIG_JSON):
+    if not APP_CONFIG_JSON.exists():
         return
 
     try:
-        with open(APP_CONFIG_JSON, "r", encoding="utf-8") as f:
+        with APP_CONFIG_JSON.open("r", encoding="utf-8") as f:
             data = json.load(f)
     except (json.JSONDecodeError, OSError) as e:
         logger.error("Could not migrate config.json", exc_info=e)
@@ -171,7 +172,7 @@ def _serialize_app_setting(value) -> str:
 
 def _migrate_thumbnails_json(conn: sqlite3.Connection):
     """Migrate thumbnails.json — works whether the legacy table still exists or not."""
-    if not os.path.exists(THUMBNAILS_JSON):
+    if not THUMBNAILS_JSON.exists():
         return
 
     tables = {
@@ -198,7 +199,7 @@ def _migrate_thumbnails_json(conn: sqlite3.Connection):
             return
 
     try:
-        with open(THUMBNAILS_JSON, "r", encoding="utf-8") as f:
+        with THUMBNAILS_JSON.open("r", encoding="utf-8") as f:
             data: dict = json.load(f)
 
         if "thumbnails" in tables:
@@ -226,7 +227,7 @@ def _migrate_thumbnails_json(conn: sqlite3.Connection):
 
 
 def _migrate_progress_json(conn: sqlite3.Connection):
-    if not os.path.exists(PROGRESS_JSON):
+    if not PROGRESS_JSON.exists():
         return
 
     row_count = conn.execute("SELECT COUNT(*) FROM progress").fetchone()[0]
@@ -235,7 +236,7 @@ def _migrate_progress_json(conn: sqlite3.Connection):
         return
 
     try:
-        with open(PROGRESS_JSON, "r", encoding="utf-8") as f:
+        with PROGRESS_JSON.open("r", encoding="utf-8") as f:
             data: dict = json.load(f)
         rows = [
             (name, entry["chapter"], entry.get("scroll", 0.0), 0)
@@ -255,9 +256,9 @@ def _migrate_progress_json(conn: sqlite3.Connection):
     _backup_json(PROGRESS_JSON)
 
 
-def _backup_json(path: str):
-    bak = path + ".bak"
+def _backup_json(path: Path):
+    bak = path.with_suffix(path.suffix + ".bak")
     try:
-        os.rename(path, bak)
+        path.rename(bak)
     except OSError:
         pass

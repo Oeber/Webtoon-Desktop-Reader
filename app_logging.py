@@ -1,11 +1,12 @@
 import logging
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from app_paths import data_path
 
-LOG_DIR = Path("data") / "logs"
+
+LOG_DIR = data_path("logs")
 CURRENT_LOG = LOG_DIR / "current.log"
 MAX_ARCHIVES = 5
 
@@ -88,4 +89,3 @@ def _handle_uncaught_exception(exc_type, exc_value, exc_traceback):
         "Unhandled exception",
         exc_info=(exc_type, exc_value, exc_traceback),
     )
-

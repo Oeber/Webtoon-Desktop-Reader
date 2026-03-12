@@ -13,6 +13,7 @@ from bs4 import BeautifulSoup
 from PySide6.QtCore import QObject, Signal
 
 from app_logging import get_logger
+from app_paths import data_path
 from gui.downloader.helpers import (
     SUPPORTED_IMAGE_EXTENSIONS,
     chapter_path_sort_key,
@@ -39,7 +40,7 @@ class DownloadJob:
         self.active_name = initial_name
         self.cancel_requested = False
         self.process = None
-        self.temp_dir = os.path.join("data", "_download_temp", f"job-{uuid.uuid4().hex}")
+        self.temp_dir = str(data_path("_download_temp", f"job-{uuid.uuid4().hex}"))
 
 
 class DownloadService(QObject):
@@ -57,7 +58,7 @@ class DownloadService(QObject):
         self._jobs: dict[str, DownloadJob] = {}
         self._jobs_lock = threading.Lock()
 
-        temp_root = os.path.join("data", "_download_temp")
+        temp_root = data_path("_download_temp")
         if os.path.exists(temp_root):
             shutil.rmtree(temp_root, ignore_errors=True)
         logger.info("DownloadService initialized")
@@ -138,7 +139,8 @@ class DownloadService(QObject):
 
             try:
                 scraper = get_scraper(url)
-            except Exception:
+            except Exception as e:
+                logger.warning("Custom scraper resolution failed for %s", url, exc_info=e)
                 scraper = None
 
             if scraper is not None:
@@ -256,7 +258,8 @@ class DownloadService(QObject):
 
         try:
             scraper = get_scraper(normalized_url)
-        except Exception:
+        except Exception as e:
+            logger.warning("Source URL normalization scraper lookup failed for %s", normalized_url, exc_info=e)
             scraper = None
 
         if scraper is not None and scraper.is_chapter_url(normalized_url):
@@ -527,14 +530,15 @@ class DownloadService(QObject):
         if custom and os.path.exists(custom):
             return custom
 
-        auto_path = os.path.join("data", "thumbnails", f"{webtoon_name}.jpg")
+        auto_path = str(data_path("thumbnails", f"{webtoon_name}.jpg"))
         if os.path.exists(auto_path):
             return auto_path
         return None
 
     def _auto_thumbnail_path(self, webtoon_name: str) -> str:
-        os.makedirs(os.path.join("data", "thumbnails"), exist_ok=True)
-        return os.path.join("data", "thumbnails", f"{webtoon_name}.jpg")
+        thumb_dir = data_path("thumbnails")
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        return str(thumb_dir / f"{webtoon_name}.jpg")
 
     def _create_auto_thumbnail_from_webtoon_folder(self, webtoon_name: str, webtoon_dir: str) -> str | None:
         try:

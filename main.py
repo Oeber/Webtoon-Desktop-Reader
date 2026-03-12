@@ -1,17 +1,13 @@
 import sys
-from pathlib import Path
 import ctypes
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from app_logging import setup_logging, get_logger
+from app_paths import resource_path
 from gui.main_window import MainWindow
 
 setup_logging()
 logger = get_logger(__name__)
-
-def _asset_path(*parts: str) -> Path:
-    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
-    return base_path.joinpath(*parts)
 
 def _set_windows_app_id():
     if sys.platform != "win32":
@@ -29,7 +25,7 @@ app = QApplication(sys.argv)
 logger.info("QApplication created")
 app.setApplicationName("Webtoon Desktop Reader")
 
-app_icon_path = _asset_path("imgs", "logo.png")
+app_icon_path = resource_path("imgs", "logo.png")
 if app_icon_path.exists():
     icon = QIcon(str(app_icon_path))
     app.setWindowIcon(icon)

@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 
 from app_settings_store import get_instance as get_app_settings_store
 from app_logging import archived_log_paths, current_log_path, get_logger
+from app_paths import default_library_path
 from gui.common.styles import (
     BUTTON_STYLE,
     INPUT_STYLE,
@@ -32,7 +33,7 @@ from gui.common.styles import (
 
 logger = get_logger(__name__)
 
-DEFAULT_PATH = "webtoons"
+DEFAULT_PATH = str(default_library_path())
 
 LABEL_STYLE = "color: #aaaaaa; font-size: 12px;"
 SECTION_STYLE = "color: #ffffff; font-size: 13px; font-weight: bold;"
