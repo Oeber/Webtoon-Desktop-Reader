@@ -10,6 +10,7 @@ import time
 import qtawesome as qta
 from app_logging import get_logger
 from webtoon_settings_store import get_instance as get_webtoon_settings
+from gui.common.styles import SIDEBAR_BUTTON_STYLE, SIDEBAR_STYLE
 
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
@@ -52,27 +53,7 @@ class MainWindow(QMainWindow):
 
         # Sidebar
         self.sidebar = QWidget()
-        self.sidebar.setStyleSheet("""
-            background-color: #1e1e1e;
-        """)
-        button_style = """
-            QPushButton {
-                background-color: transparent;
-                color: #cccccc;
-                border: none;
-                padding: 8px;
-                text-align: left;
-                border-radius: 6px;
-            }
-
-            QPushButton:hover {
-                background-color: #2a2a2a;
-            }
-
-            QPushButton:pressed {
-                background-color: #333333;
-            }
-            """
+        self.sidebar.setStyleSheet(SIDEBAR_STYLE)
 
         self.sidebar_expanded_width = 200
         self.sidebar_collapsed_width = 50
@@ -99,8 +80,8 @@ class MainWindow(QMainWindow):
         self.btn_library.setIconSize(QSize(16, 16))
         self.btn_library.clicked.connect(self.open_library)
 
-        self.toggle_btn.setStyleSheet(button_style)
-        self.btn_library.setStyleSheet(button_style)
+        self.toggle_btn.setStyleSheet(SIDEBAR_BUTTON_STYLE)
+        self.btn_library.setStyleSheet(SIDEBAR_BUTTON_STYLE)
 
         if not self.sidebar_open:
             self.btn_library.setText("")
@@ -116,14 +97,14 @@ class MainWindow(QMainWindow):
         self.btn_downloader = QPushButton()
         self.btn_downloader.setIcon(qta.icon("fa5s.download", color=icon_color))
         self.btn_downloader.setIconSize(QSize(16, 16))
-        self.btn_downloader.setStyleSheet(button_style)
+        self.btn_downloader.setStyleSheet(SIDEBAR_BUTTON_STYLE)
         self.btn_downloader.clicked.connect(self.open_downloader)
         sidebar_layout.addWidget(self.btn_downloader)
 
         self.btn_updates = QPushButton()
         self.btn_updates.setIcon(qta.icon("fa5s.sync", color=icon_color))
         self.btn_updates.setIconSize(QSize(16, 16))
-        self.btn_updates.setStyleSheet(button_style)
+        self.btn_updates.setStyleSheet(SIDEBAR_BUTTON_STYLE)
         self.btn_updates.clicked.connect(self.open_updates)
         sidebar_layout.addWidget(self.btn_updates)
 
@@ -132,10 +113,10 @@ class MainWindow(QMainWindow):
         self.btn_settings = QPushButton()
         self.btn_settings.setIcon(qta.icon("fa5s.cog", color=icon_color))
         self.btn_settings.setIconSize(QSize(16, 16))
-        self.btn_settings.setStyleSheet(button_style)
+        self.btn_settings.setStyleSheet(SIDEBAR_BUTTON_STYLE)
         self.btn_settings.clicked.connect(self.open_settings)
         sidebar_layout.addWidget(self.btn_settings)
-        self.btn_settings.setStyleSheet(button_style)
+        self.btn_settings.setStyleSheet(SIDEBAR_BUTTON_STYLE)
 
 
         layout.addWidget(self.sidebar)

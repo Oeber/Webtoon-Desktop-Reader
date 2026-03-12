@@ -13,7 +13,36 @@ from PySide6.QtCore import Qt, QPoint, QSize, QTimer
 import qtawesome as qta
 
 from gui.common.chapter_utils import SPECIAL_CHAPTER_RE, chapter_sort_key
-from gui.common.styles import CHAPTER_SCROLL_AREA_STYLE, PAGE_BG_STYLE
+from gui.common.styles import (
+    BATCH_BAR_STYLE,
+    BATCH_LABEL_STYLE,
+    CHAPTER_LIST_WIDGET_STYLE,
+    CHAPTER_ROW_STYLE,
+    CHAPTER_SCROLL_AREA_STYLE,
+    CHAPTER_SELECT_SLOT_STYLE,
+    CHAPTER_TOOL_BUTTON_STYLE,
+    DELETE_BUTTON_STYLE,
+    DETAIL_TITLE_STYLE,
+    HERO_PANEL_STYLE,
+    LAST_READ_ICON_STYLE,
+    MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE,
+    MINIMAL_FILTER_BUTTON_GOLD_CHECKED_STYLE,
+    MINIMAL_FILTER_BUTTON_STYLE,
+    NEW_CHIP_STYLE,
+    PAGE_BG_STYLE,
+    PRIMARY_ACTION_BUTTON_STYLE,
+    SECONDARY_ACTION_BUTTON_STYLE,
+    SECTION_CAPTION_STYLE,
+    SECTION_HEADER_PANEL_STYLE,
+    SUBTLE_META_LABEL_STYLE,
+    TOOLBAR_TEXT_BUTTON_STYLE,
+    TRANSPARENT_BG_STYLE,
+    WARNING_META_LABEL_STYLE,
+    detail_thumb_style,
+    chapter_name_style,
+    TOP_BAR_STYLE,
+    SECONDARY_META_LABEL_STYLE,
+)
 from gui.downloader.download_widgets import SpinnerCircle
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
@@ -102,7 +131,7 @@ class DetailPage(QWidget):
         # ── Top bar ──────────────────────────────────────────────────────
         top_bar = QWidget()
         top_bar.setFixedHeight(52)
-        top_bar.setStyleSheet("background-color: #181818; border-bottom: 1px solid #222;")
+        top_bar.setStyleSheet(TOP_BAR_STYLE)
         tb_layout = QHBoxLayout(top_bar)
         tb_layout.setContentsMargins(16, 0, 16, 0)
 
@@ -110,39 +139,20 @@ class DetailPage(QWidget):
         self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color="#aaaaaa"))
         self.back_btn.setIconSize(QSize(14, 14))
         self.back_btn.setCursor(Qt.PointingHandCursor)
-        self.back_btn.setStyleSheet("""
-            QPushButton { background: transparent; color: #aaa; border: none; font-size: 14px; }
-            QPushButton:hover { color: #fff; }
-        """)
+        self.back_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.back_btn.clicked.connect(self._go_back)
 
         self.edit_btn = QPushButton("  Edit")
         self.edit_btn.setIcon(qta.icon("fa5s.edit", color="#aaaaaa"))
         self.edit_btn.setIconSize(QSize(14, 14))
         self.edit_btn.setCursor(Qt.PointingHandCursor)
-        self.edit_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #aaa;
-                border: none;
-                font-size: 14px;
-            }
-            QPushButton:hover { color: #fff; }
-        """)
+        self.edit_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.edit_btn.clicked.connect(self._open_edit_dialog)
 
         self.bookmark_btn = QPushButton("  Bookmark")
         self.bookmark_btn.setIconSize(QSize(14, 14))
         self.bookmark_btn.setCursor(Qt.PointingHandCursor)
-        self.bookmark_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #aaa;
-                border: none;
-                font-size: 14px;
-            }
-            QPushButton:hover { color: #fff; }
-        """)
+        self.bookmark_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.bookmark_btn.clicked.connect(self._toggle_webtoon_bookmark)
 
         tb_layout.addWidget(self.back_btn)
@@ -153,23 +163,17 @@ class DetailPage(QWidget):
 
         # ── Hero ─────────────────────────────────────────────────────────
         hero = QWidget()
-        hero.setStyleSheet("background-color: #181818;")
+        hero.setStyleSheet(HERO_PANEL_STYLE)
         hero_layout = QHBoxLayout(hero)
         hero_layout.setContentsMargins(32, 28, 32, 28)
         hero_layout.setSpacing(28)
 
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(THUMB_W, THUMB_H)
-        self.thumb_label.setStyleSheet(f"""
-            QLabel {{
-                background: #1e1e1e;
-                border-radius: {RADIUS}px;
-                border: 1px solid #2a2a2a;
-            }}
-        """)
+        self.thumb_label.setStyleSheet(detail_thumb_style(RADIUS))
 
         info_widget = QWidget()
-        info_widget.setStyleSheet("background: transparent;")
+        info_widget.setStyleSheet(TRANSPARENT_BG_STYLE)
         info_layout = QVBoxLayout(info_widget)
         info_layout.setContentsMargins(0, 0, 0, 0)
         info_layout.setSpacing(10)
@@ -177,18 +181,18 @@ class DetailPage(QWidget):
 
         self.title_label = QLabel()
         self.title_label.setWordWrap(False)
-        self.title_label.setStyleSheet("color: #fff; font-size: 28px; font-weight: 700;")
+        self.title_label.setStyleSheet(DETAIL_TITLE_STYLE)
         self.title_label.setFont(QFont("Segoe UI", 24, QFont.Bold))
         self.title_label.setMinimumHeight(36)
 
         self.last_read_label = QLabel()
-        self.last_read_label.setStyleSheet("color: #aaa; font-size: 13px;")
+        self.last_read_label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
 
         self.chapter_count_label = QLabel()
-        self.chapter_count_label.setStyleSheet("color: #888; font-size: 12px;")
+        self.chapter_count_label.setStyleSheet(SECONDARY_META_LABEL_STYLE)
 
         self.update_progress_label = QLabel("")
-        self.update_progress_label.setStyleSheet("color: #f0a500; font-size: 12px; font-weight: 600;")
+        self.update_progress_label.setStyleSheet(WARNING_META_LABEL_STYLE)
         self.update_progress_label.hide()
 
         self.update_progress_circle = ProgressCircle()
@@ -199,11 +203,7 @@ class DetailPage(QWidget):
         self.continue_btn.setIconSize(QSize(12, 12))
         self.continue_btn.setCursor(Qt.PointingHandCursor)
         self.continue_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
-        self.continue_btn.setStyleSheet("""
-            QPushButton { background: #2979ff; color: #fff; border: none; border-radius: 6px;
-                          font-size: 13px; font-weight: 600; }
-            QPushButton:hover { background: #448aff; }
-        """)
+        self.continue_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.continue_btn.clicked.connect(self._continue_reading)
         self.continue_btn.hide()
 
@@ -212,11 +212,7 @@ class DetailPage(QWidget):
         self.start_btn.setIconSize(QSize(12, 12))
         self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
-        self.start_btn.setStyleSheet("""
-            QPushButton { background: #2979ff; color: #fff; border: none; border-radius: 6px;
-                        font-size: 13px; font-weight: 600; }
-            QPushButton:hover { background: #448aff; }
-        """)
+        self.start_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.start_btn.clicked.connect(self._start_from_beginning)
 
         self.update_btn = QPushButton("  Update")
@@ -224,12 +220,7 @@ class DetailPage(QWidget):
         self.update_btn.setIconSize(QSize(12, 12))
         self.update_btn.setCursor(Qt.PointingHandCursor)
         self.update_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
-        self.update_btn.setStyleSheet("""
-            QPushButton { background: #2a2a2a; color: #fff; border: none; border-radius: 6px;
-                          font-size: 13px; font-weight: 600; }
-            QPushButton:hover { background: #333333; }
-            QPushButton:disabled { background: #232323; color: #777; }
-        """)
+        self.update_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.update_btn.clicked.connect(self._start_update)
         self.update_btn.hide()
 
@@ -258,35 +249,20 @@ class DetailPage(QWidget):
 
         # ── Section header ───────────────────────────────────────────────
         section_header = QWidget()
-        section_header.setStyleSheet("background: #121212;")
+        section_header.setStyleSheet(SECTION_HEADER_PANEL_STYLE)
 
         sh_layout = QHBoxLayout(section_header)
         sh_layout.setContentsMargins(32, 20, 32, 8)
 
         chapters_lbl = QLabel("CHAPTERS")
-        chapters_lbl.setStyleSheet(
-            "color: #555; font-size: 11px; font-weight: 700; letter-spacing: 2px;"
-        )
+        chapters_lbl.setStyleSheet(SECTION_CAPTION_STYLE)
 
         self.sort_btn = QPushButton("  Latest")
         self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#888888"))
         self.sort_btn.setIconSize(QSize(12, 12))
         self.sort_btn.setCursor(Qt.PointingHandCursor)
         self.sort_btn.setFixedHeight(24)
-        self.sort_btn.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #888;
-            border: 1px solid #2a2a2a;
-            border-radius: 4px;
-            padding: 2px 8px;
-            font-size: 11px;
-        }
-        QPushButton:hover {
-            background: #1a1a1a;
-            color: #fff;
-        }
-        """)
+        self.sort_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_STYLE)
         self.sort_latest_first = True
         self.sort_btn.clicked.connect(self._toggle_sort)
 
@@ -296,25 +272,7 @@ class DetailPage(QWidget):
         self.hide_specials_btn.setCursor(Qt.PointingHandCursor)
         self.hide_specials_btn.setCheckable(True)
         self.hide_specials_btn.setFixedHeight(24)
-        self.hide_specials_btn.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #888;
-            border: 1px solid #2a2a2a;
-            border-radius: 4px;
-            padding: 2px 8px;
-            font-size: 11px;
-        }
-        QPushButton:hover {
-            background: #1a1a1a;
-            color: #fff;
-        }
-        QPushButton:checked {
-            background: #1a2a3a;
-            color: #2979ff;
-            border-color: #2979ff;
-        }
-        """)
+        self.hide_specials_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE)
         self.hide_specials_btn.clicked.connect(self._toggle_hide_specials)
 
         self.bookmarks_filter_btn = QPushButton("  Bookmarked")
@@ -323,25 +281,7 @@ class DetailPage(QWidget):
         self.bookmarks_filter_btn.setCursor(Qt.PointingHandCursor)
         self.bookmarks_filter_btn.setCheckable(True)
         self.bookmarks_filter_btn.setFixedHeight(24)
-        self.bookmarks_filter_btn.setStyleSheet("""
-        QPushButton {
-            background: transparent;
-            color: #888;
-            border: 1px solid #2a2a2a;
-            border-radius: 4px;
-            padding: 2px 8px;
-            font-size: 11px;
-        }
-        QPushButton:hover {
-            background: #1a1a1a;
-            color: #fff;
-        }
-        QPushButton:checked {
-            background: #2f2815;
-            color: #f5c451;
-            border-color: #f5c451;
-        }
-        """)
+        self.bookmarks_filter_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_GOLD_CHECKED_STYLE)
         self.bookmarks_filter_btn.clicked.connect(self._toggle_bookmarks_filter)
 
         sh_layout.addWidget(chapters_lbl)
@@ -354,33 +294,16 @@ class DetailPage(QWidget):
         root.addWidget(section_header)
 
         self.chapter_batch_bar = QWidget()
-        self.chapter_batch_bar.setStyleSheet("""
-            QWidget {
-                background: #171717;
-                border-top: 1px solid #242424;
-                border-bottom: 1px solid #242424;
-            }
-        """)
+        self.chapter_batch_bar.setStyleSheet(BATCH_BAR_STYLE)
         batch_layout = QHBoxLayout(self.chapter_batch_bar)
         batch_layout.setContentsMargins(32, 10, 32, 10)
         batch_layout.setSpacing(10)
 
         self.chapter_batch_label = QLabel("")
-        self.chapter_batch_label.setStyleSheet("color: #d0d0d0; font-size: 12px;")
+        self.chapter_batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.chapter_batch_label)
 
-        chapter_batch_btn_style = """
-            QPushButton {
-                background: #2a2a2a;
-                color: #f0f0f0;
-                border: 1px solid #343434;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: #333333; }
-        """
+        chapter_batch_btn_style = SECONDARY_ACTION_BUTTON_STYLE
         self.select_all_chapters_btn = QPushButton("Select All")
         self.select_all_chapters_btn.setStyleSheet(chapter_batch_btn_style)
         self.select_all_chapters_btn.clicked.connect(self._select_all_chapters)
@@ -397,18 +320,7 @@ class DetailPage(QWidget):
         batch_layout.addWidget(self.mark_unread_btn)
 
         self.delete_chapters_btn = QPushButton("Delete")
-        self.delete_chapters_btn.setStyleSheet("""
-            QPushButton {
-                background: #4a1f1f;
-                color: #ffffff;
-                border: 1px solid #703030;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: #5a2727; }
-        """)
+        self.delete_chapters_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_chapters_btn.clicked.connect(self._delete_selected_chapters)
         batch_layout.addWidget(self.delete_chapters_btn)
 
@@ -427,7 +339,7 @@ class DetailPage(QWidget):
         self.chapter_scroll.setStyleSheet(CHAPTER_SCROLL_AREA_STYLE)
 
         self.chapter_list_widget = QWidget()
-        self.chapter_list_widget.setStyleSheet("background: #121212;")
+        self.chapter_list_widget.setStyleSheet(CHAPTER_LIST_WIDGET_STYLE)
         self.chapter_list_layout = QVBoxLayout(self.chapter_list_widget)
         self.chapter_list_layout.setContentsMargins(32, 0, 32, 24)
         self.chapter_list_layout.setSpacing(0)
@@ -539,10 +451,7 @@ class DetailPage(QWidget):
     def _make_chapter_row(self, chapter: str, is_last_read: bool, scroll: float, total: int) -> QWidget:
         row = QWidget()
         row.setCursor(Qt.PointingHandCursor)
-        row.setStyleSheet("""
-            QWidget { background: transparent; border-bottom: 1px solid #1e1e1e; }
-            QWidget:hover { background: #1a1a1a; }
-        """)
+        row.setStyleSheet(CHAPTER_ROW_STYLE)
         row.setFixedHeight(52)
 
         layout = QHBoxLayout(row)
@@ -551,7 +460,7 @@ class DetailPage(QWidget):
 
         select_slot = QWidget()
         select_slot.setFixedWidth(22)
-        select_slot.setStyleSheet("background: transparent; border: none;")
+        select_slot.setStyleSheet(CHAPTER_SELECT_SLOT_STYLE)
         select_slot_layout = QHBoxLayout(select_slot)
         select_slot_layout.setContentsMargins(0, 0, 0, 0)
         select_slot_layout.setSpacing(0)
@@ -562,17 +471,7 @@ class DetailPage(QWidget):
         select_btn.setCheckable(True)
         select_btn.setChecked(chapter in self.selected_chapters)
         select_btn.setIconSize(QSize(14, 14))
-        select_btn.setStyleSheet("""
-            QToolButton {
-                border: none;
-                padding: 4px;
-                background: transparent;
-            }
-            QToolButton:hover {
-                background: #222222;
-                border-radius: 8px;
-            }
-        """)
+        select_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         select_btn.setProperty("chapter_name", chapter)
         self._apply_select_icon(select_btn, select_btn.isChecked())
         self._set_chapter_select_visibility(row, select_btn, force=self._chapter_selection_visible())
@@ -588,22 +487,12 @@ class DetailPage(QWidget):
         title_row.setSpacing(6)
 
         name_lbl = QLabel(chapter)
-        name_lbl.setStyleSheet(f"color: {color}; font-size: 14px; border: none;")
+        name_lbl.setStyleSheet(chapter_name_style(color))
         title_row.addWidget(name_lbl)
 
         if chapter == self.latest_new_chapter:
             new_chip = QLabel("NEW")
-            new_chip.setStyleSheet("""
-                QLabel {
-                    color: #ffffff;
-                    background: #c62828;
-                    border: 1px solid #e53935;
-                    border-radius: 6px;
-                    padding: 0 5px;
-                    font-size: 8px;
-                    font-weight: 700;
-                }
-            """)
+            new_chip.setStyleSheet(NEW_CHIP_STYLE)
             new_chip.setAlignment(Qt.AlignCenter)
             new_chip.setFixedHeight(14)
             title_row.addWidget(new_chip)
@@ -617,17 +506,7 @@ class DetailPage(QWidget):
         bookmark_btn.setCheckable(True)
         bookmark_btn.setChecked(chapter in self.bookmarked_chapters)
         bookmark_btn.setIconSize(QSize(14, 14))
-        bookmark_btn.setStyleSheet("""
-            QToolButton {
-                border: none;
-                padding: 4px;
-                background: transparent;
-            }
-            QToolButton:hover {
-                background: #222222;
-                border-radius: 8px;
-            }
-        """)
+        bookmark_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         self._apply_bookmark_icon(bookmark_btn, bookmark_btn.isChecked())
         bookmark_btn.clicked.connect(
             lambda checked, ch=chapter, btn=bookmark_btn: self._toggle_chapter_bookmark(ch, btn)
@@ -645,7 +524,7 @@ class DetailPage(QWidget):
         if is_last_read:
             last_read_icon = QLabel()
             last_read_icon.setPixmap(qta.icon("fa5s.bookmark", color="#2979ff").pixmap(QSize(14, 14)))
-            last_read_icon.setStyleSheet("padding-right: 4px;")
+            last_read_icon.setStyleSheet(LAST_READ_ICON_STYLE)
             layout.addWidget(last_read_icon)
 
         layout.addWidget(bookmark_btn)

@@ -23,10 +23,19 @@ from app_logging import archived_log_paths, current_log_path, get_logger
 from app_paths import default_library_path
 from gui.common.styles import (
     BUTTON_STYLE,
+    CHECKBOX_STYLE,
     INPUT_STYLE,
+    LOG_META_STYLE,
+    LOG_VIEW_STYLE,
     PAGE_BG_STYLE,
     PAGE_TITLE_STYLE,
+    PILL_LABEL_STYLE,
+    SECTION_LABEL_STYLE,
+    SLIDER_STYLE,
     STATUS_LABEL_STYLE,
+    SURFACE_PANEL_STYLE,
+    TAB_STYLE,
+    TEXT_MUTED_LABEL_STYLE,
     VERTICAL_SCROLLBAR_STYLE,
 )
 
@@ -34,117 +43,6 @@ from gui.common.styles import (
 logger = get_logger(__name__)
 
 DEFAULT_PATH = str(default_library_path())
-
-LABEL_STYLE = "color: #8f959e; font-size: 12px; letter-spacing: 0.02em;"
-SECTION_STYLE = "color: #f1f1f1; font-size: 15px; font-weight: 700; letter-spacing: 0.03em;"
-TAB_STYLE = """
-    QTabWidget::pane {
-        border: none;
-        background: #121212;
-        border-radius: 0px;
-        top: -2px;
-        padding: 10px 0 0 0;
-    }
-    QTabBar::tab {
-        background: #171717;
-        color: #8f959e;
-        border: none;
-        padding: 10px 18px;
-        margin-right: 8px;
-        border-top-left-radius: 10px;
-        border-top-right-radius: 10px;
-        font-size: 12px;
-        font-weight: 700;
-    }
-    QTabBar::tab:selected {
-        background: #202020;
-        color: #f1f1f1;
-    }
-    QTabBar::tab:hover:!selected {
-        background: #1c1c1c;
-        color: #cfcfcf;
-    }
-"""
-SURFACE_STYLE = """
-    QWidget {
-        background: #161616;
-        border: none;
-        border-radius: 14px;
-    }
-"""
-VALUE_PILL_STYLE = """
-    QLabel {
-        color: #d8d8d8;
-        background: #202020;
-        border: none;
-        border-radius: 11px;
-        padding: 3px 8px;
-        font-size: 11px;
-        font-weight: 700;
-    }
-"""
-CHECKBOX_STYLE = """
-    QCheckBox {
-        color: #e6e6e6;
-        font-size: 13px;
-        spacing: 10px;
-        background: transparent;
-    }
-    QCheckBox::indicator {
-        width: 18px;
-        height: 18px;
-        border-radius: 5px;
-        border: 1px solid #3a3a3a;
-        background: #151515;
-    }
-    QCheckBox::indicator:checked {
-        background: #d9d9d9;
-        border: 1px solid #e5e5e5;
-    }
-"""
-SLIDER_STYLE = """
-    QSlider::groove:horizontal {
-        height: 8px;
-        border-radius: 4px;
-        background: #222222;
-    }
-    QSlider::sub-page:horizontal {
-        border-radius: 4px;
-        background: #cfcfcf;
-    }
-    QSlider::add-page:horizontal {
-        border-radius: 4px;
-        background: #2d2d2d;
-    }
-    QSlider::handle:horizontal {
-        width: 18px;
-        margin: -6px 0;
-        border-radius: 9px;
-        border: 1px solid #d8d8d8;
-        background: #f2f2f2;
-    }
-"""
-LOG_META_STYLE = """
-    QLabel {
-        color: #a9b0b9;
-        font-size: 12px;
-        background: #1a1a1a;
-        border: none;
-        border-radius: 10px;
-        padding: 10px 12px;
-    }
-"""
-LOG_VIEW_STYLE = """
-    QTextEdit {
-        background: #101010;
-        color: #d8d8d8;
-        border: none;
-        border-radius: 14px;
-        padding: 10px;
-        font-family: Consolas, 'Courier New', monospace;
-        font-size: 12px;
-    }
-""" + VERTICAL_SCROLLBAR_STYLE
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
 _app_settings = get_app_settings_store()
@@ -221,7 +119,7 @@ class SettingsPage(QWidget):
         header_row.setSpacing(10)
 
         folder_label = QLabel("Library")
-        folder_label.setStyleSheet(SECTION_STYLE + " background: transparent;")
+        folder_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
         header_row.addWidget(folder_label)
         header_row.addStretch()
         library_layout.addLayout(header_row)
@@ -250,7 +148,7 @@ class SettingsPage(QWidget):
         reader_header.setSpacing(10)
 
         reader_label = QLabel("Reader Defaults")
-        reader_label.setStyleSheet(SECTION_STYLE + " background: transparent;")
+        reader_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
         reader_header.addWidget(reader_label)
         reader_header.addStretch()
         reader_layout.addLayout(reader_header)
@@ -265,7 +163,7 @@ class SettingsPage(QWidget):
         zoom_row.setSpacing(10)
 
         zoom_text = QLabel("Default zoom")
-        zoom_text.setStyleSheet(LABEL_STYLE + " background: transparent;")
+        zoom_text.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
         zoom_text.setFixedWidth(100)
 
         self.zoom_slider = QSlider(Qt.Horizontal)
@@ -276,7 +174,7 @@ class SettingsPage(QWidget):
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
 
         self.zoom_value_label = QLabel(f"{self.zoom_slider.value()}%")
-        self.zoom_value_label.setStyleSheet(VALUE_PILL_STYLE)
+        self.zoom_value_label.setStyleSheet(PILL_LABEL_STYLE)
         self.zoom_value_label.setAlignment(Qt.AlignCenter)
         self.zoom_value_label.setFixedWidth(54)
 
@@ -317,7 +215,7 @@ class SettingsPage(QWidget):
         logs_card, logs_layout = self._build_card(expand=True)
 
         title = QLabel("Current Session Log")
-        title.setStyleSheet(SECTION_STYLE + " background: transparent;")
+        title.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
         logs_layout.addWidget(title)
 
         self.log_meta_label = QLabel("")
@@ -349,7 +247,7 @@ class SettingsPage(QWidget):
 
     def _build_card(self, expand: bool = False):
         card = QWidget()
-        card.setStyleSheet(SURFACE_STYLE)
+        card.setStyleSheet(SURFACE_PANEL_STYLE)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)

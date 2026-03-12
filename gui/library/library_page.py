@@ -23,7 +23,21 @@ from PySide6.QtWidgets import (
 )
 
 from app_logging import get_logger
-from gui.common.styles import PAGE_BG_STYLE, SCROLL_AREA_STYLE, SEARCH_INPUT_STYLE
+from gui.common.styles import (
+    BATCH_BAR_STYLE,
+    BATCH_LABEL_STYLE,
+    BUTTON_STYLE,
+    DELETE_BUTTON_STYLE,
+    PAGE_BG_STYLE,
+    SCROLL_AREA_STYLE,
+    SEARCH_INPUT_STYLE,
+    SECTION_HEADER_BUTTON_STYLE,
+    SECTION_MENU_BUTTON_STYLE,
+    TRANSPARENT_BG_STYLE,
+    TEXT_DIM_LABEL_STYLE,
+    TEXT_MUTED_LABEL_STYLE,
+    section_empty_state_style,
+)
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path, load_setting, save_setting
@@ -67,7 +81,7 @@ class CategorySection(QFrame):
         self._drop_active = False
 
         self.setFrameShape(QFrame.NoFrame)
-        self.setStyleSheet("background: transparent;")
+        self.setStyleSheet(TRANSPARENT_BG_STYLE)
         self.setAcceptDrops(callable(on_drop))
 
         root = QVBoxLayout(self)
@@ -80,34 +94,14 @@ class CategorySection(QFrame):
 
         self.header_btn = QPushButton()
         self.header_btn.setCursor(Qt.PointingHandCursor)
-        self.header_btn.setStyleSheet("""
-            QPushButton {
-                background: transparent;
-                color: #f0f0f0;
-                border: none;
-                padding: 6px 0;
-                font-size: 13px;
-                font-weight: 700;
-                text-align: left;
-            }
-            QPushButton:hover { color: #ffffff; }
-        """)
+        self.header_btn.setStyleSheet(SECTION_HEADER_BUTTON_STYLE)
         self.header_btn.clicked.connect(self._toggle)
         header_row.addWidget(self.header_btn, 1)
 
         self.menu_btn = QPushButton("...")
         self.menu_btn.setCursor(Qt.PointingHandCursor)
         self.menu_btn.setFixedSize(28, 24)
-        self.menu_btn.setStyleSheet("""
-            QPushButton {
-                background: #202020;
-                color: #cccccc;
-                border: 1px solid #303030;
-                border-radius: 6px;
-                padding-bottom: 2px;
-            }
-            QPushButton:hover { background: #282828; }
-        """)
+        self.menu_btn.setStyleSheet(SECTION_MENU_BUTTON_STYLE)
         self.menu_btn.clicked.connect(self._show_menu)
         self.menu_btn.setVisible(callable(on_menu))
         header_row.addWidget(self.menu_btn, 0, Qt.AlignVCenter)
@@ -127,7 +121,7 @@ class CategorySection(QFrame):
         self.content_layout.addWidget(self.empty_state)
 
         self.grid_host = QWidget()
-        self.grid_host.setStyleSheet("background: transparent;")
+        self.grid_host.setStyleSheet(TRANSPARENT_BG_STYLE)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
         self.grid.setSpacing(CARD_SPACING)
@@ -203,17 +197,7 @@ class CategorySection(QFrame):
         border = "rgba(92, 142, 255, 0.75)" if self._drop_active else "rgba(255, 255, 255, 0.08)"
         background = "rgba(55, 90, 150, 0.16)" if self._drop_active else "rgba(255, 255, 255, 0.025)"
         text = "#d8e4ff" if self._drop_active else "#747b86"
-        self.empty_state.setStyleSheet(f"""
-            QLabel {{
-                color: {text};
-                background: {background};
-                border: 1px dashed {border};
-                border-radius: 12px;
-                font-size: 12px;
-                font-weight: 500;
-                padding: 12px;
-            }}
-        """)
+        self.empty_state.setStyleSheet(section_empty_state_style(border, background, text))
 
 
 class LibraryPage(QWidget):
@@ -260,7 +244,7 @@ class LibraryPage(QWidget):
         controls.addWidget(self.search, 1)
 
         self.size_label = QLabel("Library size")
-        self.size_label.setStyleSheet("color: #aaaaaa; font-size: 12px;")
+        self.size_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE)
         controls.addWidget(self.size_label)
 
         self.size_slider = QSlider(Qt.Horizontal)
@@ -274,40 +258,23 @@ class LibraryPage(QWidget):
 
         self.size_value_label = QLabel(f"{self._card_scale}%")
         self.size_value_label.setFixedWidth(42)
-        self.size_value_label.setStyleSheet("color: #cccccc; font-size: 12px;")
+        self.size_value_label.setStyleSheet(TEXT_DIM_LABEL_STYLE)
         controls.addWidget(self.size_value_label)
 
         root_layout.addLayout(controls)
 
         self.batch_bar = QWidget()
-        self.batch_bar.setStyleSheet("""
-            QWidget {
-                background: #171717;
-                border-top: 1px solid #242424;
-                border-bottom: 1px solid #242424;
-            }
-        """)
+        self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
         batch_layout = QHBoxLayout(self.batch_bar)
         batch_layout.setContentsMargins(PAGE_PADDING, 10, PAGE_PADDING, 10)
         batch_layout.setSpacing(10)
 
         self.batch_label = QLabel("")
-        self.batch_label.setStyleSheet("color: #d0d0d0; font-size: 12px;")
+        self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.batch_label)
 
         self.mark_completed_btn = QPushButton("Mark Completed")
-        self.mark_completed_btn.setStyleSheet("""
-            QPushButton {
-                background: #2a2a2a;
-                color: #f0f0f0;
-                border: 1px solid #343434;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: #333333; }
-        """)
+        self.mark_completed_btn.setStyleSheet(BUTTON_STYLE)
         self.mark_completed_btn.clicked.connect(self._mark_selected_completed)
         batch_layout.addWidget(self.mark_completed_btn)
 
@@ -327,18 +294,7 @@ class LibraryPage(QWidget):
         batch_layout.addWidget(self.move_selected_btn)
 
         self.delete_selected_btn = QPushButton("Delete Selected")
-        self.delete_selected_btn.setStyleSheet("""
-            QPushButton {
-                background: #4a1f1f;
-                color: #ffffff;
-                border: 1px solid #703030;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-size: 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover { background: #5a2727; }
-        """)
+        self.delete_selected_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_selected_btn.clicked.connect(self._delete_selected)
         batch_layout.addWidget(self.delete_selected_btn)
 
@@ -384,7 +340,7 @@ class LibraryPage(QWidget):
 
         self._input_blocker = QWidget(self)
         self._input_blocker.hide()
-        self._input_blocker.setStyleSheet("background: transparent;")
+        self._input_blocker.setStyleSheet(TRANSPARENT_BG_STYLE)
 
         self.load_library()
 

@@ -4,10 +4,17 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from gui.common.styles import BUTTON_STYLE, INPUT_STYLE
-BTN_STYLE = BUTTON_STYLE + """
-    QPushButton:disabled { color: #555; border-color: #222; }
-"""
+from gui.common.styles import (
+    BUTTON_STYLE_DISABLED,
+    DOWNLOAD_ENTRY_FRAME_STYLE,
+    DOWNLOAD_ENTRY_NAME_STYLE,
+    DOWNLOAD_ENTRY_SUB_LABEL_STYLE,
+    DOWNLOAD_ENTRY_THUMB_STYLE,
+    INPUT_STYLE,
+    TRANSPARENT_BORDERLESS_STYLE,
+    status_text_style,
+)
+BTN_STYLE = BUTTON_STYLE_DISABLED
 
 STATUS_COLORS = {
     "Ready": "#888888",
@@ -122,20 +129,7 @@ class DownloadEntry(QFrame):
         self.on_open = on_open
         self.thumbnail_path = ""
         self.setCursor(Qt.ArrowCursor)
-        self.setStyleSheet("""
-            QFrame {
-                background-color: #1a1a1a;
-                border: 1px solid #2a2a2a;
-                border-radius: 8px;
-            }
-            QFrame[clickable="true"] {
-                border: 1px solid #3a3a3a;
-            }
-            QFrame[clickable="true"]:hover {
-                background-color: #202020;
-                border: 1px solid #4a4a4a;
-            }
-        """)
+        self.setStyleSheet(DOWNLOAD_ENTRY_FRAME_STYLE)
         self.setProperty("clickable", False)
 
         layout = QHBoxLayout(self)
@@ -145,28 +139,18 @@ class DownloadEntry(QFrame):
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(52, 78)
         self.thumb_label.setAlignment(Qt.AlignCenter)
-        self.thumb_label.setStyleSheet("""
-            QLabel {
-                background-color: #161616;
-                border: 1px solid #2a2a2a;
-                border-radius: 6px;
-            }
-        """)
+        self.thumb_label.setStyleSheet(DOWNLOAD_ENTRY_THUMB_STYLE)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(4)
 
         self.name_label = QLabel(name)
-        self.name_label.setStyleSheet(
-            "color: #eeeeee; font-size: 13px; background: transparent; border: none; font-weight: 600;"
-        )
+        self.name_label.setStyleSheet(DOWNLOAD_ENTRY_NAME_STYLE)
         self.name_label.setWordWrap(True)
 
         self.sub_label = QLabel("")
-        self.sub_label.setStyleSheet(
-            "color: #777777; font-size: 11px; background: transparent; border: none;"
-        )
+        self.sub_label.setStyleSheet(DOWNLOAD_ENTRY_SUB_LABEL_STYLE)
         self.sub_label.hide()
 
         text_col.addWidget(self.name_label)
@@ -177,9 +161,7 @@ class DownloadEntry(QFrame):
         self.status_label = QLabel("Downloading")
         self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.status_label.setFixedWidth(110)
-        self.status_label.setStyleSheet(
-            f"color: {STATUS_COLORS['Downloading']}; font-size: 12px; background: transparent; border: none;"
-        )
+        self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
 
         layout.addWidget(self.thumb_label)
         layout.addLayout(text_col, stretch=1)
@@ -193,16 +175,12 @@ class DownloadEntry(QFrame):
 
         self.spinner.set_progress(percent)
         self.status_label.setText(f"{current} / {total}")
-        self.status_label.setStyleSheet(
-            f"color: {STATUS_COLORS['Downloading']}; font-size: 12px; background: transparent; border: none;"
-        )
+        self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
 
     def set_status(self, status: str):
         color = STATUS_COLORS.get(status, "#cccccc")
         self.status_label.setText(status)
-        self.status_label.setStyleSheet(
-            f"color: {color}; font-size: 12px; background: transparent; border: none;"
-        )
+        self.status_label.setStyleSheet(status_text_style(color))
 
         clickable = status == "Completed"
         self.setProperty("clickable", clickable)
@@ -267,7 +245,7 @@ class CancellableDownloadEntry(DownloadEntry):
         self.cancel_btn.hide()
 
         controls = QWidget()
-        controls.setStyleSheet("background: transparent; border: none;")
+        controls.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
@@ -307,7 +285,7 @@ class UpdateEntry(DownloadEntry):
         self.update_btn.clicked.connect(lambda: self.on_update(self))
 
         controls = QWidget()
-        controls.setStyleSheet("background: transparent; border: none;")
+        controls.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)

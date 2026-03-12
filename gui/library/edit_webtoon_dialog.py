@@ -8,6 +8,16 @@ import shutil
 import qtawesome as qta
 
 from app_logging import get_logger
+from gui.common.styles import (
+    DELETE_BUTTON_STYLE,
+    EDIT_DIALOG_DELETE_BOX_STYLE,
+    EDIT_DIALOG_DELETE_TEXT_STYLE,
+    EDIT_DIALOG_FORM_FRAME_STYLE,
+    EDIT_DIALOG_STYLE,
+    EDIT_DIALOG_THUMB_PREVIEW_STYLE,
+    EDIT_DIALOG_TITLE_STYLE,
+    FORM_LABEL_STYLE,
+)
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
@@ -90,34 +100,7 @@ class EditWebtoonDialog(QDialog):
         self.setWindowTitle("Edit Webtoon")
         self.setModal(True)
         self.resize(700, 0)
-        self.setStyleSheet("""
-            QDialog { background: #141414; color: #e8e8e8; }
-            QLabel { background: transparent; }
-            QLineEdit, QDoubleSpinBox, QComboBox {
-                background: #1f1f1f;
-                color: #e8e8e8;
-                border: 1px solid #333333;
-                border-radius: 6px;
-                padding: 8px 10px;
-                font-size: 13px;
-            }
-            QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus {
-                border-color: #2979ff;
-            }
-            QCheckBox {
-                color: #d0d0d0;
-                font-size: 13px;
-            }
-            QPushButton {
-                background: #252525;
-                color: #e8e8e8;
-                border: 1px solid #343434;
-                border-radius: 6px;
-                padding: 8px 14px;
-                font-size: 13px;
-            }
-            QPushButton:hover { background: #303030; }
-        """)
+        self.setStyleSheet(EDIT_DIALOG_STYLE)
 
         self._build_ui()
         self._load_values()
@@ -128,7 +111,7 @@ class EditWebtoonDialog(QDialog):
         root.setSpacing(18)
 
         title = QLabel("Edit Webtoon")
-        title.setStyleSheet("font-size: 18px; font-weight: 700; color: #ffffff;")
+        title.setStyleSheet(EDIT_DIALOG_TITLE_STYLE)
         root.addWidget(title)
 
         body = QHBoxLayout()
@@ -140,15 +123,7 @@ class EditWebtoonDialog(QDialog):
         self.thumbnail_preview = QLabel("No thumbnail")
         self.thumbnail_preview.setAlignment(Qt.AlignCenter)
         self.thumbnail_preview.setFixedSize(CARD_W, CARD_H)
-        self.thumbnail_preview.setStyleSheet("""
-            QLabel {
-                background: #1c1c1c;
-                border: 1px solid #2f2f2f;
-                border-radius: 12px;
-                color: #777777;
-                font-size: 11px;
-            }
-        """)
+        self.thumbnail_preview.setStyleSheet(EDIT_DIALOG_THUMB_PREVIEW_STYLE)
         preview_col.addWidget(self.thumbnail_preview, alignment=Qt.AlignTop)
 
         thumb_btn_row = QHBoxLayout()
@@ -172,13 +147,7 @@ class EditWebtoonDialog(QDialog):
         right.setSpacing(14)
 
         form_frame = QFrame()
-        form_frame.setStyleSheet("""
-            QFrame {
-                background: #191919;
-                border: 1px solid #262626;
-                border-radius: 10px;
-            }
-        """)
+        form_frame.setStyleSheet(EDIT_DIALOG_FORM_FRAME_STYLE)
         form = QFormLayout(form_frame)
         form.setContentsMargins(16, 16, 16, 16)
         form.setSpacing(12)
@@ -219,35 +188,19 @@ class EditWebtoonDialog(QDialog):
         right.addWidget(form_frame)
 
         delete_box = QFrame()
-        delete_box.setStyleSheet("""
-            QFrame {
-                background: #1a1313;
-                border: 1px solid #3a2020;
-                border-radius: 10px;
-            }
-        """)
+        delete_box.setStyleSheet(EDIT_DIALOG_DELETE_BOX_STYLE)
         delete_layout = QHBoxLayout(delete_box)
         delete_layout.setContentsMargins(16, 14, 16, 14)
         delete_layout.setSpacing(12)
 
         delete_text = QLabel("Delete this webtoon from the library and remove its saved metadata.")
         delete_text.setWordWrap(True)
-        delete_text.setStyleSheet("color: #d2b2b2;")
+        delete_text.setStyleSheet(EDIT_DIALOG_DELETE_TEXT_STYLE)
         delete_layout.addWidget(delete_text, 1)
 
         self.delete_btn = QPushButton("Delete Webtoon")
         self.delete_btn.setIcon(qta.icon("fa5s.trash-alt", color="#ffffff"))
-        self.delete_btn.setStyleSheet("""
-            QPushButton {
-                background: #4a1f1f;
-                color: #ffffff;
-                border: 1px solid #703030;
-                border-radius: 6px;
-                padding: 8px 14px;
-                font-size: 13px;
-            }
-            QPushButton:hover { background: #5a2727; }
-        """)
+        self.delete_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_btn.clicked.connect(self._delete_webtoon)
         delete_layout.addWidget(self.delete_btn)
 
@@ -303,7 +256,7 @@ class EditWebtoonDialog(QDialog):
         label.setFixedWidth(88)
         label.setFixedHeight(ROW_H)
         label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
-        label.setStyleSheet("color: #b8b8b8; font-size: 13px;")
+        label.setStyleSheet(FORM_LABEL_STYLE)
         return label
 
     def _field_row(self, widget):

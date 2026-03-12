@@ -10,6 +10,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage
 from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, Signal, QObject, QRect
 
+from gui.common.styles import (
+    VIEWER_RESUME_CONTINUE_BUTTON_STYLE,
+    VIEWER_RESUME_DIALOG_STYLE,
+    VIEWER_RESUME_RESTART_BUTTON_STYLE,
+    VIEWER_ZOOM_BUTTON_STYLE,
+    VIEWER_ZOOM_LABEL_STYLE,
+)
 from progress_store import get_instance as get_progress_store
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.settings.settings_page import load_setting, save_setting
@@ -40,12 +47,7 @@ class ContinueDialog(QDialog):
         self.setWindowTitle("Resume reading?")
         self.setModal(True)
         self.setFixedWidth(360)
-        self.setStyleSheet("""
-            QDialog { background: #1e1e1e; color: #e0e0e0; }
-            QLabel  { color: #e0e0e0; font-size: 13px; background: transparent; }
-            QPushButton { padding: 8px 20px; border-radius: 6px;
-                          font-size: 13px; font-weight: 600; border: none; }
-        """)
+        self.setStyleSheet(VIEWER_RESUME_DIALOG_STYLE)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 20)
         layout.setSpacing(16)
@@ -60,10 +62,10 @@ class ContinueDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.setSpacing(10)
         restart_btn = QPushButton("Start over")
-        restart_btn.setStyleSheet("QPushButton{background:#2e2e2e;color:#ccc;} QPushButton:hover{background:#3a3a3a;}")
+        restart_btn.setStyleSheet(VIEWER_RESUME_RESTART_BUTTON_STYLE)
         restart_btn.clicked.connect(self._start_over)
         continue_btn = QPushButton("Continue")
-        continue_btn.setStyleSheet("QPushButton{background:#2979ff;color:#fff;} QPushButton:hover{background:#448aff;}")
+        continue_btn.setStyleSheet(VIEWER_RESUME_CONTINUE_BUTTON_STYLE)
         continue_btn.clicked.connect(self._continue)
         btn_layout.addWidget(restart_btn)
         btn_layout.addWidget(continue_btn)
@@ -556,24 +558,12 @@ class ViewerPage(QWidget):
         self._zoom_label = QLabel(f"{int(self._zoom * 100)}%")
         self._zoom_label.setFixedWidth(36)
         self._zoom_label.setAlignment(Qt.AlignCenter)
-        self._zoom_label.setStyleSheet("color: #aaa; font-size: 12px;")
+        self._zoom_label.setStyleSheet(VIEWER_ZOOM_LABEL_STYLE)
 
-        _zoom_btn_style = """
-            QPushButton {
-                background: transparent;
-                color: #888;
-                border: 1px solid #333;
-                border-radius: 4px;
-                padding: 2px 6px;
-                font-size: 11px;
-            }
-            QPushButton:hover { background: #2a2a2a; color: #fff; }
-            QPushButton:disabled { color: #444; border-color: #222; }
-        """
         self._zoom_reset_btn = QPushButton("Reset zoom")
         self._zoom_reset_btn.setFocusPolicy(Qt.NoFocus)
         self._zoom_reset_btn.setToolTip("Remove webtoon zoom override and use global default")
-        self._zoom_reset_btn.setStyleSheet(_zoom_btn_style)
+        self._zoom_reset_btn.setStyleSheet(VIEWER_ZOOM_BUTTON_STYLE)
         self._zoom_reset_btn.setEnabled(False)  # enabled only when an override is active
         self._zoom_reset_btn.clicked.connect(self._clear_zoom_override)
 

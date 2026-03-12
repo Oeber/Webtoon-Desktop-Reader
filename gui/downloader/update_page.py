@@ -5,7 +5,7 @@ from app_logging import get_logger
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QLabel, QLineEdit
 
-from gui.common.styles import SEARCH_INPUT_STYLE
+from gui.common.styles import EMPTY_STATE_LABEL_STYLE, SEARCH_INPUT_STYLE
 from gui.downloader.download_widgets import UpdateEntry as BaseUpdateEntry
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
@@ -89,7 +89,7 @@ class UpdatePage(DownloadHistoryPageBase):
             empty = QLabel("No comics with a saved source URL yet.")
             if self._pending_search.strip():
                 empty.setText("No update entries match your search.")
-            empty.setStyleSheet("color: #777777; font-size: 13px; background: transparent;")
+            empty.setStyleSheet(EMPTY_STATE_LABEL_STYLE)
             empty.setAlignment(Qt.AlignCenter)
             self.history_layout.addWidget(empty)
             return

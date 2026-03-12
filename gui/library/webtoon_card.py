@@ -7,6 +7,20 @@ import qtawesome as qta
 import time
 
 from app_logging import get_logger
+from gui.common.styles import (
+    CARD_ACTION_BUTTON_DISABLED_STYLE,
+    CARD_ACTION_BUTTON_STYLE,
+    CARD_CANCEL_BUTTON_STYLE,
+    CARD_DOTS_BUTTON_STYLE,
+    CARD_INFO_LABEL_STYLE,
+    CARD_MENU_STYLE,
+    CARD_PROGRESS_OVERLAY_STYLE,
+    CARD_TITLE_LABEL_STYLE,
+    NEW_CHIP_STYLE,
+    TRANSPARENT_BG_STYLE,
+    card_badge_button_style,
+    card_image_border_style,
+)
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 
@@ -101,7 +115,7 @@ class WebtoonCard(QWidget):
 
         self.setFixedWidth(self.card_width + 16)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet("background: transparent;")
+        self.setStyleSheet(TRANSPARENT_BG_STYLE)
 
         root = QVBoxLayout(self)
         root.setSpacing(6)
@@ -110,7 +124,7 @@ class WebtoonCard(QWidget):
 
         self.image_container = QWidget()
         self.image_container.setFixedSize(self.card_width, self.card_height)
-        self.image_container.setStyleSheet("background: transparent;")
+        self.image_container.setStyleSheet(TRANSPARENT_BG_STYLE)
 
         self.image_label = QLabel(self.image_container)
         self.image_label.setFixedSize(self.card_width, self.card_height)
@@ -122,17 +136,7 @@ class WebtoonCard(QWidget):
         self.dots_btn.setFixedSize(28, 28)
         self.dots_btn.move(self.card_width - 34, 6)
         self.dots_btn.setCursor(Qt.PointingHandCursor)
-        self.dots_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(0,0,0,0.65);
-                color: #fff;
-                border: none;
-                border-radius: 14px;
-                font-size: 14px;
-                padding-bottom: 2px;
-            }
-            QPushButton:hover { background: rgba(80,80,80,0.90); }
-        """)
+        self.dots_btn.setStyleSheet(CARD_DOTS_BUTTON_STYLE)
         self.dots_btn.hide()
         self.dots_btn.clicked.connect(self._show_context_menu_at_btn)
 
@@ -141,18 +145,7 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.setFixedSize(28, 28)
         self.cancel_download_btn.move(6, 6)
         self.cancel_download_btn.setCursor(Qt.PointingHandCursor)
-        self.cancel_download_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(104,26,26,0.92);
-                color: #fff;
-                border: none;
-                border-radius: 14px;
-                font-size: 10px;
-                font-weight: 700;
-                padding: 0;
-            }
-            QPushButton:hover { background: rgba(136,34,34,0.98); }
-        """)
+        self.cancel_download_btn.setStyleSheet(CARD_CANCEL_BUTTON_STYLE)
         self.cancel_download_btn.setIcon(qta.icon("fa5s.times", color="#ffffff"))
         self.cancel_download_btn.setIconSize(QSize(11, 11))
         self.cancel_download_btn.setToolTip("Cancel download")
@@ -164,22 +157,7 @@ class WebtoonCard(QWidget):
         self.update_btn.setFixedSize(28, 28)
         self.update_btn.move(6, 6)
         self.update_btn.setCursor(Qt.PointingHandCursor)
-        self.update_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(0,0,0,0.65);
-                color: #fff;
-                border: none;
-                border-radius: 14px;
-                font-size: 10px;
-                font-weight: 700;
-                padding: 0;
-            }
-            QPushButton:hover { background: rgba(80,80,80,0.90); }
-            QPushButton:disabled {
-                background: rgba(0,0,0,0.45);
-                color: #777;
-            }
-        """)
+        self.update_btn.setStyleSheet(CARD_ACTION_BUTTON_DISABLED_STYLE)
         self.update_btn.hide()
         self.update_btn.clicked.connect(self._trigger_update)
         self._set_update_button_idle()
@@ -209,13 +187,7 @@ class WebtoonCard(QWidget):
         self.progress_overlay = QWidget(self.image_container)
         self.progress_overlay.setFixedSize(84, 84)
         self.progress_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-        self.progress_overlay.setStyleSheet("""
-            QWidget {
-                background: rgba(0, 0, 0, 0.55);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 42px;
-            }
-        """)
+        self.progress_overlay.setStyleSheet(CARD_PROGRESS_OVERLAY_STYLE)
         overlay_layout = QVBoxLayout(self.progress_overlay)
         overlay_layout.setContentsMargins(0, 0, 0, 0)
         self.progress_spinner = SpinnerCircle(self.progress_overlay)
@@ -229,29 +201,13 @@ class WebtoonCard(QWidget):
         self.title_label.setWordWrap(False)
         self.title_label.setMaximumHeight(18)
         self.title_label.setToolTip(webtoon.name)
-        self.title_label.setStyleSheet("""
-            QLabel {
-                color: #e0e0e0;
-                font-size: 12px;
-                background: transparent;
-                border: none;
-                padding: 0;
-            }
-        """)
+        self.title_label.setStyleSheet(CARD_TITLE_LABEL_STYLE)
         font = QFont("Segoe UI", 10)
         font.setWeight(QFont.Medium)
         self.title_label.setFont(font)
 
         self.info_label = QLabel("")
-        self.info_label.setStyleSheet("""
-            QLabel {
-                color: #9a9a9a;
-                font-size: 10px;
-                background: transparent;
-                border: none;
-                padding: 0 2px;
-            }
-        """)
+        self.info_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
         self.info_label.hide()
 
         self.latest_btn = self._make_badge_btn(accent=False)
@@ -261,17 +217,7 @@ class WebtoonCard(QWidget):
         self.new_chip = QLabel("NEW")
         self.new_chip.setAlignment(Qt.AlignCenter)
         self.new_chip.setFixedHeight(14)
-        self.new_chip.setStyleSheet("""
-            QLabel {
-                color: #ffffff;
-                background: #c62828;
-                border: 1px solid #e53935;
-                border-radius: 6px;
-                padding: 0 5px;
-                font-size: 8px;
-                font-weight: 700;
-            }
-        """)
+        self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
         self.new_chip.hide()
 
         latest_row = QHBoxLayout()
@@ -296,23 +242,7 @@ class WebtoonCard(QWidget):
         btn.setFixedWidth(self.card_width)
         btn.setFixedHeight(20)
         btn.setCursor(Qt.PointingHandCursor)
-        color = "#2979ff" if accent else "#888"
-        bg_hover = "#1a2a4a" if accent else "#2a2a2a"
-        btn.setStyleSheet(f"""
-            QPushButton {{
-                color: {color};
-                font-size: 10px;
-                font-weight: 600;
-                background: transparent;
-                border: none;
-                text-align: left;
-                padding: 0 2px;
-            }}
-            QPushButton:hover {{
-                background: {bg_hover};
-                border-radius: 4px;
-            }}
-        """)
+        btn.setStyleSheet(card_badge_button_style(accent))
         btn.hide()
         return btn
 
@@ -462,20 +392,7 @@ class WebtoonCard(QWidget):
 
     def _build_menu(self) -> QMenu:
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background: #1e1e1e;
-                color: #e0e0e0;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 20px;
-                border-radius: 4px;
-            }
-            QMenu::item:selected { background: #2e2e2e; }
-        """)
+        menu.setStyleSheet(CARD_MENU_STYLE)
 
         edit_action = QAction("Edit", self)
         edit_action.triggered.connect(self._open_edit_dialog)
@@ -596,13 +513,7 @@ class WebtoonCard(QWidget):
             color = "#2979ff"
         else:
             color = "#666" if hovered else "#2a2a2a"
-        self.image_label.setStyleSheet(f"""
-            QLabel {{
-                background-color: #1e1e1e;
-                border-radius: {CARD_RADIUS}px;
-                border: 1px solid {color};
-            }}
-        """)
+        self.image_label.setStyleSheet(card_image_border_style(color, CARD_RADIUS))
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -811,28 +722,12 @@ class WebtoonCard(QWidget):
             self.on_cancel_download(self.webtoon.name)
 
     def _apply_select_button_style(self):
-        self.select_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(0,0,0,0.65);
-                color: #fff;
-                border: none;
-                border-radius: 14px;
-                padding: 0;
-            }
-            QPushButton:hover { background: rgba(80,80,80,0.90); }
+        self.select_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
             QPushButton:checked { background: rgba(41,121,255,0.95); }
         """)
 
     def _apply_bookmark_button_style(self):
-        self.bookmark_btn.setStyleSheet("""
-            QPushButton {
-                background: rgba(0,0,0,0.65);
-                color: #fff;
-                border: none;
-                border-radius: 14px;
-                padding: 0;
-            }
-            QPushButton:hover { background: rgba(80,80,80,0.90); }
+        self.bookmark_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
             QPushButton:checked { background: rgba(245,196,81,0.95); }
         """)
 
