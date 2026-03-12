@@ -132,11 +132,13 @@ class WebtoonCard(QWidget):
         self.image_label.setAlignment(Qt.AlignCenter)
         self._apply_border_style(hovered=False)
 
-        self.dots_btn = QPushButton("...", self.image_container)
+        self.dots_btn = QPushButton(self.image_container)
         self.dots_btn.setFixedSize(28, 28)
         self.dots_btn.move(self.card_width - 34, 6)
         self.dots_btn.setCursor(Qt.PointingHandCursor)
         self.dots_btn.setStyleSheet(CARD_DOTS_BUTTON_STYLE)
+        self.dots_btn.setIcon(qta.icon("fa5s.ellipsis-h", color="#ffffff"))
+        self.dots_btn.setIconSize(QSize(12, 12))
         self.dots_btn.hide()
         self.dots_btn.clicked.connect(self._show_context_menu_at_btn)
 
@@ -152,8 +154,6 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.hide()
 
         self.update_btn = QPushButton(self.image_container)
-        self.update_btn.setFixedSize(28, 28)
-        self.update_btn.move(6, 6)
         self.update_btn.setCursor(Qt.PointingHandCursor)
         self.update_btn.setStyleSheet(CARD_ACTION_BUTTON_DISABLED_STYLE)
         self.update_btn.hide()
@@ -362,6 +362,7 @@ class WebtoonCard(QWidget):
         self.lastread_btn.setFixedWidth(self.card_width)
         self._center_progress_overlay()
         self._load_thumbnail(self.webtoon.thumbnail)
+        self._layout_update_button()
         self._apply_border_style(hovered=self.underMouse())
         self._refresh_select_visibility()
         self._refresh_bookmark_visibility()
@@ -506,7 +507,7 @@ class WebtoonCard(QWidget):
 
     def _apply_border_style(self, hovered: bool):
         if self._selected:
-            color = "#2979ff"
+            color = "#ff8a7a"
         else:
             color = "#666" if hovered else "#2a2a2a"
         self.image_label.setStyleSheet(card_image_border_style(color, CARD_RADIUS))
@@ -666,8 +667,19 @@ class WebtoonCard(QWidget):
             self.update_btn.setIcon(QIcon())
         else:
             self.update_btn.setText("")
-            self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
+            self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
             self.update_btn.setIconSize(QSize(12, 12))
+        self._layout_update_button()
+
+    def _layout_update_button(self):
+        text = self.update_btn.text().strip()
+        if text:
+            metrics = QFontMetrics(self.update_btn.font())
+            width = max(40, min(self.card_width - 12, metrics.horizontalAdvance(text) + 16))
+            self.update_btn.setFixedSize(width, 28)
+        else:
+            self.update_btn.setFixedSize(28, 28)
+        self.update_btn.move(6, 6)
 
     def _toggle_selected_from_button(self):
         if self._download_placeholder:
@@ -727,7 +739,7 @@ class WebtoonCard(QWidget):
 
     def _apply_select_button_style(self):
         self.select_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
-            QPushButton:checked { background: rgba(41,121,255,0.95); }
+            QPushButton:checked { background: rgba(255,138,122,0.95); }
         """)
 
     def _apply_bookmark_button_style(self):

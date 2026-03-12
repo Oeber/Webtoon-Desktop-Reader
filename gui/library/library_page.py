@@ -29,9 +29,16 @@ from gui.common.styles import (
     BATCH_LABEL_STYLE,
     BUTTON_STYLE,
     DELETE_BUTTON_STYLE,
+    ACCENT_MUTED,
+    BG,
+    BG_ALT,
+    BORDER,
     PAGE_BG_STYLE,
     SCROLL_AREA_STYLE,
     SEARCH_INPUT_STYLE,
+    SLIDER_STYLE,
+    SURFACE,
+    SURFACE_SOFT,
     SECTION_HEADER_BUTTON_STYLE,
     SECTION_MENU_BUTTON_STYLE,
     TRANSPARENT_BG_STYLE,
@@ -161,7 +168,7 @@ class CategorySection(QFrame):
 
         self.drop_indicator = QFrame(self)
         self.drop_indicator.hide()
-        self.drop_indicator.setStyleSheet("background: rgba(92, 142, 255, 0.95); border-radius: 2px;")
+        self.drop_indicator.setStyleSheet("background: rgba(255, 138, 122, 0.95); border-radius: 2px;")
 
         self._apply_drop_style()
         self.set_title(title, 0)
@@ -319,19 +326,19 @@ class CategorySection(QFrame):
 
         painter = QPainter(preview)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setBrush(QColor(28, 31, 36, 240))
-        painter.setPen(QPen(QColor(92, 142, 255, 220), 2))
+        painter.setBrush(QColor(28, 18, 17, 240))
+        painter.setPen(QPen(QColor(255, 138, 122, 220), 2))
         painter.drawRoundedRect(1, 1, width - 2, height - 2, 10, 10)
-        painter.setPen(QColor("#f3f6fb"))
+        painter.setPen(QColor("#fff0ec"))
         painter.setFont(font)
         painter.drawText(14, 26, subtitle)
         painter.end()
         return preview
 
     def _apply_drop_style(self):
-        border = "rgba(92, 142, 255, 0.75)" if self._drop_active else "rgba(255, 255, 255, 0.08)"
-        background = "rgba(55, 90, 150, 0.16)" if self._drop_active else "rgba(255, 255, 255, 0.025)"
-        text = "#d8e4ff" if self._drop_active else "#747b86"
+        border = "rgba(255, 138, 122, 0.75)" if self._drop_active else "rgba(255, 255, 255, 0.08)"
+        background = "rgba(120, 53, 46, 0.18)" if self._drop_active else "rgba(255, 255, 255, 0.025)"
+        text = "#ffd7cf" if self._drop_active else "#9b7670"
         self.empty_state.setStyleSheet(section_empty_state_style(border, background, text))
         self._update_drop_indicator()
 
@@ -444,40 +451,91 @@ class LibraryPage(QWidget):
         self._section_widgets = {}
         self._section_cards = {}
         self._section_layout_cols = 0
+        self.setStyleSheet(PAGE_BG_STYLE)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(12)
 
-        controls = QHBoxLayout()
-        controls.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, 0)
-        controls.setSpacing(12)
+        self.controls_bar = QWidget(self)
+        self.controls_bar.setStyleSheet(
+            f"background: {BG_ALT}; border-bottom: 1px solid {BORDER};"
+        )
+        controls = QHBoxLayout(self.controls_bar)
+        controls.setContentsMargins(PAGE_PADDING, 16, PAGE_PADDING, 14)
+        controls.setSpacing(16)
 
         self.search = QLineEdit(self)
         self.search.setPlaceholderText("Search webtoons...")
-        self.search.setFixedHeight(36)
+        self.search.setFixedHeight(38)
         self.search.setStyleSheet(SEARCH_INPUT_STYLE)
         controls.addWidget(self.search, 1)
 
+        scale_panel = QWidget(self.controls_bar)
+        scale_panel.setStyleSheet(
+            f"background: {BG_ALT}; border: none; border-radius: 12px;"
+        )
+        scale_layout = QVBoxLayout(scale_panel)
+        scale_layout.setContentsMargins(12, 8, 12, 8)
+        scale_layout.setSpacing(4)
+
         self.size_label = QLabel("Library size", self)
         self.size_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE)
-        controls.addWidget(self.size_label)
+        scale_layout.addWidget(self.size_label)
+
+        scale_row = QHBoxLayout()
+        scale_row.setContentsMargins(0, 0, 0, 0)
+        scale_row.setSpacing(10)
 
         self.size_slider = QSlider(Qt.Horizontal, self)
         self.size_slider.setRange(CARD_SCALE_MIN, CARD_SCALE_MAX)
         self.size_slider.setValue(self._card_scale)
-        self.size_slider.setFixedWidth(140)
+        self.size_slider.setFixedWidth(160)
         self.size_slider.setToolTip("Smaller cards fit more items per row")
+        self.size_slider.setStyleSheet(f"""
+            QSlider {{
+                background: {SURFACE};
+                border: 1px solid {BORDER};
+                border-radius: 6px;
+                padding: 4px 6px;
+            }}
+            QSlider::groove:horizontal {{
+                height: 6px;
+                border-radius: 3px;
+                background: {SURFACE_SOFT};
+            }}
+            QSlider::sub-page:horizontal {{
+                border-radius: 3px;
+                background: {ACCENT_MUTED};
+            }}
+            QSlider::add-page:horizontal {{
+                border-radius: 3px;
+                background: {BG_ALT};
+            }}
+            QSlider::handle:horizontal {{
+                width: 12px;
+                margin: -3px 0;
+                border-radius: 6px;
+                border: 1px solid #ffe5de;
+                background: #ffd4cb;
+            }}
+        """)
         self.size_slider.valueChanged.connect(self._on_size_slider_changed)
         self.size_slider.sliderReleased.connect(self._apply_pending_card_scale)
-        controls.addWidget(self.size_slider)
+        scale_row.addWidget(self.size_slider)
 
         self.size_value_label = QLabel(f"{self._card_scale}%", self)
-        self.size_value_label.setFixedWidth(42)
-        self.size_value_label.setStyleSheet(TEXT_DIM_LABEL_STYLE)
-        controls.addWidget(self.size_value_label)
+        self.size_value_label.setAlignment(Qt.AlignCenter)
+        self.size_value_label.setMinimumWidth(42)
+        self.size_value_label.setStyleSheet(
+            f"color: {ACCENT_MUTED}; font-size: 12px; font-weight: 700;"
+            f"background: {BG_ALT}; border: none; padding: 2px 0;"
+        )
+        scale_row.addWidget(self.size_value_label, 0, Qt.AlignVCenter)
+        scale_layout.addLayout(scale_row)
+        controls.addWidget(scale_panel, 0, Qt.AlignVCenter)
 
-        root_layout.addLayout(controls)
+        root_layout.addWidget(self.controls_bar)
 
         self.batch_bar = QWidget(self)
         self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)

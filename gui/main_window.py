@@ -10,7 +10,7 @@ import time
 import qtawesome as qta
 from core.app_logging import get_logger
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
-from gui.common.styles import SIDEBAR_BUTTON_STYLE, SIDEBAR_STYLE
+from gui.common.styles import ACCENT, BG, SIDEBAR_BUTTON_STYLE, SIDEBAR_STYLE
 
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
@@ -36,6 +36,7 @@ class MainWindow(QMainWindow):
         self.settings_store = get_webtoon_settings()
 
         self.stack = QStackedWidget()
+        self.stack.setStyleSheet(f"background-color: {BG};")
 
         self.library  = LibraryPage(self)
         self.detail   = DetailPage(self)
@@ -48,6 +49,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings)
 
         root = QWidget()
+        root.setStyleSheet(f"background-color: {BG};")
         layout = QHBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -61,12 +63,14 @@ class MainWindow(QMainWindow):
         self.sidebar_open = False
 
         self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
+        self._sidebar_target = "library"
+        self._download_sidebar_active = False
 
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(10, 10, 10, 10)
         sidebar_layout.setSpacing(10)
 
-        icon_color = "#cccccc"
+        icon_color = "#d8b7b0"
 
         # Toggle button
         self.toggle_btn = QPushButton()
@@ -159,6 +163,8 @@ class MainWindow(QMainWindow):
         self.viewer.chapter_loading_started.connect(self._on_viewer_chapter_loading_started)
         self.viewer.chapter_loading_finished.connect(self._on_viewer_chapter_loading_finished)
         self._refresh_download_sidebar_indicator()
+        self._refresh_sidebar_nav_state()
+        self._apply_sidebar_button_layout()
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)
@@ -181,16 +187,19 @@ class MainWindow(QMainWindow):
         self.set_window_context_title()
         self.library.refresh_dynamic_state()
         self.stack.setCurrentWidget(self.library)
+        self._set_sidebar_target("library")
 
     def open_downloader(self):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.downloader)
+        self._set_sidebar_target("downloader")
 
     def open_settings(self):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.settings)
+        self._set_sidebar_target("settings")
 
     def open_detail(self, webtoon, force: bool = False):
         """Show the detail / chapter-list page. Also refreshes progress badges."""
@@ -203,6 +212,7 @@ class MainWindow(QMainWindow):
         self.detail.load_webtoon(webtoon, self.library.progress_store)
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.detail)
+        self._set_sidebar_target("library")
 
     def suppress_detail_open(self, seconds: float):
         logger.info("Suppressing detail open for %.2f seconds", seconds)
@@ -228,6 +238,7 @@ class MainWindow(QMainWindow):
                                  start_scroll=scroll_pct)
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
+        self._set_sidebar_target("library")
         self._hide_chapter_loading_overlay()
 
     def open_chapter_with_prompt(self, webtoon, chapter_index: int):
@@ -249,6 +260,7 @@ class MainWindow(QMainWindow):
             return
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
+        self._set_sidebar_target("library")
         self._hide_chapter_loading_overlay()
 
     def open_viewer(self, webtoon):
@@ -261,6 +273,7 @@ class MainWindow(QMainWindow):
         self.updates.refresh_entries()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.updates)
+        self._set_sidebar_target("updates")
 
     def _position_chapter_loading_overlay(self):
         self._chapter_loading_overlay.setGeometry(self.stack.rect())
@@ -298,8 +311,65 @@ class MainWindow(QMainWindow):
             self.btn_settings.setText("  Settings")
             self.btn_updates.setText("  Updates")
             self.sidebar_open = True
+        self._apply_sidebar_button_layout()
         self._refresh_download_sidebar_indicator()
+        self._refresh_sidebar_nav_state()
         logger.info("Sidebar toggled, open=%s", self.sidebar_open)
+
+    def _apply_sidebar_button_layout(self):
+        if self.sidebar_open:
+            extra_style = """
+                QPushButton {
+                    padding: 8px 10px;
+                    text-align: left;
+                }
+            """
+        else:
+            extra_style = """
+                QPushButton {
+                    padding: 8px 0;
+                    text-align: center;
+                }
+            """
+        for button in (
+            self.toggle_btn,
+            self.btn_library,
+            self.btn_downloader,
+            self.btn_updates,
+            self.btn_settings,
+        ):
+            button.setStyleSheet(SIDEBAR_BUTTON_STYLE + extra_style)
+
+    def _set_sidebar_target(self, target: str):
+        self._sidebar_target = target
+        self._refresh_sidebar_nav_state()
+
+    def _sidebar_icon_color(self, button_name: str) -> str:
+        if button_name == self._sidebar_target:
+            return ACCENT
+        return "#d8b7b0"
+
+    def _refresh_sidebar_nav_state(self):
+        button_specs = (
+            (self.btn_library, "library", "fa5s.book-open"),
+            (self.btn_updates, "updates", "fa5s.sync"),
+            (self.btn_settings, "settings", "fa5s.cog"),
+        )
+        for button, name, icon_name in button_specs:
+            active = name == self._sidebar_target
+            button.setProperty("active", active)
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.setIcon(qta.icon(icon_name, color=self._sidebar_icon_color(name)))
+
+        if not self._download_sidebar_active:
+            downloader_active = self._sidebar_target == "downloader"
+            self.btn_downloader.setProperty("active", downloader_active)
+            self.btn_downloader.style().unpolish(self.btn_downloader)
+            self.btn_downloader.style().polish(self.btn_downloader)
+            self.btn_downloader.setIcon(
+                qta.icon("fa5s.download", color=self._sidebar_icon_color("downloader"))
+            )
 
     def shutdown_background_tasks(self):
         if self._shutdown_done:
@@ -424,10 +494,14 @@ class MainWindow(QMainWindow):
             remaining = max(0, total - current)
             icon_state = ("progress", "active")
             if icon_state != self._download_sidebar_icon_state:
+                self._download_sidebar_active = True
                 self.btn_downloader.setIcon(
-                    qta.icon("fa5s.spinner", color="#f0a500", animation=self._download_sidebar_spin)
+                    qta.icon("fa5s.spinner", color=ACCENT, animation=self._download_sidebar_spin)
                 )
                 self._download_sidebar_icon_state = icon_state
+            self.btn_downloader.setProperty("active", self._sidebar_target == "downloader")
+            self.btn_downloader.style().unpolish(self.btn_downloader)
+            self.btn_downloader.style().polish(self.btn_downloader)
             if self.sidebar_open:
                 if total > 0:
                     self.btn_downloader.setText(f"  Download {current} done, {remaining} left")
@@ -442,13 +516,14 @@ class MainWindow(QMainWindow):
             return
 
         if self._download_sidebar_icon_state != ("idle", None):
-            self.btn_downloader.setIcon(qta.icon("fa5s.download", color="#cccccc"))
             self._download_sidebar_icon_state = ("idle", None)
+        self._download_sidebar_active = False
         self.btn_downloader.setToolTip("Open downloader")
         if self.sidebar_open:
             self.btn_downloader.setText("  Download")
         else:
             self.btn_downloader.setText("")
+        self._refresh_sidebar_nav_state()
 
     def closeEvent(self, event):
         if not self._confirm_close_with_active_downloads():
