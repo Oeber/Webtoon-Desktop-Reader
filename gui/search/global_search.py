@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
 from app_logging import get_logger
@@ -7,6 +7,77 @@ from gui.common.styles import INPUT_STYLE
 from rapidfuzz import fuzz
 
 logger = get_logger(__name__)
+
+ITEM_ACTION_ROLE = Qt.UserRole
+ITEM_WEBTOON_ROLE = Qt.UserRole + 1
+ITEM_COMMAND_ROLE = Qt.UserRole + 2
+
+COMMANDS = [
+    {
+        "name": "/download",
+        "template": "/download ",
+        "summary": "Start a manual download from a link.",
+        "mode": "download",
+        "requires_argument": True,
+    },
+    {
+        "name": "/update",
+        "template": "/update ",
+        "summary": "Find a saved title and start an update.",
+        "mode": "update",
+        "requires_argument": True,
+    },
+    {
+        "name": "/open",
+        "template": "/open ",
+        "summary": "Open a title detail page.",
+        "mode": "open",
+        "requires_argument": True,
+    },
+    {
+        "name": "/read",
+        "template": "/read ",
+        "summary": "Continue reading a title.",
+        "mode": "read",
+        "requires_argument": True,
+    },
+    {
+        "name": "/library",
+        "template": "/library",
+        "summary": "Go to the library page.",
+        "mode": "library",
+        "requires_argument": False,
+    },
+    {
+        "name": "/updates",
+        "template": "/updates",
+        "summary": "Open the updates page.",
+        "mode": "updates",
+        "requires_argument": False,
+    },
+    {
+        "name": "/settings",
+        "template": "/settings",
+        "summary": "Open the settings page.",
+        "mode": "settings",
+        "requires_argument": False,
+    },
+    {
+        "name": "/logs",
+        "template": "/logs",
+        "summary": "Open the settings logs tab.",
+        "mode": "logs",
+        "requires_argument": False,
+    },
+    {
+        "name": "/help",
+        "template": "/help",
+        "summary": "Show available commands.",
+        "mode": "help",
+        "requires_argument": False,
+    },
+]
+COMMANDS_BY_NAME = {command["name"]: command for command in COMMANDS}
 
 
 def rank_webtoons(webtoons: list, query: str) -> list[tuple[int, object]]:
@@ -50,8 +121,23 @@ class GlobalSearchDialog(QDialog):
         layout.addWidget(self.results)
 
         self.input.textChanged.connect(self._update_results)
-        self.results.itemClicked.connect(self._open_selected)
-        self.results.itemActivated.connect(self._open_selected)
+        self.input.returnPressed.connect(self._activate_from_input)
+        self.results.itemClicked.connect(self._activate_item)
+        self.results.itemActivated.connect(self._activate_item)
+
+        self._tab_shortcut = QShortcut(QKeySequence(Qt.Key_Tab), self.input)
+        self._tab_shortcut.setContext(Qt.WidgetShortcut)
+        self._tab_shortcut.activated.connect(lambda: self._handle_tab_completion(backward=False))
+
+        self._backtab_shortcut = QShortcut(QKeySequence("Shift+Tab"), self.input)
+        self._backtab_shortcut.setContext(Qt.WidgetShortcut)
+        self._backtab_shortcut.activated.connect(lambda: self._handle_tab_completion(backward=True))
+
+        self._tab_completion_matches = []
+        self._tab_completion_index = -1
+        self._tab_completion_prefix = ""
+        self._applying_tab_completion = False
+        self._preserve_command_preview_matches = False
 
     def open_dialog(self):
         logger.info("Opening global search dialog")
@@ -63,24 +149,326 @@ class GlobalSearchDialog(QDialog):
         self.input.setFocus()
 
     def _update_results(self, text: str):
-        logger.info("Updating global search results for query='%s'", text.strip())
+        query = (text or "").strip()
+        logger.info("Updating global search results for query='%s'", query)
         self.results.clear()
+        if not self._applying_tab_completion:
+            self._reset_tab_completion()
+            self._preserve_command_preview_matches = False
 
-        for score, webtoon in rank_webtoons(self.main_window.library._webtoons, text)[:20]:
-            item = QListWidgetItem(webtoon.name)
-            item.setData(Qt.UserRole, webtoon)
+        command_name, has_space, remainder = self._split_command_query(text)
+        if command_name:
+            if (
+                self._preserve_command_preview_matches
+                and not has_space
+                and self._tab_completion_matches
+                and command_name in self._tab_completion_matches
+            ):
+                self._show_command_previews(self._tab_completion_prefix, matches=self._tab_completion_matches)
+                return
+            command = COMMANDS_BY_NAME.get(command_name)
+            if command is None or (command["requires_argument"] and not has_space):
+                self._show_command_previews(command_name)
+                return
+            self._show_command_results(command, remainder)
+            return
+
+        for score, webtoon in rank_webtoons(self.main_window.library._webtoons, query)[:20]:
+            item = self._build_webtoon_item(webtoon)
+            item.setData(ITEM_ACTION_ROLE, "open_detail")
             item.setToolTip(f"Match score: {score}")
-
-            thumb_path = webtoon.thumbnail
-            if thumb_path:
-                pixmap = QPixmap(thumb_path)
-                if not pixmap.isNull():
-                    item.setIcon(QIcon(pixmap))
-
             self.results.addItem(item)
 
-    def _open_selected(self, item: QListWidgetItem):
-        webtoon = item.data(Qt.UserRole)
+    def _split_command_query(self, text: str) -> tuple[str, bool, str]:
+        raw = (text or "").lstrip()
+        if not raw.startswith("/"):
+            return "", False, ""
+
+        command_name, separator, remainder = raw.partition(" ")
+        return command_name.strip(), bool(separator), remainder.strip()
+
+    def _matching_command_names(self, prefix: str) -> list[str]:
+        typed = (prefix or "").strip().lower()
+        return [
+            command["name"]
+            for command in COMMANDS
+            if not typed or command["name"].lower().startswith(typed)
+        ]
+
+    def _reset_tab_completion(self):
+        self._tab_completion_matches = []
+        self._tab_completion_index = -1
+        self._tab_completion_prefix = ""
+        self._preserve_command_preview_matches = False
+
+    def _show_command_previews(self, query: str, matches: list[str] | None = None):
+        typed = (query or "").strip().lower()
+        if matches is None:
+            matches = [
+                command["name"]
+                for command in COMMANDS
+                if not typed or command["name"].lower().startswith(typed)
+            ]
+        if not matches:
+            self._add_message_item("No commands match.")
+            return
+
+        for command_name in matches:
+            command = COMMANDS_BY_NAME[command_name]
+            item = QListWidgetItem(f"{command['name']}  {command['summary']}")
+            item.setData(ITEM_ACTION_ROLE, "command_preview")
+            item.setData(ITEM_COMMAND_ROLE, command["template"])
+            item.setToolTip(command["summary"])
+            self.results.addItem(item)
+
+        selected_row = 0
+        if matches == self._tab_completion_matches and 0 <= self._tab_completion_index < len(matches):
+            selected_row = self._tab_completion_index
+        self.results.setCurrentRow(selected_row)
+
+    def _show_command_results(self, command: dict, remainder: str):
+        mode = command["mode"]
+        if mode == "download":
+            self._show_download_results(command, remainder)
+            return
+        if mode == "update":
+            self._show_update_results(command, remainder)
+            return
+        if mode == "open":
+            self._show_title_results(command, remainder, action="open_detail")
+            return
+        if mode == "read":
+            self._show_title_results(command, remainder, action="read_title")
+            return
+        if mode == "help":
+            self._show_help_results()
+            return
+
+        item = QListWidgetItem(f"{command['name']}  {command['summary']}")
+        item.setData(ITEM_ACTION_ROLE, f"navigate:{mode}")
+        item.setData(ITEM_COMMAND_ROLE, command["name"])
+        item.setToolTip(command["summary"])
+        self.results.addItem(item)
+        self.results.setCurrentItem(item)
+
+    def _show_help_results(self):
+        for command in COMMANDS:
+            item = QListWidgetItem(f"{command['name']}  {command['summary']}")
+            item.setData(ITEM_ACTION_ROLE, "command_preview")
+            item.setData(ITEM_COMMAND_ROLE, command["template"])
+            item.setToolTip(command["summary"])
+            self.results.addItem(item)
+        if self.results.count() > 0:
+            self.results.setCurrentRow(0)
+
+    def _show_download_results(self, command: dict, remainder: str):
+        if not remainder:
+            self._add_command_preview(command)
+            self._add_message_item("Type /download {link} to start a download.")
+            self.results.setCurrentRow(0)
+            return
+
+        item = QListWidgetItem(f"Download: {remainder}")
+        item.setData(ITEM_ACTION_ROLE, "download")
+        item.setData(ITEM_WEBTOON_ROLE, remainder)
+        self.results.addItem(item)
+        self.results.setCurrentItem(item)
+
+    def _show_update_results(self, command: dict, remainder: str):
+        candidates = []
+        for webtoon in self.main_window.library._webtoons:
+            if self.main_window.settings_store.get_completed(webtoon.name):
+                continue
+            if self.main_window.settings_store.get_source_url(webtoon.name):
+                candidates.append(webtoon)
+
+        ranked = rank_webtoons(candidates, remainder)[:20]
+        if not ranked:
+            self._add_command_preview(command)
+            message = "No saved-source titles available to update."
+            if remainder:
+                message = "No update entries match your search."
+            self._add_message_item(message)
+            self.results.setCurrentRow(0)
+            return
+
+        for score, webtoon in ranked:
+            item = self._build_webtoon_item(webtoon)
+            item.setData(ITEM_ACTION_ROLE, "update")
+            item.setToolTip(f"Update '{webtoon.name}' (match score: {score})")
+            self.results.addItem(item)
+
+        self.results.setCurrentRow(0)
+
+    def _show_title_results(self, command: dict, remainder: str, action: str):
+        ranked = rank_webtoons(self.main_window.library._webtoons, remainder)[:20]
+        if not ranked:
+            self._add_command_preview(command)
+            self._add_message_item("No titles match your search.")
+            self.results.setCurrentRow(0)
+            return
+
+        for score, webtoon in ranked:
+            item = self._build_webtoon_item(webtoon)
+            item.setData(ITEM_ACTION_ROLE, action)
+            if action == "read_title":
+                progress = self.main_window.library.progress_store.get(webtoon.name)
+                hint = "Continue reading" if progress else "Start from beginning"
+                item.setToolTip(f"{hint} '{webtoon.name}' (match score: {score})")
+            else:
+                item.setToolTip(f"Open '{webtoon.name}' (match score: {score})")
+            self.results.addItem(item)
+
+        self.results.setCurrentRow(0)
+
+    def _build_webtoon_item(self, webtoon) -> QListWidgetItem:
+        item = QListWidgetItem(webtoon.name)
+        item.setData(ITEM_WEBTOON_ROLE, webtoon)
+
+        thumb_path = webtoon.thumbnail
+        if thumb_path:
+            pixmap = QPixmap(thumb_path)
+            if not pixmap.isNull():
+                item.setIcon(QIcon(pixmap))
+        return item
+
+    def _add_command_preview(self, command: dict):
+        item = QListWidgetItem(f"{command['name']}  {command['summary']}")
+        item.setData(ITEM_ACTION_ROLE, "command_preview")
+        item.setData(ITEM_COMMAND_ROLE, command["template"])
+        item.setToolTip(command["summary"])
+        self.results.addItem(item)
+
+    def _add_message_item(self, text: str):
+        item = QListWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemIsEnabled)
+        self.results.addItem(item)
+
+    def _activate_from_input(self):
+        item = self.results.currentItem()
+        if item is None and self.results.count() > 0:
+            item = self.results.item(0)
+        if item is not None:
+            self._activate_item(item)
+
+    def _handle_tab_completion(self, backward: bool) -> None:
+        text = self.input.text()
+        command_name, has_space, _ = self._split_command_query(text)
+        if not command_name:
+            return
+        if has_space:
+            return
+
+        active_session = (
+            self._tab_completion_matches
+            and text.strip() in self._tab_completion_matches
+            and not has_space
+        )
+
+        matches = (
+            list(self._tab_completion_matches)
+            if active_session
+            else self._matching_command_names(command_name)
+        )
+        if not matches:
+            return
+
+        if not active_session and (
+            self._tab_completion_prefix != command_name or self._tab_completion_matches != matches
+        ):
+            self._tab_completion_prefix = command_name
+            self._tab_completion_matches = matches
+            self._tab_completion_index = len(matches) - 1 if backward else 0
+        else:
+            step = -1 if backward else 1
+            self._tab_completion_index = (self._tab_completion_index + step) % len(matches)
+
+        completed = self._tab_completion_matches[self._tab_completion_index]
+        command = COMMANDS_BY_NAME.get(completed)
+        if command is None:
+            return
+
+        replacement = completed if len(matches) > 1 and command_name != completed else command["template"]
+        self._preserve_command_preview_matches = len(matches) > 1 and not replacement.endswith(" ")
+        self._applying_tab_completion = True
+        try:
+            self.input.setText(replacement)
+            self.input.setCursorPosition(len(replacement))
+        finally:
+            self._applying_tab_completion = False
+
+    def _activate_item(self, item: QListWidgetItem):
+        action = item.data(ITEM_ACTION_ROLE)
+        if not action:
+            return
+
+        if action == "command_preview":
+            command_text = item.data(ITEM_COMMAND_ROLE) or "/"
+            self.input.setText(command_text)
+            self.input.setFocus()
+            self.input.setCursorPosition(len(command_text))
+            return
+
+        if action == "download":
+            url = item.data(ITEM_WEBTOON_ROLE)
+            logger.info("Global search command selected download for %s", url)
+            self.main_window.open_downloader()
+            error = self.main_window.downloader.start_download_from_url(url)
+            if error is None:
+                self.close()
+            return
+
+        if action.startswith("navigate:"):
+            destination = action.split(":", 1)[1]
+            logger.info("Global search command selected navigation to %s", destination)
+            if destination == "library":
+                self.main_window.open_library()
+            elif destination == "updates":
+                self.main_window.open_updates()
+            elif destination == "settings":
+                self.main_window.open_settings()
+            elif destination == "logs":
+                self.main_window.open_settings()
+                self.main_window.settings.open_logs_tab()
+            self.close()
+            return
+
+        webtoon = item.data(ITEM_WEBTOON_ROLE)
+        if webtoon is None:
+            return
+
+        if action == "update":
+            logger.info("Global search command selected update for %s", webtoon.name)
+            error = self.main_window.updates.start_update_for_webtoon(webtoon.name)
+            if error is None:
+                self.close()
+            return
+
+        if action == "read_title":
+            logger.info("Global search command selected read for %s", webtoon.name)
+            self._open_for_reading(webtoon)
+            self.close()
+            return
+
         logger.info("Global search selected %s", webtoon.name)
         self.main_window.open_detail(webtoon)
         self.close()
+
+    def _open_for_reading(self, webtoon):
+        if not getattr(webtoon, "chapters", None):
+            self.main_window.open_detail(webtoon)
+            return
+
+        progress = self.main_window.library.progress_store.get(webtoon.name)
+        if progress:
+            chapter = progress.get("chapter")
+            scroll_pct = progress.get("scroll", 0.0)
+            if chapter in webtoon.chapters:
+                self.main_window.open_chapter(
+                    webtoon,
+                    webtoon.chapters.index(chapter),
+                    scroll_pct,
+                )
+                return
+
+        self.main_window.open_chapter(webtoon, 0, 0.0)

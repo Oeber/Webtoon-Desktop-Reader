@@ -123,8 +123,7 @@ class DownloadHistoryPageBase(QWidget):
             entry.set_thumbnail(path)
 
     def _on_library_changed(self, name: str):
-        logger.info("Download service reported library_changed")
-        self.main_window.library.load_library()
+        logger.info("Download service reported library_changed for %s", name)
 
     def _on_download_started(self, name: str):
         raise NotImplementedError

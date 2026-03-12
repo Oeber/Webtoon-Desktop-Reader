@@ -1,5 +1,7 @@
-from PySide6.QtCore import QPoint, Qt, QSize
-from PySide6.QtGui import QAction, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap
+import json
+
+from PySide6.QtCore import QPoint, Qt, QSize, QMimeData
+from PySide6.QtGui import QAction, QDrag, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 import qtawesome as qta
 import time
@@ -58,10 +60,12 @@ class WebtoonCard(QWidget):
         on_delete=None,
         on_cancel_download=None,
         on_select=None,
+        get_drag_names=None,
         card_width: int = CARD_WIDTH,
         download_placeholder: bool = False,
+        parent=None,
     ):
-        super().__init__()
+        super().__init__(parent)
 
         self.webtoon = webtoon
         self.progress_store = progress_store
@@ -72,6 +76,7 @@ class WebtoonCard(QWidget):
         self.on_delete = on_delete
         self.on_cancel_download = on_cancel_download
         self.on_select = on_select
+        self.get_drag_names = get_drag_names
         self._download_placeholder = download_placeholder
         self._manual_download_active = False
 
@@ -89,9 +94,12 @@ class WebtoonCard(QWidget):
         self.card_width = max(120, card_width)
         self.card_height = int(self.card_width * (CARD_HEIGHT / CARD_WIDTH))
         self._root_layout = None
+        self._press_pos = None
+        self._press_open_candidate = False
+        self._drag_executed = False
 
         self.setFixedWidth(self.card_width + 16)
-        self.setCursor(Qt.ArrowCursor if self._download_placeholder else Qt.PointingHandCursor)
+        self.setCursor(Qt.PointingHandCursor)
         self.setStyleSheet("background: transparent;")
 
         root = QVBoxLayout(self)
@@ -516,6 +524,7 @@ class WebtoonCard(QWidget):
 
     def enterEvent(self, event):
         if self._download_placeholder:
+            self._apply_border_style(hovered=True)
             if self._manual_download_active:
                 self.cancel_download_btn.show()
             super().enterEvent(event)
@@ -532,6 +541,7 @@ class WebtoonCard(QWidget):
 
     def leaveEvent(self, event):
         if self._download_placeholder:
+            self._apply_border_style(hovered=False)
             self.cancel_download_btn.hide()
             super().leaveEvent(event)
             return
@@ -557,10 +567,9 @@ class WebtoonCard(QWidget):
         """)
 
     def mousePressEvent(self, event):
-        if self._download_placeholder:
-            event.accept()
-            return
         if event.button() == Qt.LeftButton:
+            self._press_pos = event.position().toPoint()
+            self._press_open_candidate = False
             if time.monotonic() < self._ignore_open_until:
                 event.accept()
                 return
@@ -579,10 +588,62 @@ class WebtoonCard(QWidget):
                     return
                 target = target.parentWidget()
 
-            self.on_open(self.webtoon)
+            self._press_open_candidate = True
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._download_placeholder or self._press_pos is None:
+            super().mouseMoveEvent(event)
+            return
+        if not (event.buttons() & Qt.LeftButton):
+            super().mouseMoveEvent(event)
+            return
+        if (event.position().toPoint() - self._press_pos).manhattanLength() < 10:
+            super().mouseMoveEvent(event)
+            return
+
+        target = self.childAt(event.position().toPoint())
+        while target is not None and target is not self:
+            if target in (
+                self.dots_btn,
+                self.latest_btn,
+                self.lastread_btn,
+                self.update_btn,
+                self.select_btn,
+                self.cancel_download_btn,
+            ):
+                super().mouseMoveEvent(event)
+                return
+            target = target.parentWidget()
+
+        names = [self.webtoon.name]
+        if callable(self.get_drag_names):
+            payload = self.get_drag_names(self.webtoon.name)
+            if payload:
+                names = [str(name) for name in payload if str(name).strip()]
+        mime = QMimeData()
+        mime.setData("application/x-webtoon-names", json.dumps(names).encode("utf-8"))
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        if self.image_label.pixmap() is not None:
+            drag.setPixmap(self.image_label.pixmap().scaled(72, 108, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self._press_pos = None
+        self._press_open_candidate = False
+        self._drag_executed = drag.exec(Qt.MoveAction) != Qt.IgnoreAction
+
+    def mouseReleaseEvent(self, event):
+        if (
+            event.button() == Qt.LeftButton
+            and self._press_open_candidate
+            and not self._drag_executed
+        ):
+            self.on_open(self.webtoon)
+        self._press_pos = None
+        self._press_open_candidate = False
+        self._drag_executed = False
+        super().mouseReleaseEvent(event)
 
     def set_update_available(self, available: bool):
         if self._download_placeholder:

@@ -41,6 +41,10 @@ class DownloaderPage(DownloadHistoryPageBase):
     def _start_download(self):
         url = self.url_input.text()
         logger.info("Manual download requested for url=%s", url.strip())
+        self.start_download_from_url(url)
+
+    def start_download_from_url(self, url: str) -> str | None:
+        url = (url or "").strip()
         entry_name = self._next_entry_name(url)
 
         entry = CancellableDownloadEntry(
@@ -58,10 +62,11 @@ class DownloaderPage(DownloadHistoryPageBase):
             entry.deleteLater()
             self._remove_entry(entry)
             self.set_error_text(error)
-            return
+            return error
 
         self.set_error_text("")
         self.url_input.clear()
+        return None
 
     def _next_entry_name(self, url: str) -> str:
         base = url.strip().strip("'\"").rstrip("/").split("/")[-1] or "download"

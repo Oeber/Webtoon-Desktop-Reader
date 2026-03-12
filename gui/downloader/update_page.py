@@ -152,6 +152,39 @@ class UpdatePage(DownloadHistoryPageBase):
 
         self.set_error_text("")
 
+    def start_update_for_webtoon(self, webtoon_name: str) -> str | None:
+        if not webtoon_name:
+            return "Please choose a title to update."
+
+        self.refresh_entries()
+        entry = self._entry_for(webtoon_name)
+        if entry is None:
+            error = f"No saved source URL found for '{webtoon_name}'."
+            self.set_error_text(error)
+            return error
+
+        if self.settings_store.get_completed(entry.name):
+            self.refresh_entries()
+            error = f"'{entry.name}' is marked completed."
+            self.set_error_text(error)
+            return error
+
+        if entry.cooldown_remaining() > 0:
+            self._sync_update_buttons()
+            error = f"'{entry.name}' is still on cooldown."
+            self.set_error_text(error)
+            return error
+
+        logger.info("Starting update from external trigger for %s", entry.name)
+        error = self.service.start_download(
+            entry.source_url,
+            load_library_path(),
+            preferred_name=entry.name,
+        )
+        self.set_error_text("" if error is None else error)
+        self._sync_update_buttons()
+        return error
+
     def _sync_update_buttons(self):
         for index in range(self.history_layout.count()):
             item = self.history_layout.itemAt(index)
@@ -184,7 +217,6 @@ class UpdatePage(DownloadHistoryPageBase):
 
     def _on_library_changed(self, name: str):
         logger.info("Update page noticed library_changed")
-        super()._on_library_changed(name)
         if self.isVisible() and not self.service.is_busy():
             self._refresh_timer.stop()
             self._refresh_timer.start(0)
