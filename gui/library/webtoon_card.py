@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QDialog, QLabel, QMenu, QPushButton, QVBoxLayout, 
 import qtawesome as qta
 import time
 
+from app_logging import get_logger
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 
@@ -11,6 +12,7 @@ from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 CARD_WIDTH = 180
 CARD_HEIGHT = 270
 CARD_RADIUS = 12
+logger = get_logger(__name__)
 
 
 class WebtoonCard(QWidget):
@@ -199,7 +201,9 @@ class WebtoonCard(QWidget):
     def _open_chapter_direct(self, chapter: str):
         chapters = self.webtoon.chapters
         if chapter not in chapters:
+            logger.warning("Card quick-open chapter missing for %s: %s", self.webtoon.name, chapter)
             return
+        logger.info("Card quick-open chapter for %s: %s", self.webtoon.name, chapter)
         idx = chapters.index(chapter)
         mw = self._find_main_window()
         if mw:
@@ -290,6 +294,7 @@ class WebtoonCard(QWidget):
         self._build_menu().exec(event.globalPos())
 
     def _open_edit_dialog(self):
+        logger.info("Opening card edit dialog for %s", self.webtoon.name)
         dlg = EditWebtoonDialog(
             self.webtoon,
             settings_store=self.settings_store,
@@ -394,6 +399,7 @@ class WebtoonCard(QWidget):
 
     def _trigger_update(self):
         self._ignore_card_open(1.0)
+        logger.info("Card-triggered update requested for %s", self.webtoon.name)
         if callable(self.on_update):
             self.on_update(self.webtoon.name)
 

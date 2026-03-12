@@ -6,6 +6,7 @@ import shutil
 
 import qtawesome as qta
 
+from app_logging import get_logger
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
@@ -33,6 +34,7 @@ CARD_W = 140
 CARD_H = 210
 CARD_RADIUS = 12
 ROW_H = 40
+logger = get_logger(__name__)
 
 
 def _safe_name(name: str) -> str:
@@ -288,12 +290,14 @@ class EditWebtoonDialog(QDialog):
         self.thumbnail_preview.setPixmap(_round_pixmap(pixmap, CARD_W, CARD_H, CARD_RADIUS))
 
     def _change_thumbnail(self):
+        logger.info("Opening thumbnail dialog for %s", self.webtoon.name)
         dlg = ThumbnailDialog(self.webtoon.name, self.settings_store, parent=self)
         if dlg.exec() == QDialog.Accepted and dlg.saved_path:
             self.webtoon.thumbnail = dlg.saved_path
             self._update_thumbnail_preview()
 
     def _reset_thumbnail(self):
+        logger.info("Resetting custom thumbnail for %s", self.webtoon.name)
         self.settings_store.clear(self.webtoon.name)
         self.webtoon.thumbnail = os.path.join("data", "thumbnails", f"{self.webtoon.name}.jpg")
         self._update_thumbnail_preview()
@@ -315,6 +319,7 @@ class EditWebtoonDialog(QDialog):
 
         try:
             if new_name != old_name:
+                logger.info("Renaming webtoon from %s to %s", old_name, new_name)
                 os.rename(old_path, new_path)
                 self.settings_store.rename_webtoon(old_name, new_name)
                 self.progress_store.rename_webtoon(old_name, new_name)
@@ -336,15 +341,18 @@ class EditWebtoonDialog(QDialog):
             )
 
             if self._zoom_dirty:
+                logger.info("Saving zoom override for %s", self.webtoon.name)
                 self.settings_store.set_zoom_override(
                     self.webtoon.name,
                     float(self.zoom_input.value()) / 100.0,
                 )
 
         except Exception as e:
+            logger.error("Failed to save edit dialog changes for %s", old_name, exc_info=e)
             QMessageBox.critical(self, "Save failed", str(e))
             return
 
+        logger.info("Edit dialog saved for %s", self.webtoon.name)
         self.accept()
 
     def _delete_webtoon(self):
@@ -359,11 +367,13 @@ class EditWebtoonDialog(QDialog):
             return
 
         try:
+            logger.info("Deleting webtoon %s from edit dialog", self.webtoon.name)
             if os.path.isdir(self.webtoon.path):
                 shutil.rmtree(self.webtoon.path)
             self.progress_store.clear(self.webtoon.name)
             self.settings_store.delete_webtoon(self.webtoon.name)
         except Exception as e:
+            logger.error("Failed to delete webtoon %s", self.webtoon.name, exc_info=e)
             QMessageBox.critical(self, "Delete failed", str(e))
             return
 

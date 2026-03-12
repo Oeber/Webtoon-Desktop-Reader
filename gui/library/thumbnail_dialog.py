@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app_logging import get_logger
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QFrame, QSizePolicy,
@@ -65,6 +66,7 @@ ERROR    = "#ef4444"
 
 RADIUS = 12
 THUMB_W, THUMB_H = 160, 240
+logger = get_logger(__name__)
 
 
 def _round_pixmap(src: QPixmap, w: int, h: int, r: int) -> QPixmap:
@@ -336,6 +338,7 @@ class ThumbnailDialog(QDialog):
     # ── handlers ─────────────────────────────────────────────────────────
 
     def _handle_local_file(self, path: str):
+        logger.info("Saving local thumbnail for %s from %s", self._name, path)
         self._set_status("Saving…", MUTED)
         saved = self._store.set(self._name, path)
         self.saved_path = saved
@@ -347,6 +350,7 @@ class ThumbnailDialog(QDialog):
         url = self._url_input.text().strip()
         if not url:
             return
+        logger.info("Downloading thumbnail for %s from %s", self._name, url)
         self._set_status("Downloading…", MUTED)
         self._url_input.setEnabled(False)
         self._worker = _UrlWorker(self._store, self._name, url)
@@ -356,11 +360,13 @@ class ThumbnailDialog(QDialog):
     def _on_url_done(self, success: bool, result: str):
         self._url_input.setEnabled(True)
         if success:
+            logger.info("Thumbnail download succeeded for %s", self._name)
             self.saved_path = result
             self._show_preview(result)
             self._set_status("✓  Image downloaded and saved", SUCCESS)
             self._apply_btn.setEnabled(True)
         else:
+            logger.warning("Thumbnail download failed for %s: %s", self._name, result)
             self._set_status(f"✕  {result}", ERROR)
 
     def _apply(self):

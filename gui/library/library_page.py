@@ -5,6 +5,8 @@ from PySide6.QtWidgets import QApplication, QLineEdit
 from PySide6.QtCore import Qt, QTimer
 import time
 
+from app_logging import get_logger
+from gui.common.styles import PAGE_BG_STYLE, SCROLL_AREA_STYLE, SEARCH_INPUT_STYLE
 from library_manager import scan_library
 from progress_store import get_instance as get_progress_store
 from webtoon_settings_store import get_instance as get_webtoon_settings
@@ -16,6 +18,7 @@ from gui.settings.settings_page import load_library_path
 CARD_SPACING  = 16
 PAGE_PADDING  = 24
 UPDATE_COOLDOWN_SECONDS = 30
+logger = get_logger(__name__)
 
 
 class LibraryPage(QWidget):
@@ -43,21 +46,10 @@ class LibraryPage(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.scroll.setStyleSheet("""
-            QScrollArea { border: none; background-color: #121212; }
-            QScrollBar:vertical {
-                background: #1a1a1a; width: 8px; border-radius: 4px;
-            }
-            QScrollBar::handle:vertical {
-                background: #444; border-radius: 4px; min-height: 30px;
-            }
-            QScrollBar::handle:vertical:hover { background: #666; }
-            QScrollBar::add-line:vertical,
-            QScrollBar::sub-line:vertical { height: 0px; }
-        """)
+        self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
 
         self.container = QWidget()
-        self.container.setStyleSheet("background-color: #121212;")
+        self.container.setStyleSheet(PAGE_BG_STYLE)
 
         self.grid = QGridLayout(self.container)
         self.grid.setSpacing(CARD_SPACING)
@@ -71,18 +63,7 @@ class LibraryPage(QWidget):
         self.search.setPlaceholderText("Search webtoons...")
         self.search.setFixedHeight(36)
 
-        self.search.setStyleSheet("""
-        QLineEdit {
-            background: #1a1a1a;
-            border: 1px solid #333;
-            border-radius: 6px;
-            padding-left: 10px;
-            color: #eee;
-        }
-        QLineEdit:focus {
-            border: 1px solid #666;
-        }
-        """)
+        self.search.setStyleSheet(SEARCH_INPUT_STYLE)
 
         root_layout.addWidget(self.search)
         #Debounce for search
@@ -102,6 +83,7 @@ class LibraryPage(QWidget):
         self.load_library()
  
     def load_library(self):
+        logger.info("Loading library page contents")
         self._pending_reload = False
         self._webtoons = scan_library(load_library_path(), self.settings_store)
         self._rebuild_grid(self._columns_for_width(self.width()))
@@ -157,10 +139,13 @@ class LibraryPage(QWidget):
 
     def _open_detail(self, webtoon):
         if time.monotonic() < self._ignore_open_until:
+            logger.info("Blocked card open for %s due to cooldown suppression", webtoon.name)
             return
+        logger.info("Opening detail from library card for %s", webtoon.name)
         self.main_window.open_detail(webtoon)
 
     def _reload_after_edit(self):
+        logger.info("Reloading library after edit")
         self.load_library()
         self._apply_filter()
 
@@ -168,6 +153,7 @@ class LibraryPage(QWidget):
         if self._update_service is service:
             return
 
+        logger.info("Attaching shared update service to library page")
         self._update_service = service
         self._update_service.status_changed.connect(self._on_update_status_changed)
         self._update_service.progress_changed.connect(self._on_update_progress_changed)
@@ -186,15 +172,18 @@ class LibraryPage(QWidget):
 
         remaining = self._cooldown_remaining(webtoon_name)
         if remaining > 0:
+            logger.info("Update blocked by cooldown for %s (%ds remaining)", webtoon_name, remaining)
             self._sync_update_controls()
             return
 
+        logger.info("Starting library-triggered update for %s", webtoon_name)
         error = self._update_service.start_download(
             source_url,
             load_library_path(),
             preferred_name=webtoon_name,
         )
         if error:
+            logger.warning("Failed to start update for %s: %s", webtoon_name, error)
             self._sync_update_controls()
             return
 
@@ -245,6 +234,7 @@ class LibraryPage(QWidget):
         self._sync_update_controls()
 
     def _on_update_finished(self, name: str, status: str):
+        logger.info("Library page received update finished for %s with status=%s", name, status)
         if status == "Completed":
             self.settings_store.set_last_update_at(name, int(time.time()))
         self._suppress_card_open(2.0)
@@ -254,6 +244,7 @@ class LibraryPage(QWidget):
         self._sync_update_controls()
 
     def _on_update_library_changed(self):
+        logger.info("Library page noticed library_changed from update service")
         self._suppress_card_open(2.0)
         self._block_library_input(2.0)
         self.main_window.suppress_detail_open(2.0)
@@ -321,6 +312,7 @@ class LibraryPage(QWidget):
         self._input_blocker.hide()
 
     def _schedule_filter(self, text):
+        logger.info("Scheduling library filter for query='%s'", text.strip())
         self._pending_search = text
         self._search_timer.start(150)
 

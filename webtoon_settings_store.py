@@ -4,10 +4,12 @@ from pathlib import Path
 import urllib.error
 import urllib.request
 
+from app_logging import get_logger
 from db import get_connection
 
 
 THUMBNAILS_DIR = Path("data/thumbnails")
+logger = get_logger(__name__)
 
 _instance = None
 
@@ -44,7 +46,7 @@ def _copy_local_image(src: str, dest: Path) -> bool:
             img.convert("RGB").save(dest, "JPEG", quality=92)
         return True
     except Exception as e:
-        print(f"[WebtoonSettingsStore] Failed to copy local image '{src}': {e}")
+        logger.error("Failed to copy local image '%s'", src, exc_info=e)
         return False
 
 
@@ -61,10 +63,10 @@ def _download_url_image(url: str, dest: Path) -> bool:
             img.convert("RGB").save(dest, "JPEG", quality=92)
         return True
     except urllib.error.URLError as e:
-        print(f"[WebtoonSettingsStore] Network error downloading '{url}': {e}")
+        logger.error("Network error downloading thumbnail from '%s'", url, exc_info=e)
         return False
     except Exception as e:
-        print(f"[WebtoonSettingsStore] Failed to download/convert image from '{url}': {e}")
+        logger.error("Failed to download or convert image from '%s'", url, exc_info=e)
         return False
 
 
@@ -85,6 +87,7 @@ class WebtoonSettingsStore:
         return bool(row["hide_filler"]) if row else False
 
     def set_hide_filler(self, webtoon_name: str, value: bool):
+        logger.info("Setting hide_filler for %s to %s", webtoon_name, value)
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
         conn.execute(
@@ -112,6 +115,7 @@ class WebtoonSettingsStore:
         return {str(chapter) for chapter in data}
 
     def set_bookmarked_chapters(self, webtoon_name: str, chapters: set[str] | list[str]):
+        logger.info("Saving %d bookmarked chapters for %s", len(set(chapters)), webtoon_name)
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
         payload = json.dumps(sorted({str(chapter) for chapter in chapters}))
@@ -144,6 +148,7 @@ class WebtoonSettingsStore:
         return float(row["zoom_override"])
 
     def set_zoom_override(self, webtoon_name: str, zoom: float):
+        logger.info("Setting zoom override for %s to %.2f", webtoon_name, zoom)
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
         conn.execute(
@@ -153,6 +158,7 @@ class WebtoonSettingsStore:
         conn.commit()
 
     def clear_zoom_override(self, webtoon_name: str):
+        logger.info("Clearing zoom override for %s", webtoon_name)
         conn = get_connection()
         conn.execute(
             "UPDATE webtoon_settings SET zoom_override = NULL WHERE webtoon_name = ?",
@@ -171,6 +177,7 @@ class WebtoonSettingsStore:
         return str(row["source_url"])
 
     def set_source_url(self, webtoon_name: str, source_url: str):
+        logger.info("Saving source URL for %s", webtoon_name)
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
         conn.execute(
@@ -180,6 +187,7 @@ class WebtoonSettingsStore:
         conn.commit()
 
     def clear_source_url(self, webtoon_name: str):
+        logger.info("Clearing source URL for %s", webtoon_name)
         conn = get_connection()
         conn.execute(
             "UPDATE webtoon_settings SET source_url = NULL WHERE webtoon_name = ?",
@@ -198,6 +206,7 @@ class WebtoonSettingsStore:
         return int(row["last_update_at"])
 
     def set_last_update_at(self, webtoon_name: str, timestamp: int):
+        logger.info("Setting last update timestamp for %s to %d", webtoon_name, timestamp)
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
         conn.execute(
@@ -215,6 +224,7 @@ class WebtoonSettingsStore:
         return row["custom_thumbnail"] if row and row["custom_thumbnail"] else None
 
     def set(self, webtoon_name: str, image_path: str) -> str:
+        logger.info("Saving custom thumbnail for %s from %s", webtoon_name, image_path)
         _ensure_thumbnails_dir()
         dest = _custom_thumb_path(webtoon_name)
 
@@ -227,6 +237,7 @@ class WebtoonSettingsStore:
         return internal_path
 
     def set_from_url(self, webtoon_name: str, url: str) -> tuple[bool, str]:
+        logger.info("Downloading custom thumbnail for %s from %s", webtoon_name, url)
         _ensure_thumbnails_dir()
         dest = _custom_thumb_path(webtoon_name)
 
@@ -236,12 +247,13 @@ class WebtoonSettingsStore:
         return False, "Could not download or decode the image. Check the URL and try again."
 
     def clear(self, webtoon_name: str):
+        logger.info("Clearing custom thumbnail for %s", webtoon_name)
         dest = _custom_thumb_path(webtoon_name)
         if dest.exists():
             try:
                 dest.unlink()
             except OSError as e:
-                print(f"[WebtoonSettingsStore] Could not delete cached thumbnail: {e}")
+                logger.warning("Could not delete cached thumbnail for %s", webtoon_name, exc_info=e)
 
         conn = get_connection()
         conn.execute(
@@ -251,6 +263,7 @@ class WebtoonSettingsStore:
         conn.commit()
 
     def rename_webtoon(self, old_name: str, new_name: str):
+        logger.info("Renaming settings from %s to %s", old_name, new_name)
         old_custom = _custom_thumb_path(old_name)
         new_custom = _custom_thumb_path(new_name)
         old_auto = _auto_thumb_path(old_name)
@@ -299,6 +312,7 @@ class WebtoonSettingsStore:
         conn.commit()
 
     def delete_webtoon(self, webtoon_name: str):
+        logger.info("Deleting settings for %s", webtoon_name)
         self.clear(webtoon_name)
 
         auto_thumb = _auto_thumb_path(webtoon_name)
@@ -306,7 +320,7 @@ class WebtoonSettingsStore:
             try:
                 auto_thumb.unlink()
             except OSError as e:
-                print(f"[WebtoonSettingsStore] Could not delete auto thumbnail: {e}")
+                logger.warning("Could not delete auto thumbnail for %s", webtoon_name, exc_info=e)
 
         conn = get_connection()
         conn.execute(

@@ -11,9 +11,21 @@ import requests
 from bs4 import BeautifulSoup
 from PySide6.QtCore import QObject, Signal
 
+from app_logging import get_logger
+from gui.downloader.helpers import (
+    SUPPORTED_IMAGE_EXTENSIONS,
+    chapter_path_sort_key,
+    chapter_sort_key,
+    detect_url_type,
+    extract_episode_number,
+    sanitize_webtoon_name,
+    series_url_from_chapter_url,
+)
 from scrapers.base import ScraperError
 from scrapers.registry import get_scraper
 from webtoon_settings_store import get_instance as get_webtoon_settings
+
+logger = get_logger(__name__)
 
 
 class DownloadCancelled(Exception):
@@ -40,6 +52,7 @@ class DownloadService(QObject):
         temp_dir = os.path.join("data", "_download_temp")
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.info("DownloadService initialized")
 
     def is_busy(self) -> bool:
         return self._busy
@@ -47,13 +60,14 @@ class DownloadService(QObject):
     def start_download(self, url: str, output_path: str, preferred_name: str | None = None) -> str | None:
         url = (url or "").strip().strip("'\"")
         if not url:
-            return "⚠ Please enter a URL."
+            return "Please enter a URL."
         if self._busy:
-            return "⚠ A download is already in progress."
+            return "A download is already in progress."
 
+        logger.info("Starting download url=%s preferred_name=%s output=%s", url, preferred_name, output_path)
         self._busy = True
         self._cancel_requested = False
-        self._active_name = self._sanitize(preferred_name) or None
+        self._active_name = sanitize_webtoon_name(preferred_name) or None
         self.download_started.emit()
 
         thread = threading.Thread(
@@ -67,12 +81,13 @@ class DownloadService(QObject):
     def cancel_download(self):
         if not self._busy:
             return
+        logger.warning("Cancelling active download for %s", self._active_name)
         self._cancel_requested = True
         if self._process and self._process.poll() is None:
             self._process.terminate()
 
     def _run_download(self, url: str, output_path: str, preferred_name: str | None):
-        name = self._sanitize(preferred_name) or "download"
+        name = sanitize_webtoon_name(preferred_name) or "download"
         status = "Failed"
 
         try:
@@ -88,6 +103,7 @@ class DownloadService(QObject):
                 self.name_resolved.emit(name)
 
             self._active_name = name
+            logger.info("Resolved download name: %s", name)
 
             try:
                 scraper = get_scraper(url)
@@ -95,8 +111,10 @@ class DownloadService(QObject):
                 scraper = None
 
             if scraper is not None:
+                logger.info("Using custom scraper for %s", url)
                 saved_name = self._custom_download(url, output_path, target_name=preferred_name)
             else:
+                logger.info("Using gallery-dl fallback for %s", url)
                 saved_name = self._gallery_dl_download(url, output_path, name)
 
             self._save_source_url(saved_name, url)
@@ -105,28 +123,21 @@ class DownloadService(QObject):
         except DownloadCancelled:
             status = "Cancelled"
         except FileNotFoundError:
+            logger.error("Download failed because required file/tool was missing")
             status = "Failed"
         except Exception as e:
-            print(f"Download error: {e}")
+            logger.error("Download failed for %s", url, exc_info=e)
             status = "Failed"
         finally:
             temp_dir = os.path.join("data", "_download_temp")
             shutil.rmtree(temp_dir, ignore_errors=True)
             self._process = None
             self._busy = False
+            logger.info("Download finished for %s with status=%s", self._active_name or name, status)
             self.status_changed.emit(self._active_name or name, status)
             self.download_finished.emit(self._active_name or name, status)
             self._active_name = None
             self._cancel_requested = False
-
-    def _detect_url_type(self, url: str) -> str:
-        parsed = urlparse(url)
-        qs = parse_qs(parsed.query)
-        if "episode_no" in qs:
-            return "chapter"
-        if "/chapter-" in parsed.path.rstrip("/").lower():
-            return "chapter"
-        return "series"
 
     def _get_existing_chapters(self, webtoon_dir: str) -> set[int]:
         existing = set()
@@ -142,9 +153,9 @@ class DownloadService(QObject):
         try:
             scraper = get_scraper(url)
             series = scraper.get_series_info(
-                url if self._detect_url_type(url) == "series" else self._series_url_from_chapter_url(url)
+                url if detect_url_type(url) == "series" else series_url_from_chapter_url(url)
             )
-            return self._sanitize(series.title)
+            return sanitize_webtoon_name(series.title)
         except Exception:
             pass
 
@@ -155,25 +166,15 @@ class DownloadService(QObject):
 
             og_title = soup.find("meta", property="og:title")
             if og_title and og_title.get("content"):
-                return self._sanitize(og_title["content"].strip())
+                return sanitize_webtoon_name(og_title["content"].strip())
 
             if soup.title and soup.title.string:
-                return self._sanitize(soup.title.string.strip())
+                return sanitize_webtoon_name(soup.title.string.strip())
         except Exception as e:
-            print(f"Name resolve error: {e}")
+            logger.warning("Name resolve fallback failed for %s", url, exc_info=e)
 
         slug = url.rstrip("/").split("/")[-1]
-        return self._sanitize(slug) or "download"
-
-    def _sanitize(self, name: str | None) -> str:
-        return re.sub(r'[\\/:*?"<>|]', "", name or "").strip()
-
-    def _series_url_from_chapter_url(self, url: str) -> str:
-        parsed = urlparse(url)
-        path = parsed.path.rstrip("/")
-        if "/chapter-" in path:
-            path = path.rsplit("/chapter-", 1)[0]
-        return f"{parsed.scheme}://{parsed.netloc}{path}"
+        return sanitize_webtoon_name(slug) or "download"
 
     def _download_file(self, url: str, dest_path: str, headers: dict, retries: int = 2):
         url = url.strip().rstrip("\\").rstrip("/")
@@ -218,17 +219,17 @@ class DownloadService(QObject):
         try:
             self.settings_store.set_source_url(webtoon_name, source_url)
         except Exception as e:
-            print(f"Source URL save failed for '{webtoon_name}': {e}")
+            logger.warning("Failed to save source URL for '%s'", webtoon_name, exc_info=e)
 
     def _custom_download(self, url: str, output_path: str, target_name: str | None = None):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         scraper = get_scraper(url)
         headers = scraper.get_request_headers(url)
-        url_type = self._detect_url_type(url)
+        url_type = detect_url_type(url)
 
         if url_type == "chapter":
-            series_url = self._series_url_from_chapter_url(url)
+            series_url = series_url_from_chapter_url(url)
             series = scraper.get_series_info(series_url)
             chapter_list = [c for c in series.chapters if c.url.rstrip("/") == url.rstrip("/")]
             if not chapter_list:
@@ -237,8 +238,9 @@ class DownloadService(QObject):
             series = scraper.get_series_info(url)
             chapter_list = series.chapters
 
-        series_name = self._sanitize(target_name or series.title) or "download"
+        series_name = sanitize_webtoon_name(target_name or series.title) or "download"
         self.name_resolved.emit(series_name)
+        logger.info("Custom scraper resolved series name %s", series_name)
 
         if getattr(series, "cover_url", None):
             ok, result = self.settings_store.set_from_url(series_name, series.cover_url)
@@ -267,6 +269,7 @@ class DownloadService(QObject):
 
             chapter_num = int(chapter.number) if chapter.number is not None else None
             if chapter_num is not None and chapter_num in existing and url_type == "series":
+                logger.info("Skipping existing chapter %s for %s", chapter_num, series_name)
                 continue
 
             pages = scraper.get_chapter_pages(chapter.url)
@@ -276,7 +279,7 @@ class DownloadService(QObject):
             if chapter_num is not None:
                 chapter_dir_name = f"Chapter {chapter_num}"
             else:
-                chapter_dir_name = self._sanitize(chapter.title) or "Chapter"
+                chapter_dir_name = sanitize_webtoon_name(chapter.title) or "Chapter"
 
             chapter_dir = os.path.join(target_base, chapter_dir_name)
             os.makedirs(chapter_dir, exist_ok=True)
@@ -290,7 +293,7 @@ class DownloadService(QObject):
                 for page in pages:
                     raw_url = page.image_url.split("?", 1)[0]
                     ext = raw_url.rsplit(".", 1)[-1].lower() if "." in raw_url else "jpg"
-                    if ext not in {"jpg", "jpeg", "png", "webp", "avif"}:
+                    if f".{ext}" not in SUPPORTED_IMAGE_EXTENSIONS:
                         ext = "jpg"
 
                     filename = f"{page.index:03d}.{ext}"
@@ -312,7 +315,11 @@ class DownloadService(QObject):
                         raise
                     except Exception as e:
                         failure_count += 1
-                        print(f"Skipping page download failed: {future_to_page[future]} -> {e}")
+                        logger.warning(
+                            "Page download failed for %s",
+                            future_to_page[future],
+                            exc_info=e,
+                        )
 
             if success_count == 0:
                 shutil.rmtree(chapter_dir, ignore_errors=True)
@@ -323,9 +330,11 @@ class DownloadService(QObject):
             self.progress_changed.emit(series_name, completed_chapters, total_chapters)
 
             if failure_count > 0:
-                print(
-                    f"Chapter partially downloaded: {chapter.title} "
-                    f"({success_count} ok, {failure_count} failed)"
+                logger.warning(
+                    "Chapter partially downloaded: %s (%d ok, %d failed)",
+                    chapter.title,
+                    success_count,
+                    failure_count,
                 )
 
         if self._cancel_requested:
@@ -344,8 +353,9 @@ class DownloadService(QObject):
     def _gallery_dl_download(self, url: str, output_path: str, name: str):
         temp_dir = os.path.join("data", "_download_temp")
         os.makedirs(temp_dir, exist_ok=True)
+        logger.info("Starting gallery-dl download for %s into %s", name, temp_dir)
 
-        url_type = self._detect_url_type(url)
+        url_type = detect_url_type(url)
         target_base = os.path.join(output_path, name)
         cmd = ["gallery-dl", "--verbose", "-D", temp_dir]
         missing_chapters = []
@@ -361,17 +371,7 @@ class DownloadService(QObject):
                 if missing_chapters:
                     self.progress_changed.emit(name, 0, len(missing_chapters))
         else:
-            episode_no = None
-            qs = parse_qs(urlparse(url).query)
-            if "episode_no" in qs:
-                try:
-                    episode_no = int(qs["episode_no"][0])
-                except Exception:
-                    episode_no = None
-            if episode_no is None:
-                match = re.search(r"chapter[-/ ]?(\d+)", url, re.IGNORECASE)
-                if match:
-                    episode_no = int(match.group(1))
+            episode_no = extract_episode_number(url)
             missing_chapters = [episode_no] if episode_no is not None else [1]
             self.progress_changed.emit(name, 0, 1)
 
@@ -399,7 +399,7 @@ class DownloadService(QObject):
                             last_current = current
                             last_total = total
                 except Exception as e:
-                    print(f"Progress watcher error: {e}")
+                    logger.warning("Progress watcher error", exc_info=e)
                 time.sleep(0.4)
 
         watcher_thread = threading.Thread(target=watch_progress, daemon=True)
@@ -407,7 +407,7 @@ class DownloadService(QObject):
 
         if self._process.stdout is not None:
             for line in self._process.stdout:
-                print(line.strip())
+                logger.info("gallery-dl: %s", line.strip())
 
         self._process.wait()
 
@@ -428,20 +428,7 @@ class DownloadService(QObject):
         completed_now = set()
 
         if url_type == "chapter":
-            episode_no = None
-            qs = parse_qs(urlparse(url).query)
-            if "episode_no" in qs:
-                try:
-                    episode_no = int(qs["episode_no"][0])
-                except Exception:
-                    episode_no = None
-            if episode_no is None:
-                match = re.search(r"chapter[-/ ]?(\d+)", url, re.IGNORECASE)
-                if match:
-                    episode_no = int(match.group(1))
-            if episode_no is None:
-                episode_no = 1
-
+            episode_no = extract_episode_number(url) or 1
             chapter_dir = os.path.join(target_base, f"Chapter {episode_no}")
             os.makedirs(chapter_dir, exist_ok=True)
             for filename in all_files:
@@ -501,23 +488,13 @@ class DownloadService(QObject):
             if not chapter_dirs:
                 return None
 
-            def chapter_sort_key(path: str):
-                folder_name = os.path.basename(path)
-                match = re.search(r"(\d+(?:\.\d+)?)", folder_name)
-                if match:
-                    try:
-                        return (0, float(match.group(1)), folder_name.lower())
-                    except Exception:
-                        pass
-                return (1, float("inf"), folder_name.lower())
-
-            chapter_dirs.sort(key=chapter_sort_key)
+            chapter_dirs.sort(key=chapter_path_sort_key)
             first_chapter = chapter_dirs[0]
             image_files = [
                 os.path.join(first_chapter, filename)
                 for filename in sorted(os.listdir(first_chapter))
                 if os.path.isfile(os.path.join(first_chapter, filename))
-                and filename.lower().endswith((".jpg", ".jpeg", ".png", ".webp", ".avif"))
+                and filename.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
             ]
             if not image_files:
                 return None
@@ -534,7 +511,7 @@ class DownloadService(QObject):
                 canvas.save(dest, "JPEG", quality=90)
             return dest if os.path.exists(dest) else None
         except Exception as e:
-            print(f"Auto thumbnail generation failed for '{webtoon_name}': {e}")
+            logger.warning("Auto thumbnail generation failed for '%s'", webtoon_name, exc_info=e)
             return None
 
     def build_webtoon_from_folder(self, library_path: str, webtoon_name: str):
@@ -546,15 +523,6 @@ class DownloadService(QObject):
             folder for folder in os.listdir(webtoon_dir)
             if os.path.isdir(os.path.join(webtoon_dir, folder))
         ]
-
-        def chapter_sort_key(name: str):
-            match = re.search(r"(\d+(?:\.\d+)?)", name)
-            if match:
-                try:
-                    return (0, float(match.group(1)), name.lower())
-                except Exception:
-                    pass
-            return (1, float("inf"), name.lower())
 
         chapter_dirs.sort(key=chapter_sort_key)
         thumb = self._preferred_thumbnail_for(webtoon_name)
@@ -598,7 +566,7 @@ class DownloadService(QObject):
             if candidates:
                 return max(candidates)
         except Exception as e:
-            print(f"Last chapter guess failed from HTML: {e}")
+            logger.warning("Last chapter guess failed from HTML for %s", url, exc_info=e)
 
         try:
             parsed = urlparse(url)
@@ -610,7 +578,7 @@ class DownloadService(QObject):
             if path_matches:
                 return max(int(value) for value in path_matches)
         except Exception as e:
-            print(f"Last chapter guess failed from URL: {e}")
+            logger.warning("Last chapter guess failed from URL for %s", url, exc_info=e)
 
         return None
 

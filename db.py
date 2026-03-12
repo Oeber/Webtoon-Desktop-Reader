@@ -2,6 +2,11 @@ import json
 import os
 import sqlite3
 
+from app_logging import get_logger
+
+
+logger = get_logger(__name__)
+
 DB_PATH           = "data/reader.db"
 THUMBNAILS_JSON   = "data/thumbnails.json"
 PROGRESS_JSON     = "data/progress.json"
@@ -12,6 +17,7 @@ _connection: sqlite3.Connection | None = None
 def get_connection() -> sqlite3.Connection:
     global _connection
     if _connection is None:
+        logger.info("Opening SQLite connection at %s", DB_PATH)
         _connection = _init_db()
     return _connection
 
@@ -33,6 +39,7 @@ def _init_db() -> sqlite3.Connection:
     _migrate_json(conn)
     _migrate_columns(conn)
     _migrate_thumbnails_table(conn)
+    logger.info("Database ready")
 
     return conn
 
@@ -80,6 +87,7 @@ def _migrate_columns(conn: sqlite3.Connection):
             added = True
     if added:
         conn.commit()
+        logger.info("Applied webtoon_settings column migrations")
 
 
 def _migrate_thumbnails_table(conn: sqlite3.Connection):
@@ -106,7 +114,7 @@ def _migrate_thumbnails_table(conn: sqlite3.Connection):
         )
     conn.execute("DROP TABLE thumbnails")
     conn.commit()
-    print("[db] Migrated thumbnails table into webtoon_settings and dropped it.")
+    logger.info("Migrated thumbnails table into webtoon_settings and dropped legacy table")
 
 
 def _migrate_json(conn: sqlite3.Connection):
@@ -163,9 +171,9 @@ def _migrate_thumbnails_json(conn: sqlite3.Connection):
                 )
 
         conn.commit()
-        print(f"[db] Migrated {len(data)} thumbnail overrides from JSON.")
+        logger.info("Migrated %d thumbnail overrides from JSON", len(data))
     except (json.JSONDecodeError, OSError) as e:
-        print(f"[db] Could not migrate thumbnails.json: {e}")
+        logger.error("Could not migrate thumbnails.json", exc_info=e)
 
     _backup_json(THUMBNAILS_JSON)
 
@@ -193,9 +201,9 @@ def _migrate_progress_json(conn: sqlite3.Connection):
             rows
         )
         conn.commit()
-        print(f"[db] Migrated {len(rows)} progress entries from JSON.")
+        logger.info("Migrated %d progress entries from JSON", len(rows))
     except (json.JSONDecodeError, OSError) as e:
-        print(f"[db] Could not migrate progress.json: {e}")
+        logger.error("Could not migrate progress.json", exc_info=e)
 
     _backup_json(PROGRESS_JSON)
 

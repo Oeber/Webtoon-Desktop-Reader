@@ -2,6 +2,7 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 
+from app_logging import get_logger
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QApplication, QSlider, QMessageBox
@@ -28,6 +29,7 @@ TILE_MAX_H    = 120
 LAZY_WINDOW   = 2000
 BATCH_MS      = 16
 NUM_WORKERS   = 8
+logger = get_logger(__name__)
 
 
 class ContinueDialog(QDialog):
@@ -639,6 +641,12 @@ class ViewerPage(QWidget):
         self._did_immediate_first_paint = False
 
     def load_webtoon(self, webtoon, start_chapter: int = 0, start_scroll: float = 0.0):
+        logger.info(
+            "Viewer loading webtoon=%s chapter_index=%d start_scroll=%.3f",
+            webtoon.name,
+            start_chapter,
+            start_scroll,
+        )
         webtoon.path = os.path.abspath(webtoon.path)
         self.webtoon = webtoon
         self._unpack_restore(start_scroll)
@@ -649,6 +657,7 @@ class ViewerPage(QWidget):
 
     def _apply_webtoon_settings(self, webtoon):
         """Apply per-webtoon settings (zoom, hide filler). Called whenever a webtoon is opened."""
+        logger.info("Applying viewer settings for %s", webtoon.name)
         # Hide filler
         self.skip_specials_enabled = self.settings_store.get_hide_filler(webtoon.name)
 
@@ -697,6 +706,13 @@ class ViewerPage(QWidget):
             packed = float(total)
         else:
             packed = self._current_packed_position()
+        logger.info(
+            "Viewer saving progress for %s chapter=%s packed=%.3f total=%d",
+            self.webtoon.name,
+            chapter,
+            packed,
+            total,
+        )
         self.progress_store.save(self.webtoon.name, chapter, packed, total)
 
     def _unpack_restore(self, packed: float):
@@ -810,17 +826,22 @@ class ViewerPage(QWidget):
         if not self.webtoon:
             return
         chapter = self.webtoon.chapters[index]
+        logger.info("Viewer loading chapter with prompt: %s / %s", self.webtoon.name, chapter)
 
         saved_scroll = self.progress_store.get_for_chapter(self.webtoon.name, chapter)
         packed = 0.0
         if saved_scroll > 0.005:
             dlg = ContinueDialog(chapter, parent=self)
             if dlg.exec() != QDialog.Accepted:
+                logger.info("Resume dialog cancelled for %s / %s", self.webtoon.name, chapter)
                 return
             if dlg.choice == "continue":
                 packed = saved_scroll
+                logger.info("Resume dialog chose continue for %s / %s", self.webtoon.name, chapter)
             elif dlg.choice != "restart":
                 return
+            else:
+                logger.info("Resume dialog chose restart for %s / %s", self.webtoon.name, chapter)
 
         self._unpack_restore(packed)
         self._load_chapter_no_prompt(index)
@@ -830,6 +851,7 @@ class ViewerPage(QWidget):
             return
         self.current_chapter_index = index
         chapter = self.webtoon.chapters[index]
+        logger.info("Viewer loading chapter without prompt: %s / %s", self.webtoon.name, chapter)
 
         self.chapter_selector.blockSignals(True)
         if self._chapter_index_map:
@@ -883,6 +905,7 @@ class ViewerPage(QWidget):
 
         chapter_path = os.path.join(self.webtoon.path, chapter)
         if not os.path.isdir(chapter_path):
+            logger.warning("Viewer chapter path missing: %s", chapter_path)
             QMessageBox.information(
                 self,
                 "Chapter missing",
@@ -896,6 +919,7 @@ class ViewerPage(QWidget):
         )
 
         if not image_files:
+            logger.warning("Viewer chapter has no readable images: %s", chapter_path)
             QMessageBox.information(
                 self,
                 "Chapter empty",
@@ -914,6 +938,7 @@ class ViewerPage(QWidget):
             label.setMinimumHeight(400)
             self.image_layout.addWidget(label)
             self.image_labels.append(label)
+        logger.info("Viewer queued %d images for %s / %s", len(self.image_labels), self.webtoon.name, chapter)
 
         self.preview.set_image_labels(self.image_labels)
 
@@ -973,6 +998,7 @@ class ViewerPage(QWidget):
         """Save current zoom as a per-webtoon override. Called only on user interaction."""
         if not self.webtoon:
             return
+        logger.info("Persisting viewer zoom override for %s to %.2f", self.webtoon.name, self._zoom)
         self.settings_store.set_zoom_override(self.webtoon.name, self._zoom)
         self._zoom_override_active = True
         self._zoom_reset_btn.setEnabled(True)
@@ -1034,6 +1060,7 @@ class ViewerPage(QWidget):
     def next_chapter(self):
         next_idx = self._next_chapter_index(self.current_chapter_index)
         if next_idx is not None:
+            logger.info("Viewer moving to next chapter for %s", self.webtoon.name if self.webtoon else "<none>")
             self._save_progress()
             self._restore_image_index = None
             self._load_chapter_no_prompt(next_idx)
@@ -1041,6 +1068,7 @@ class ViewerPage(QWidget):
     def prev_chapter(self):
         prev_idx = self._prev_chapter_index(self.current_chapter_index)
         if prev_idx is not None:
+            logger.info("Viewer moving to previous chapter for %s", self.webtoon.name if self.webtoon else "<none>")
             self._save_progress()
             self._restore_image_index = None
             self._load_chapter_no_prompt(prev_idx)
@@ -1089,6 +1117,7 @@ class ViewerPage(QWidget):
     def _clear_zoom_override(self):
         if not self.webtoon:
             return
+        logger.info("Clearing viewer zoom override for %s", self.webtoon.name)
         self.settings_store.clear_zoom_override(self.webtoon.name)
         self._zoom_override_active = False
         self._zoom_reset_btn.setEnabled(False)
@@ -1097,6 +1126,7 @@ class ViewerPage(QWidget):
         self.setFocus()
 
     def go_back(self):
+        logger.info("Leaving viewer for detail page: %s", self.webtoon.name if self.webtoon else "<none>")
         self._save_progress()
         self.main_window.library.refresh_progress()
         self.main_window.open_detail(self.webtoon)
@@ -1410,5 +1440,6 @@ class ViewerPage(QWidget):
             self.nav_toggle.setText("Standard")
 
         save_setting("viewer_auto_skip", self.auto_skip_enabled)
+        logger.info("Viewer navigation mode changed auto_skip=%s", self.auto_skip_enabled)
 
         self.setFocus()

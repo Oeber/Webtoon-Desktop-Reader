@@ -2,6 +2,7 @@ import os
 import re
 import time
 
+from app_logging import get_logger
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QToolButton, QMessageBox
@@ -11,14 +12,14 @@ from PySide6.QtCore import Qt, QPoint, QSize, QTimer
 
 import qtawesome as qta
 
+from gui.common.chapter_utils import SPECIAL_CHAPTER_RE, chapter_sort_key
+from gui.common.styles import CHAPTER_SCROLL_AREA_STYLE, PAGE_BG_STYLE
 from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 from gui.settings.settings_page import load_library_path
 
-
-# Matches chapter names that contain a decimal sub-number, e.g. "Chapter 1.5", "Ch.10.5"
-_SPECIAL_CHAPTER_RE = re.compile(r'\b\d+\.\d+\b')
 UPDATE_COOLDOWN_SECONDS = 30
+logger = get_logger(__name__)
 
 
 THUMB_W = 140
@@ -85,7 +86,7 @@ class DetailPage(QWidget):
         self._update_timer.timeout.connect(self._sync_update_button)
         self._update_timer.start(1000)
 
-        self.setStyleSheet("background-color: #121212;")
+        self.setStyleSheet(PAGE_BG_STYLE)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -325,13 +326,7 @@ class DetailPage(QWidget):
         self.chapter_scroll = QScrollArea()
         self.chapter_scroll.setWidgetResizable(True)
         self.chapter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.chapter_scroll.setStyleSheet("""
-            QScrollArea { border: none; background: #121212; }
-            QScrollBar:vertical { background: #1a1a1a; width: 6px; border-radius: 3px; }
-            QScrollBar::handle:vertical { background: #333; border-radius: 3px; min-height: 20px; }
-            QScrollBar::handle:vertical:hover { background: #555; }
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-        """)
+        self.chapter_scroll.setStyleSheet(CHAPTER_SCROLL_AREA_STYLE)
 
         self.chapter_list_widget = QWidget()
         self.chapter_list_widget.setStyleSheet("background: #121212;")
@@ -348,6 +343,7 @@ class DetailPage(QWidget):
     # ------------------------------------------------------------------ #
 
     def load_webtoon(self, webtoon, progress_store):
+        logger.info("Loading detail page for %s", webtoon.name)
         self.webtoon        = webtoon
         self.progress_store = progress_store
         self.progress_map   = progress_store.get_progress_map(webtoon.name)
@@ -420,7 +416,7 @@ class DetailPage(QWidget):
         chapters = self.webtoon.chapters
 
         if self.hide_specials:
-            chapters = [c for c in chapters if not _SPECIAL_CHAPTER_RE.search(c)]
+            chapters = [c for c in chapters if not SPECIAL_CHAPTER_RE.search(c)]
         if self.show_only_bookmarked:
             chapters = [c for c in chapters if c in self.bookmarked_chapters]
 
@@ -500,7 +496,7 @@ class DetailPage(QWidget):
 
     def _visible_chapters_count(self, chapters: list) -> int:
         """Count chapters that are not special (.5-style) chapters."""
-        return sum(1 for c in chapters if not _SPECIAL_CHAPTER_RE.search(c))
+        return sum(1 for c in chapters if not SPECIAL_CHAPTER_RE.search(c))
 
     def _filtered_chapters(self) -> list[str]:
         if self.webtoon is None:
@@ -508,7 +504,7 @@ class DetailPage(QWidget):
 
         chapters = list(self.webtoon.chapters)
         if self.hide_specials:
-            chapters = [c for c in chapters if not _SPECIAL_CHAPTER_RE.search(c)]
+            chapters = [c for c in chapters if not SPECIAL_CHAPTER_RE.search(c)]
         if self.show_only_bookmarked:
             chapters = [c for c in chapters if c in self.bookmarked_chapters]
         return chapters
@@ -544,6 +540,12 @@ class DetailPage(QWidget):
             return
 
         is_bookmarked = self.settings_store.toggle_bookmarked_chapter(self.webtoon.name, chapter)
+        logger.info(
+            "Bookmark toggled for %s chapter=%s bookmarked=%s",
+            self.webtoon.name,
+            chapter,
+            is_bookmarked,
+        )
         if is_bookmarked:
             self.bookmarked_chapters.add(chapter)
         else:
@@ -561,6 +563,7 @@ class DetailPage(QWidget):
 
     def _toggle_hide_specials(self):
         self.hide_specials = self.hide_specials_btn.isChecked()
+        logger.info("Hide filler toggled for %s: %s", self.webtoon.name if self.webtoon else "<none>", self.hide_specials)
         icon_name = "fa5s.eye-slash" if self.hide_specials else "fa5s.eye"
         self.hide_specials_btn.setIcon(qta.icon(icon_name, color="#888888"))
         self.hide_specials_btn.setIconSize(QSize(12, 12))
@@ -574,6 +577,11 @@ class DetailPage(QWidget):
 
     def _toggle_bookmarks_filter(self):
         self.show_only_bookmarked = self.bookmarks_filter_btn.isChecked()
+        logger.info(
+            "Bookmarked-only filter toggled for %s: %s",
+            self.webtoon.name if self.webtoon else "<none>",
+            self.show_only_bookmarked,
+        )
         self._update_chapter_count_label()
         progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
         self._build_chapter_list(progress)
@@ -586,27 +594,20 @@ class DetailPage(QWidget):
             entry for entry in os.listdir(self.webtoon.path)
             if os.path.isdir(os.path.join(self.webtoon.path, entry))
         ]
-        chapter_dirs.sort(key=self._chapter_sort_key)
+        chapter_dirs.sort(key=chapter_sort_key)
 
         if chapter_dirs == list(self.webtoon.chapters):
             return True
 
+        logger.info("Detail page refreshed chapter list from disk for %s", self.webtoon.name)
         self.webtoon.chapters = chapter_dirs
         progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
         self._update_chapter_count_label()
         self._build_chapter_list(progress)
         return True
 
-    def _chapter_sort_key(self, name: str):
-        match = re.search(r'(\d+(?:\.\d+)?)', name)
-        if match:
-            try:
-                return (0, float(match.group(1)), name.lower())
-            except Exception:
-                pass
-        return (1, float("inf"), name.lower())
-
     def _open_chapter(self, chapter: str):
+        logger.info("Opening chapter from detail page: %s / %s", self.webtoon.name if self.webtoon else "<none>", chapter)
         if not self._refresh_webtoon_from_disk():
             return
         if chapter not in self.webtoon.chapters:
@@ -620,6 +621,7 @@ class DetailPage(QWidget):
         self.main_window.open_chapter_with_prompt(self.webtoon, idx)
 
     def _continue_reading(self):
+        logger.info("Continue reading requested for %s", self.webtoon.name if self.webtoon else "<none>")
         if not self._refresh_webtoon_from_disk():
             return
         progress = self.progress_store.get(self.webtoon.name)
@@ -639,11 +641,13 @@ class DetailPage(QWidget):
             )
 
     def _go_back(self):
+        logger.info("Returning from detail page to library")
         self.main_window.stack.setCurrentWidget(self.main_window.library)
 
     def attach_update_service(self, service):
         if self._update_service is service:
             return
+        logger.info("Attaching shared update service to detail page")
         self._update_service = service
         self._update_service.download_started.connect(self._on_update_started)
         self._update_service.download_finished.connect(self._on_update_finished)
@@ -666,14 +670,17 @@ class DetailPage(QWidget):
         if not source_url:
             return
         if self._cooldown_remaining() > 0:
+            logger.info("Detail page update blocked by cooldown for %s", self.webtoon.name)
             self._sync_update_button()
             return
+        logger.info("Starting detail-page update for %s", self.webtoon.name)
         error = self._update_service.start_download(
             source_url,
             load_library_path(),
             preferred_name=self.webtoon.name,
         )
         if error:
+            logger.warning("Failed to start detail-page update for %s: %s", self.webtoon.name, error)
             self._sync_update_button()
             return
         self._active_update_name = self.webtoon.name
@@ -707,6 +714,7 @@ class DetailPage(QWidget):
         self._sync_update_button()
 
     def _on_update_finished(self, name: str, status: str):
+        logger.info("Detail page received update finished for %s with status=%s", name, status)
         if status == "Completed" and self.webtoon and name == self.webtoon.name:
             self.settings_store.set_last_update_at(name, int(time.time()))
             self._refresh_webtoon_from_disk()
@@ -720,6 +728,7 @@ class DetailPage(QWidget):
     def _open_edit_dialog(self):
         if self.webtoon is None or self.progress_store is None:
             return
+        logger.info("Opening edit dialog for %s", self.webtoon.name)
 
         dlg = EditWebtoonDialog(
             self.webtoon,
@@ -750,6 +759,11 @@ class DetailPage(QWidget):
 
     def _toggle_sort(self):
         self.sort_latest_first = not self.sort_latest_first
+        logger.info(
+            "Detail page sort toggled for %s latest_first=%s",
+            self.webtoon.name if self.webtoon else "<none>",
+            self.sort_latest_first,
+        )
         if self.sort_latest_first:
             self.sort_btn.setText("  Latest")
             self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#888888"))
@@ -761,4 +775,5 @@ class DetailPage(QWidget):
         self._build_chapter_list(progress)
 
     def _start_from_beginning(self): 
+        logger.info("Start from beginning requested for %s", self.webtoon.name if self.webtoon else "<none>")
         self.main_window.open_chapter(self.webtoon, 0)

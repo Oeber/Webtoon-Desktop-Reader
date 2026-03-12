@@ -2,7 +2,11 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
+from app_logging import get_logger
+from gui.common.styles import INPUT_STYLE
 from rapidfuzz import fuzz
+
+logger = get_logger(__name__)
 
 
 def rank_webtoons(webtoons: list, query: str) -> list[tuple[int, object]]:
@@ -37,6 +41,7 @@ class GlobalSearchDialog(QDialog):
 
         self.input = QLineEdit()
         self.input.setPlaceholderText("Quick Search (Ctrl+K)")
+        self.input.setStyleSheet(INPUT_STYLE)
         layout.addWidget(self.input)
 
         self.results = QListWidget()
@@ -48,6 +53,7 @@ class GlobalSearchDialog(QDialog):
         self.results.itemActivated.connect(self._open_selected)
 
     def open_dialog(self):
+        logger.info("Opening global search dialog")
         self.input.clear()
         self._update_results("")
         self.show()
@@ -56,6 +62,7 @@ class GlobalSearchDialog(QDialog):
         self.input.setFocus()
 
     def _update_results(self, text: str):
+        logger.info("Updating global search results for query='%s'", text.strip())
         self.results.clear()
 
         for score, webtoon in rank_webtoons(self.main_window.library._webtoons, text)[:20]:
@@ -73,5 +80,6 @@ class GlobalSearchDialog(QDialog):
 
     def _open_selected(self, item: QListWidgetItem):
         webtoon = item.data(Qt.UserRole)
+        logger.info("Global search selected %s", webtoon.name)
         self.main_window.open_detail(webtoon)
         self.close()

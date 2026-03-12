@@ -2,7 +2,10 @@ import importlib
 import inspect
 import pkgutil
 
+from app_logging import get_logger
 from .base import BaseScraper
+
+logger = get_logger(__name__)
 
 
 def _iter_scraper_classes():
@@ -28,8 +31,10 @@ def _iter_scraper_classes():
 def get_scraper(url: str):
     for scraper_cls in _iter_scraper_classes():
         if scraper_cls.can_handle(url):
+            logger.info("Matched scraper %s for %s", scraper_cls.__name__, url)
             return scraper_cls()
 
+    logger.warning("No scraper available for %s", url)
     raise ValueError(f"No scraper available for URL: {url}")
 
 

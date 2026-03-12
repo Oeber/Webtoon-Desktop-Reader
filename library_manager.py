@@ -2,6 +2,9 @@ import os
 import re
 
 from PIL import Image
+from app_logging import get_logger
+
+logger = get_logger(__name__)
 
 class Webtoon:
     def __init__(self, name, path, chapters, thumbnail):
@@ -12,8 +15,13 @@ class Webtoon:
 
 
 def scan_library(library_path: str, settings_store) -> list[Webtoon]:
+    logger.info("Scanning library at %s", library_path)
 
     webtoons = []
+
+    if not os.path.isdir(library_path):
+        logger.warning("Library path does not exist: %s", library_path)
+        return []
 
     for webtoon_name in sorted(os.listdir(library_path)):
 
@@ -54,6 +62,7 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
             Webtoon(webtoon_name, webtoon_path, chapters, thumbnail)
         )
 
+    logger.info("Library scan completed with %d webtoons", len(webtoons))
     return webtoons
 
 

@@ -1,32 +1,12 @@
+from datetime import datetime
+
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-
-BTN_STYLE = """
-    QPushButton {
-        background-color: #2a2a2a;
-        color: #cccccc;
-        border: 1px solid #333;
-        border-radius: 6px;
-        padding: 6px 16px;
-        font-size: 13px;
-    }
-    QPushButton:hover { background-color: #333; }
-    QPushButton:pressed { background-color: #3a3a3a; }
+from gui.common.styles import BUTTON_STYLE, INPUT_STYLE
+BTN_STYLE = BUTTON_STYLE + """
     QPushButton:disabled { color: #555; border-color: #222; }
-"""
-
-INPUT_STYLE = """
-    QLineEdit {
-        background: #1a1a1a;
-        border: 1px solid #333;
-        border-radius: 6px;
-        padding: 6px 10px;
-        color: #eeeeee;
-        font-size: 13px;
-    }
-    QLineEdit:focus { border: 1px solid #555; }
 """
 
 STATUS_COLORS = {
@@ -36,6 +16,13 @@ STATUS_COLORS = {
     "Failed": "#f44336",
     "Cancelled": "#888888",
 }
+
+
+def format_last_updated(timestamp: int | None) -> str:
+    if timestamp is None:
+        return "Last updated: Never"
+    stamp = datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
+    return f"Last updated: {stamp}"
 
 
 class SpinnerCircle(QWidget):
@@ -265,3 +252,50 @@ class DownloadEntry(QFrame):
             event.accept()
             return
         super().mousePressEvent(event)
+
+
+class UpdateEntry(DownloadEntry):
+
+    def __init__(self, webtoon_name: str, source_url: str, last_update_at: int | None, on_update):
+        super().__init__(webtoon_name)
+        self.source_url = source_url
+        self.last_update_at = last_update_at
+        self.on_update = on_update
+        self.setProperty("clickable", False)
+        self.setCursor(Qt.ArrowCursor)
+
+        self.sub_label.setWordWrap(True)
+        self._refresh_sub_label()
+        self.sub_label.show()
+
+        self.update_btn = QPushButton("Update")
+        self.update_btn.setStyleSheet(BTN_STYLE)
+        self.update_btn.setFixedWidth(100)
+        self.update_btn.clicked.connect(lambda: self.on_update(self))
+
+        controls = QWidget()
+        controls.setStyleSheet("background: transparent; border: none;")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        controls_layout.addWidget(self.status_label, alignment=Qt.AlignRight)
+        controls_layout.addWidget(self.update_btn, alignment=Qt.AlignRight)
+
+        self.layout().removeWidget(self.status_label)
+        self.layout().addWidget(controls)
+
+    def set_status(self, status: str):
+        super().set_status(status)
+        self.setProperty("clickable", False)
+        self.setCursor(Qt.ArrowCursor)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self._refresh_sub_label()
+
+    def set_last_update_at(self, timestamp: int):
+        self.last_update_at = int(timestamp)
+        self._refresh_sub_label()
+
+    def _refresh_sub_label(self):
+        self.sub_label.setText(f"{self.source_url}\n{format_last_updated(self.last_update_at)}")
+        self.sub_label.show()

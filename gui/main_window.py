@@ -8,6 +8,7 @@ from PySide6.QtCore import QSize
 import time
 
 import qtawesome as qta
+from app_logging import get_logger
 
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
@@ -17,10 +18,13 @@ from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
 from gui.search.global_search import GlobalSearchDialog
 
+logger = get_logger(__name__)
+
 class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        logger.info("Initializing main window")
 
         self.resize(1400, 900)
         self._suppress_detail_open_until = 0.0
@@ -152,12 +156,15 @@ class MainWindow(QMainWindow):
     def open_detail(self, webtoon):
         """Show the detail / chapter-list page. Also refreshes progress badges."""
         if time.monotonic() < self._suppress_detail_open_until:
+            logger.info("Suppressed detail open for %s", webtoon.name)
             return
+        logger.info("Opening detail page for %s", webtoon.name)
         self.library.refresh_progress()
         self.detail.load_webtoon(webtoon, self.library.progress_store)
         self.stack.setCurrentWidget(self.detail)
 
     def suppress_detail_open(self, seconds: float):
+        logger.info("Suppressing detail open for %.2f seconds", seconds)
         self._suppress_detail_open_until = max(
             self._suppress_detail_open_until,
             time.monotonic() + seconds,
@@ -168,6 +175,12 @@ class MainWindow(QMainWindow):
         Open viewer at a specific chapter + scroll percentage.
         No continue/restart prompt — caller already decided.
         """
+        logger.info(
+            "Opening chapter directly for %s index=%d scroll=%.3f",
+            webtoon.name,
+            chapter_index,
+            scroll_pct,
+        )
         self.viewer.load_webtoon(webtoon,
                                  start_chapter=chapter_index,
                                  start_scroll=scroll_pct)
@@ -178,6 +191,7 @@ class MainWindow(QMainWindow):
         Open viewer at a specific chapter and let the viewer
         show the continue/restart dialog if progress exists.
         """
+        logger.info("Opening chapter with prompt for %s index=%d", webtoon.name, chapter_index)
         webtoon.path = __import__("os").path.abspath(webtoon.path)
         self.viewer.webtoon = webtoon
         self.viewer._apply_webtoon_settings(webtoon)
@@ -192,11 +206,11 @@ class MainWindow(QMainWindow):
         self.open_chapter(webtoon, 0)
 
     def open_updates(self):
+        logger.info("Opening updates page")
         self.updates.refresh_entries()
         self.stack.setCurrentWidget(self.updates)
     
     def toggle_sidebar(self):
-        icon_color = "#cccccc"
         if self.sidebar_open:
             self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
             self.btn_library.setText("")
@@ -211,3 +225,4 @@ class MainWindow(QMainWindow):
             self.btn_downloader.setText("  Download")
             self.btn_updates.setText("  Updates")
             self.sidebar_open = True
+        logger.info("Sidebar toggled, open=%s", self.sidebar_open)

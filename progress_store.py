@@ -1,4 +1,8 @@
 from db import get_connection
+from app_logging import get_logger
+
+
+logger = get_logger(__name__)
 
 _instance = None
 
@@ -49,6 +53,13 @@ class ProgressStore:
 
     def save(self, webtoon_name: str, chapter: str, scroll: float, total_images: int = 0):
         """Save per-chapter progress + total image count."""
+        logger.info(
+            "Saving progress webtoon=%s chapter=%s scroll=%.3f total_images=%d",
+            webtoon_name,
+            chapter,
+            scroll,
+            total_images,
+        )
         conn = get_connection()
         conn.execute(
             """INSERT INTO progress (webtoon_name, chapter, scroll, total_images, updated_at)
@@ -63,6 +74,7 @@ class ProgressStore:
 
     def clear(self, webtoon_name: str):
         """Delete ALL progress for a webtoon."""
+        logger.info("Clearing progress for %s", webtoon_name)
         conn = get_connection()
         conn.execute(
             "DELETE FROM progress WHERE webtoon_name = ?",
@@ -71,6 +83,7 @@ class ProgressStore:
         conn.commit()
 
     def rename_webtoon(self, old_name: str, new_name: str):
+        logger.info("Renaming progress rows from %s to %s", old_name, new_name)
         conn = get_connection()
         conn.execute(
             "UPDATE progress SET webtoon_name = ? WHERE webtoon_name = ?",
