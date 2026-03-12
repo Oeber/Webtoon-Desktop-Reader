@@ -32,7 +32,7 @@ COMMANDS = [
     {
         "name": "/open",
         "template": "/open ",
-        "summary": "Open a title or jump to a chapter with /open <title> <number>.",
+        "summary": "Open the last-read or first chapter, or jump with /open <title> <number>.",
         "mode": "open",
         "requires_argument": True,
     },
@@ -343,11 +343,13 @@ class GlobalSearchDialog(QDialog):
                         )
                     else:
                         item.setToolTip(
-                            f"Open '{webtoon.name}' detail page; no chapter matched '{chapter_query}' "
+                            f"Open '{webtoon.name}' at the last-read or first chapter; no chapter matched '{chapter_query}' "
                             f"(match score: {score})"
                         )
                 else:
-                    item.setToolTip(f"Open '{webtoon.name}' (match score: {score})")
+                    item.setToolTip(
+                        f"Open '{webtoon.name}' at the last-read or first chapter (match score: {score})"
+                    )
             self.results.addItem(item)
 
         self.results.setCurrentRow(0)
@@ -616,8 +618,8 @@ class GlobalSearchDialog(QDialog):
             )
             self.main_window.open_chapter_with_prompt(webtoon, chapter_index)
         else:
-            logger.info("Global search selected %s", webtoon.name)
-            self.main_window.open_detail(webtoon)
+            logger.info("Global search selected %s for resume-or-first open", webtoon.name)
+            self._open_for_reading(webtoon)
         self.close()
 
     def _open_for_reading(self, webtoon):
