@@ -1,4 +1,6 @@
-from PySide6.QtCore import Qt
+import re
+
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
@@ -30,7 +32,7 @@ COMMANDS = [
     {
         "name": "/open",
         "template": "/open ",
-        "summary": "Open a title detail page.",
+        "summary": "Open a title or jump to a chapter with /open <title> <number>.",
         "mode": "open",
         "requires_argument": True,
     },
@@ -113,6 +115,7 @@ class GlobalSearchDialog(QDialog):
         self.input = QLineEdit()
         self.input.setPlaceholderText("Quick Search (Ctrl+K)")
         self.input.setStyleSheet(INPUT_STYLE)
+        self.input.installEventFilter(self)
         layout.addWidget(self.input)
 
         self.results = QListWidget()
@@ -235,7 +238,13 @@ class GlobalSearchDialog(QDialog):
             self._show_update_results(command, remainder)
             return
         if mode == "open":
-            self._show_title_results(command, remainder, action="open_detail")
+            title_query, chapter_query = self._split_title_and_chapter_query(remainder)
+            self._show_title_results(
+                command,
+                title_query,
+                action="open_detail",
+                chapter_query=chapter_query,
+            )
             return
         if mode == "read":
             self._show_title_results(command, remainder, action="read_title")
@@ -300,7 +309,13 @@ class GlobalSearchDialog(QDialog):
 
         self.results.setCurrentRow(0)
 
-    def _show_title_results(self, command: dict, remainder: str, action: str):
+    def _show_title_results(
+        self,
+        command: dict,
+        remainder: str,
+        action: str,
+        chapter_query: str | None = None,
+    ):
         ranked = rank_webtoons(self.main_window.library._webtoons, remainder)[:20]
         if not ranked:
             self._add_command_preview(command)
@@ -311,15 +326,74 @@ class GlobalSearchDialog(QDialog):
         for score, webtoon in ranked:
             item = self._build_webtoon_item(webtoon)
             item.setData(ITEM_ACTION_ROLE, action)
+            if chapter_query:
+                chapter_index = self._find_chapter_index(webtoon, chapter_query)
+                item.setData(ITEM_COMMAND_ROLE, chapter_index)
             if action == "read_title":
                 progress = self.main_window.library.progress_store.get(webtoon.name)
                 hint = "Continue reading" if progress else "Start from beginning"
                 item.setToolTip(f"{hint} '{webtoon.name}' (match score: {score})")
             else:
-                item.setToolTip(f"Open '{webtoon.name}' (match score: {score})")
+                if chapter_query:
+                    chapter_index = item.data(ITEM_COMMAND_ROLE)
+                    if chapter_index is not None:
+                        chapter_name = webtoon.chapters[chapter_index]
+                        item.setToolTip(
+                            f"Open '{webtoon.name}' at '{chapter_name}' (match score: {score})"
+                        )
+                    else:
+                        item.setToolTip(
+                            f"Open '{webtoon.name}' detail page; no chapter matched '{chapter_query}' "
+                            f"(match score: {score})"
+                        )
+                else:
+                    item.setToolTip(f"Open '{webtoon.name}' (match score: {score})")
             self.results.addItem(item)
 
         self.results.setCurrentRow(0)
+
+    def _split_title_and_chapter_query(self, text: str) -> tuple[str, str | None]:
+        query = (text or "").strip()
+        if not query:
+            return "", None
+
+        match = re.match(r"^(?P<title>.+?)\s+(?P<chapter>\d+(?:\.\d+)?)$", query)
+        if not match:
+            return query, None
+
+        title = match.group("title").strip()
+        chapter = match.group("chapter").strip()
+        if not title:
+            return query, None
+        return title, chapter
+
+    def _find_chapter_index(self, webtoon, chapter_query: str) -> int | None:
+        target = self._parse_chapter_number(chapter_query)
+        if target is None:
+            return None
+
+        fallback_index = None
+        for index, chapter_name in enumerate(getattr(webtoon, "chapters", []) or []):
+            number = self._extract_chapter_number(chapter_name)
+            if number is None:
+                continue
+            if abs(number - target) < 1e-9:
+                return index
+            if fallback_index is None and str(chapter_query) in chapter_name:
+                fallback_index = index
+        return fallback_index
+
+    def _extract_chapter_number(self, chapter_name: str) -> float | None:
+        match = re.search(r"(\d+(?:\.\d+)?)", chapter_name or "")
+        if not match:
+            return None
+        return self._parse_chapter_number(match.group(1))
+
+    def _parse_chapter_number(self, value: str) -> float | None:
+        try:
+            return float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
 
     def _build_webtoon_item(self, webtoon) -> QListWidgetItem:
         item = QListWidgetItem(webtoon.name)
@@ -357,6 +431,7 @@ class GlobalSearchDialog(QDialog):
         if not command_name:
             return
         if has_space:
+            self._cycle_result_selection(backward=backward)
             return
 
         active_session = (
@@ -396,6 +471,88 @@ class GlobalSearchDialog(QDialog):
             self.input.setCursorPosition(len(replacement))
         finally:
             self._applying_tab_completion = False
+
+    def _cycle_result_selection(self, backward: bool) -> None:
+        count = self.results.count()
+        if count <= 0:
+            return
+
+        current_row = self.results.currentRow()
+        if current_row < 0:
+            current_row = 0 if not backward else count - 1
+        else:
+            step = -1 if backward else 1
+            current_row = (current_row + step) % count
+
+        start_row = current_row
+        while not (self.results.item(current_row).flags() & Qt.ItemIsEnabled):
+            step = -1 if backward else 1
+            current_row = (current_row + step) % count
+            if current_row == start_row:
+                return
+
+        self.results.setCurrentRow(current_row)
+
+    def eventFilter(self, watched, event):
+        if watched is self.input and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Space:
+                if self._try_accept_command_preview():
+                    return True
+                if self._try_accept_result_selection():
+                    return True
+        return super().eventFilter(watched, event)
+
+    def _try_accept_command_preview(self) -> bool:
+        text = self.input.text()
+        command_name, has_space, _ = self._split_command_query(text)
+        if not command_name or has_space:
+            return False
+
+        item = self.results.currentItem()
+        if item is None or item.data(ITEM_ACTION_ROLE) != "command_preview":
+            return False
+
+        command_text = item.data(ITEM_COMMAND_ROLE)
+        if not command_text:
+            return False
+
+        if not str(command_text).endswith(" "):
+            command_text = f"{command_text} "
+        self.input.setText(command_text)
+        self.input.setFocus()
+        self.input.setCursorPosition(len(command_text))
+        return True
+
+    def _try_accept_result_selection(self) -> bool:
+        text = self.input.text()
+        command_name, has_space, remainder = self._split_command_query(text)
+        if not command_name or not has_space:
+            return False
+
+        command = COMMANDS_BY_NAME.get(command_name)
+        if command is None or command["mode"] not in {"open", "read", "update"}:
+            return False
+
+        item = self.results.currentItem()
+        if item is None or item.data(ITEM_ACTION_ROLE) not in {"open_detail", "read_title", "update"}:
+            return False
+
+        webtoon = item.data(ITEM_WEBTOON_ROLE)
+        if webtoon is None:
+            return False
+
+        replacement = f"{command_name} {webtoon.name}"
+        if command["mode"] == "open":
+            _, chapter_query = self._split_title_and_chapter_query(remainder)
+            if chapter_query:
+                replacement = f"{replacement} {chapter_query}"
+
+        if not replacement.endswith(" "):
+            replacement = f"{replacement} "
+        self.input.setText(replacement)
+        self.input.setFocus()
+        self.input.setCursorPosition(len(replacement))
+        return True
 
     def _activate_item(self, item: QListWidgetItem):
         action = item.data(ITEM_ACTION_ROLE)
@@ -450,8 +607,17 @@ class GlobalSearchDialog(QDialog):
             self.close()
             return
 
-        logger.info("Global search selected %s", webtoon.name)
-        self.main_window.open_detail(webtoon)
+        chapter_index = item.data(ITEM_COMMAND_ROLE)
+        if isinstance(chapter_index, int):
+            logger.info(
+                "Global search selected %s chapter index=%d",
+                webtoon.name,
+                chapter_index,
+            )
+            self.main_window.open_chapter_with_prompt(webtoon, chapter_index)
+        else:
+            logger.info("Global search selected %s", webtoon.name)
+            self.main_window.open_detail(webtoon)
         self.close()
 
     def _open_for_reading(self, webtoon):
