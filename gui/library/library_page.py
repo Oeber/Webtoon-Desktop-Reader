@@ -106,7 +106,7 @@ class CategorySection(QFrame):
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(8)
 
-        self.drag_handle_btn = QPushButton("::")
+        self.drag_handle_btn = QPushButton("::", self)
         self.drag_handle_btn.setCursor(Qt.OpenHandCursor if callable(on_reorder) else Qt.ArrowCursor)
         self.drag_handle_btn.setFixedSize(24, 24)
         self.drag_handle_btn.setStyleSheet(SECTION_MENU_BUTTON_STYLE)
@@ -114,13 +114,13 @@ class CategorySection(QFrame):
         self.drag_handle_btn.installEventFilter(self)
         header_row.addWidget(self.drag_handle_btn, 0, Qt.AlignVCenter)
 
-        self.header_btn = QPushButton()
+        self.header_btn = QPushButton(self)
         self.header_btn.setCursor(Qt.PointingHandCursor)
         self.header_btn.setStyleSheet(SECTION_HEADER_BUTTON_STYLE)
         self.header_btn.clicked.connect(self._toggle)
         header_row.addWidget(self.header_btn, 1)
 
-        self.menu_btn = QPushButton("...")
+        self.menu_btn = QPushButton("...", self)
         self.menu_btn.setCursor(Qt.PointingHandCursor)
         self.menu_btn.setFixedSize(28, 24)
         self.menu_btn.setStyleSheet(SECTION_MENU_BUTTON_STYLE)
@@ -130,19 +130,19 @@ class CategorySection(QFrame):
 
         root.addLayout(header_row)
 
-        self.content = QWidget()
+        self.content = QWidget(self)
         self.content_layout = QVBoxLayout(self.content)
         self.content_layout.setContentsMargins(0, 0, 0, 8)
         self.content_layout.setSpacing(10)
 
-        self.empty_state = QLabel("Drop titles here")
+        self.empty_state = QLabel("Drop titles here", self.content)
         self.empty_state.setAlignment(Qt.AlignCenter)
         self.empty_state.setMinimumSize(CARD_WIDTH + 16, int(CARD_WIDTH * (270 / 180)) + 16)
         self.empty_state.setStyleSheet("")
         self.empty_state.hide()
         self.content_layout.addWidget(self.empty_state)
 
-        self.grid_host = QWidget()
+        self.grid_host = QWidget(self.content)
         self.grid_host.setStyleSheet(TRANSPARENT_BG_STYLE)
         self.grid = QGridLayout(self.grid_host)
         self.grid.setContentsMargins(0, 0, 0, 0)
@@ -166,6 +166,7 @@ class CategorySection(QFrame):
     def set_collapsed(self, collapsed: bool):
         self._collapsed = bool(collapsed)
         self.content.setVisible(not self._collapsed)
+        self.set_title(self._title, self._current_count())
 
     def set_empty_state(self, visible: bool):
         self.empty_state.setVisible(visible)
@@ -176,6 +177,15 @@ class CategorySection(QFrame):
         height = int(max(120, int(card_width)) * (270 / 180)) + 16
         self.empty_state.setMinimumSize(width, height)
         self.empty_state.setMaximumWidth(width)
+
+    def _current_count(self) -> int:
+        text = self.header_btn.text()
+        if "(" not in text or not text.endswith(")"):
+            return 0
+        try:
+            return int(text.rsplit("(", 1)[-1][:-1])
+        except ValueError:
+            return 0
 
     def _toggle(self):
         self.set_collapsed(not self._collapsed)
@@ -389,17 +399,17 @@ class LibraryPage(QWidget):
         controls.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, 0)
         controls.setSpacing(12)
 
-        self.search = QLineEdit()
+        self.search = QLineEdit(self)
         self.search.setPlaceholderText("Search webtoons...")
         self.search.setFixedHeight(36)
         self.search.setStyleSheet(SEARCH_INPUT_STYLE)
         controls.addWidget(self.search, 1)
 
-        self.size_label = QLabel("Library size")
+        self.size_label = QLabel("Library size", self)
         self.size_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE)
         controls.addWidget(self.size_label)
 
-        self.size_slider = QSlider(Qt.Horizontal)
+        self.size_slider = QSlider(Qt.Horizontal, self)
         self.size_slider.setRange(CARD_SCALE_MIN, CARD_SCALE_MAX)
         self.size_slider.setValue(self._card_scale)
         self.size_slider.setFixedWidth(140)
@@ -408,60 +418,60 @@ class LibraryPage(QWidget):
         self.size_slider.sliderReleased.connect(self._apply_pending_card_scale)
         controls.addWidget(self.size_slider)
 
-        self.size_value_label = QLabel(f"{self._card_scale}%")
+        self.size_value_label = QLabel(f"{self._card_scale}%", self)
         self.size_value_label.setFixedWidth(42)
         self.size_value_label.setStyleSheet(TEXT_DIM_LABEL_STYLE)
         controls.addWidget(self.size_value_label)
 
         root_layout.addLayout(controls)
 
-        self.batch_bar = QWidget()
+        self.batch_bar = QWidget(self)
         self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
         batch_layout = QHBoxLayout(self.batch_bar)
         batch_layout.setContentsMargins(PAGE_PADDING, 10, PAGE_PADDING, 10)
         batch_layout.setSpacing(10)
 
-        self.batch_label = QLabel("")
+        self.batch_label = QLabel("", self.batch_bar)
         self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.batch_label)
 
-        self.mark_completed_btn = QPushButton("Mark Completed")
+        self.mark_completed_btn = QPushButton("Mark Completed", self.batch_bar)
         self.mark_completed_btn.setStyleSheet(BUTTON_STYLE)
         self.mark_completed_btn.clicked.connect(self._mark_selected_completed)
         batch_layout.addWidget(self.mark_completed_btn)
 
-        self.bookmark_selected_btn = QPushButton("Bookmark Selected")
+        self.bookmark_selected_btn = QPushButton("Bookmark Selected", self.batch_bar)
         self.bookmark_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.bookmark_selected_btn.clicked.connect(self._toggle_selected_bookmarked)
         batch_layout.addWidget(self.bookmark_selected_btn)
 
-        self.update_selected_btn = QPushButton("Update Selected")
+        self.update_selected_btn = QPushButton("Update Selected", self.batch_bar)
         self.update_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.update_selected_btn.clicked.connect(self._update_selected)
         batch_layout.addWidget(self.update_selected_btn)
 
-        self.move_selected_btn = QPushButton("Move to Category")
+        self.move_selected_btn = QPushButton("Move to Category", self.batch_bar)
         self.move_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.move_selected_btn.clicked.connect(self._show_move_selected_menu)
         batch_layout.addWidget(self.move_selected_btn)
 
-        self.delete_selected_btn = QPushButton("Delete Selected")
+        self.delete_selected_btn = QPushButton("Delete Selected", self.batch_bar)
         self.delete_selected_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_selected_btn.clicked.connect(self._delete_selected)
         batch_layout.addWidget(self.delete_selected_btn)
 
-        self.clear_selection_btn = QPushButton("Clear")
+        self.clear_selection_btn = QPushButton("Clear", self.batch_bar)
         self.clear_selection_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.clear_selection_btn.clicked.connect(self._clear_selection)
         batch_layout.addWidget(self.clear_selection_btn)
         batch_layout.addStretch()
 
-        self.scroll = QScrollArea()
+        self.scroll = QScrollArea(self)
         self.scroll.setWidgetResizable(True)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
 
-        self.container = QWidget()
+        self.container = QWidget(self.scroll)
         self.container.setStyleSheet(PAGE_BG_STYLE)
         self.container.setContextMenuPolicy(Qt.CustomContextMenu)
         self.container.customContextMenuRequested.connect(self._show_library_context_menu)
@@ -699,6 +709,7 @@ class LibraryPage(QWidget):
             title,
             on_toggle=self._on_section_toggled,
             on_drop=self._handle_section_drop if section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED} else None,
+            on_reorder=self._handle_section_reorder,
             on_menu=self._show_section_menu if section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED} else None,
             parent=self.container,
         )

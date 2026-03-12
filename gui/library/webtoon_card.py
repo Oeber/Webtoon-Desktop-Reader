@@ -123,7 +123,7 @@ class WebtoonCard(QWidget):
         root.setContentsMargins(8, 8, 8, 8)
         self._root_layout = root
 
-        self.image_container = QWidget()
+        self.image_container = QWidget(self)
         self.image_container.setFixedSize(self.card_width, self.card_height)
         self.image_container.setStyleSheet(TRANSPARENT_BG_STYLE)
 
@@ -132,8 +132,7 @@ class WebtoonCard(QWidget):
         self.image_label.setAlignment(Qt.AlignCenter)
         self._apply_border_style(hovered=False)
 
-        self.dots_btn = QPushButton("...")
-        self.dots_btn.setParent(self.image_container)
+        self.dots_btn = QPushButton("...", self.image_container)
         self.dots_btn.setFixedSize(28, 28)
         self.dots_btn.move(self.card_width - 34, 6)
         self.dots_btn.setCursor(Qt.PointingHandCursor)
@@ -141,8 +140,7 @@ class WebtoonCard(QWidget):
         self.dots_btn.hide()
         self.dots_btn.clicked.connect(self._show_context_menu_at_btn)
 
-        self.cancel_download_btn = QPushButton()
-        self.cancel_download_btn.setParent(self.image_container)
+        self.cancel_download_btn = QPushButton(self.image_container)
         self.cancel_download_btn.setFixedSize(28, 28)
         self.cancel_download_btn.move(6, 6)
         self.cancel_download_btn.setCursor(Qt.PointingHandCursor)
@@ -153,8 +151,7 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.clicked.connect(self._cancel_manual_download)
         self.cancel_download_btn.hide()
 
-        self.update_btn = QPushButton()
-        self.update_btn.setParent(self.image_container)
+        self.update_btn = QPushButton(self.image_container)
         self.update_btn.setFixedSize(28, 28)
         self.update_btn.move(6, 6)
         self.update_btn.setCursor(Qt.PointingHandCursor)
@@ -163,8 +160,7 @@ class WebtoonCard(QWidget):
         self.update_btn.clicked.connect(self._trigger_update)
         self._set_update_button_idle()
 
-        self.select_btn = QPushButton()
-        self.select_btn.setParent(self.image_container)
+        self.select_btn = QPushButton(self.image_container)
         self.select_btn.setCheckable(True)
         self.select_btn.setFixedSize(28, 28)
         self.select_btn.move(6, self.card_height - 34)
@@ -174,8 +170,7 @@ class WebtoonCard(QWidget):
         self._refresh_select_button()
         self._refresh_select_visibility()
 
-        self.bookmark_btn = QPushButton()
-        self.bookmark_btn.setParent(self.image_container)
+        self.bookmark_btn = QPushButton(self.image_container)
         self.bookmark_btn.setCheckable(True)
         self.bookmark_btn.setFixedSize(28, 28)
         self.bookmark_btn.move(self.card_width - 34, self.card_height - 34)
@@ -196,7 +191,7 @@ class WebtoonCard(QWidget):
         self.progress_overlay.hide()
         self._center_progress_overlay()
 
-        self.title_label = ElidedLabel(webtoon.name)
+        self.title_label = ElidedLabel(webtoon.name, self)
         self.title_label.setFixedWidth(max(80, self.card_width - 42))
         self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.title_label.setWordWrap(False)
@@ -207,7 +202,7 @@ class WebtoonCard(QWidget):
         font.setWeight(QFont.Medium)
         self.title_label.setFont(font)
 
-        self.info_label = QLabel("")
+        self.info_label = QLabel("", self)
         self.info_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
         self.info_label.hide()
 
@@ -215,7 +210,7 @@ class WebtoonCard(QWidget):
         self.lastread_btn = self._make_badge_btn(accent=True)
         _retain_hidden_size(self.lastread_btn)
 
-        self.new_chip = QLabel("NEW")
+        self.new_chip = QLabel("NEW", self)
         self.new_chip.setAlignment(Qt.AlignCenter)
         self.new_chip.setFixedHeight(14)
         self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
@@ -239,7 +234,7 @@ class WebtoonCard(QWidget):
             self._apply_download_placeholder_mode()
 
     def _make_badge_btn(self, accent=False) -> QPushButton:
-        btn = QPushButton()
+        btn = QPushButton(self)
         btn.setFixedWidth(self.card_width)
         btn.setFixedHeight(20)
         btn.setCursor(Qt.PointingHandCursor)
