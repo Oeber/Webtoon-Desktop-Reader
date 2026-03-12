@@ -35,36 +35,112 @@ logger = get_logger(__name__)
 
 DEFAULT_PATH = str(default_library_path())
 
-LABEL_STYLE = "color: #aaaaaa; font-size: 12px;"
-SECTION_STYLE = "color: #ffffff; font-size: 13px; font-weight: bold;"
+LABEL_STYLE = "color: #8f959e; font-size: 12px; letter-spacing: 0.02em;"
+SECTION_STYLE = "color: #f1f1f1; font-size: 15px; font-weight: 700; letter-spacing: 0.03em;"
 TAB_STYLE = """
     QTabWidget::pane {
-        border: 1px solid #262626;
-        background: #161616;
-        border-radius: 8px;
-        top: -1px;
+        border: none;
+        background: #121212;
+        border-radius: 0px;
+        top: -2px;
+        padding: 10px 0 0 0;
     }
     QTabBar::tab {
-        background: #1d1d1d;
-        color: #aaaaaa;
-        border: 1px solid #2a2a2a;
-        padding: 8px 14px;
-        margin-right: 6px;
-        border-top-left-radius: 6px;
-        border-top-right-radius: 6px;
+        background: #171717;
+        color: #8f959e;
+        border: none;
+        padding: 10px 18px;
+        margin-right: 8px;
+        border-top-left-radius: 10px;
+        border-top-right-radius: 10px;
+        font-size: 12px;
+        font-weight: 700;
     }
     QTabBar::tab:selected {
+        background: #202020;
+        color: #f1f1f1;
+    }
+    QTabBar::tab:hover:!selected {
+        background: #1c1c1c;
+        color: #cfcfcf;
+    }
+"""
+SURFACE_STYLE = """
+    QWidget {
+        background: #161616;
+        border: none;
+        border-radius: 14px;
+    }
+"""
+VALUE_PILL_STYLE = """
+    QLabel {
+        color: #d8d8d8;
+        background: #202020;
+        border: none;
+        border-radius: 11px;
+        padding: 3px 8px;
+        font-size: 11px;
+        font-weight: 700;
+    }
+"""
+CHECKBOX_STYLE = """
+    QCheckBox {
+        color: #e6e6e6;
+        font-size: 13px;
+        spacing: 10px;
+        background: transparent;
+    }
+    QCheckBox::indicator {
+        width: 18px;
+        height: 18px;
+        border-radius: 5px;
+        border: 1px solid #3a3a3a;
+        background: #151515;
+    }
+    QCheckBox::indicator:checked {
+        background: #d9d9d9;
+        border: 1px solid #e5e5e5;
+    }
+"""
+SLIDER_STYLE = """
+    QSlider::groove:horizontal {
+        height: 8px;
+        border-radius: 4px;
         background: #222222;
-        color: #f0f0f0;
+    }
+    QSlider::sub-page:horizontal {
+        border-radius: 4px;
+        background: #cfcfcf;
+    }
+    QSlider::add-page:horizontal {
+        border-radius: 4px;
+        background: #2d2d2d;
+    }
+    QSlider::handle:horizontal {
+        width: 18px;
+        margin: -6px 0;
+        border-radius: 9px;
+        border: 1px solid #d8d8d8;
+        background: #f2f2f2;
+    }
+"""
+LOG_META_STYLE = """
+    QLabel {
+        color: #a9b0b9;
+        font-size: 12px;
+        background: #1a1a1a;
+        border: none;
+        border-radius: 10px;
+        padding: 10px 12px;
     }
 """
 LOG_VIEW_STYLE = """
     QTextEdit {
         background: #101010;
         color: #d8d8d8;
-        border: 1px solid #262626;
-        border-radius: 8px;
-        padding: 6px;
+        border: none;
+        border-radius: 14px;
+        padding: 10px;
         font-family: Consolas, 'Courier New', monospace;
         font-size: 12px;
     }
@@ -105,7 +181,7 @@ class SettingsPage(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(24)
+        layout.setSpacing(18)
         layout.setAlignment(Qt.AlignTop)
 
         title = QLabel("Settings")
@@ -123,18 +199,32 @@ class SettingsPage(QWidget):
         self._log_refresh_timer.timeout.connect(self._refresh_logs_if_changed)
         self._log_refresh_timer.start(1500)
 
+    def open_logs_tab(self):
+        self.tabs.setCurrentWidget(self.logs_tab)
+        if not self._logs_loaded:
+            QTimer.singleShot(0, lambda: self._refresh_logs(force=True))
+        else:
+            self._refresh_logs(force=False)
+
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
         page.setStyleSheet("background: transparent;")
 
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 12, 0, 0)
-        layout.setSpacing(24)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(16)
         layout.setAlignment(Qt.AlignTop)
 
-        folder_label = QLabel("Webtoon Library Folder")
+        library_card, library_layout = self._build_card()
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(10)
+
+        folder_label = QLabel("Library")
         folder_label.setStyleSheet(SECTION_STYLE + " background: transparent;")
-        layout.addWidget(folder_label)
+        header_row.addWidget(folder_label)
+        header_row.addStretch()
+        library_layout.addLayout(header_row)
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -151,52 +241,63 @@ class SettingsPage(QWidget):
 
         row.addWidget(self.path_input)
         row.addWidget(browse_btn)
-        layout.addLayout(row)
+        library_layout.addLayout(row)
+        layout.addWidget(library_card)
 
-        reader_label = QLabel("Reader")
+        reader_card, reader_layout = self._build_card()
+        reader_header = QHBoxLayout()
+        reader_header.setContentsMargins(0, 0, 0, 0)
+        reader_header.setSpacing(10)
+
+        reader_label = QLabel("Reader Defaults")
         reader_label.setStyleSheet(SECTION_STYLE + " background: transparent;")
-        layout.addWidget(reader_label)
+        reader_header.addWidget(reader_label)
+        reader_header.addStretch()
+        reader_layout.addLayout(reader_header)
 
         self.auto_skip_checkbox = QCheckBox("Enable auto panel skip")
         self.auto_skip_checkbox.setChecked(load_setting("viewer_auto_skip", True))
-        self.auto_skip_checkbox.setStyleSheet("""
-            QCheckBox {
-                color: #dddddd;
-                font-size: 13px;
-                spacing: 8px;
-                background: transparent;
-            }
-        """)
+        self.auto_skip_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.auto_skip_checkbox.toggled.connect(self._on_auto_skip_changed)
-        layout.addWidget(self.auto_skip_checkbox)
+        reader_layout.addWidget(self.auto_skip_checkbox)
 
         zoom_row = QHBoxLayout()
         zoom_row.setSpacing(10)
 
         zoom_text = QLabel("Default zoom")
         zoom_text.setStyleSheet(LABEL_STYLE + " background: transparent;")
-        zoom_text.setFixedWidth(90)
+        zoom_text.setFixedWidth(100)
 
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setMinimum(25)
         self.zoom_slider.setMaximum(100)
         self.zoom_slider.setValue(int(load_setting("viewer_zoom", 0.5) * 100))
+        self.zoom_slider.setStyleSheet(SLIDER_STYLE)
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
 
         self.zoom_value_label = QLabel(f"{self.zoom_slider.value()}%")
-        self.zoom_value_label.setStyleSheet("color: #cccccc; font-size: 12px; background: transparent;")
-        self.zoom_value_label.setFixedWidth(40)
+        self.zoom_value_label.setStyleSheet(VALUE_PILL_STYLE)
+        self.zoom_value_label.setAlignment(Qt.AlignCenter)
+        self.zoom_value_label.setFixedWidth(54)
 
         zoom_row.addWidget(zoom_text)
         zoom_row.addWidget(self.zoom_slider)
         zoom_row.addWidget(self.zoom_value_label)
-        layout.addLayout(zoom_row)
+        reader_layout.addLayout(zoom_row)
 
-        reset_btn = QPushButton("Reset to Defaults")
+        layout.addWidget(reader_card)
+
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 2, 0, 0)
+        actions_row.setSpacing(12)
+
+        reset_btn = QPushButton("Reset Defaults")
         reset_btn.setStyleSheet(BUTTON_STYLE)
-        reset_btn.setFixedWidth(140)
+        reset_btn.setFixedWidth(148)
         reset_btn.clicked.connect(self._reset)
-        layout.addWidget(reset_btn)
+        actions_row.addWidget(reset_btn)
+        actions_row.addStretch()
+        layout.addLayout(actions_row)
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
@@ -210,44 +311,51 @@ class SettingsPage(QWidget):
         page.setStyleSheet("background: transparent;")
 
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 12, 0, 0)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(16)
+
+        logs_card, logs_layout = self._build_card(expand=True)
 
         title = QLabel("Current Session Log")
         title.setStyleSheet(SECTION_STYLE + " background: transparent;")
-        layout.addWidget(title)
+        logs_layout.addWidget(title)
 
         self.log_meta_label = QLabel("")
-        self.log_meta_label.setStyleSheet(LABEL_STYLE + " background: transparent;")
+        self.log_meta_label.setStyleSheet(LOG_META_STYLE)
         self.log_meta_label.setWordWrap(True)
-        layout.addWidget(self.log_meta_label)
+        logs_layout.addWidget(self.log_meta_label)
 
         controls = QHBoxLayout()
         controls.setSpacing(10)
 
         self.errors_only_checkbox = QCheckBox("Hide non-warning/error lines")
-        self.errors_only_checkbox.setStyleSheet("""
-            QCheckBox {
-                color: #dddddd;
-                font-size: 13px;
-                spacing: 8px;
-                background: transparent;
-            }
-        """)
+        self.errors_only_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.errors_only_checkbox.toggled.connect(lambda _: self._refresh_logs(force=True))
 
         controls.addWidget(self.errors_only_checkbox)
         controls.addStretch()
-        layout.addLayout(controls)
+        logs_layout.addLayout(controls)
 
         self.log_view = QTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setStyleSheet(LOG_VIEW_STYLE)
-        layout.addWidget(self.log_view, 1)
+        logs_layout.addWidget(self.log_view, 1)
+
+        layout.addWidget(logs_card, 1)
 
         self.logs_tab = page
 
         return page
+
+    def _build_card(self, expand: bool = False):
+        card = QWidget()
+        card.setStyleSheet(SURFACE_STYLE)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        if expand:
+            card.setMinimumHeight(320)
+        return card, layout
 
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Library Folder")
