@@ -1,30 +1,217 @@
-from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QGridLayout, QScrollArea, QHBoxLayout, QLabel, QSlider, QPushButton,
-)
-from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
-from PySide6.QtCore import Qt, QTimer
-from types import SimpleNamespace
+import json
 import os
 import shutil
 import time
+from types import SimpleNamespace
+
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QInputDialog,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app_logging import get_logger
 from gui.common.styles import PAGE_BG_STYLE, SCROLL_AREA_STYLE, SEARCH_INPUT_STYLE
-from library_manager import scan_library
-from progress_store import get_instance as get_progress_store
-from webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path, load_setting, save_setting
+from library_manager import scan_library
+from progress_store import get_instance as get_progress_store
+from webtoon_settings_store import get_instance as get_webtoon_settings
 
 
-CARD_SPACING  = 16
-PAGE_PADDING  = 24
+CARD_SPACING = 16
+PAGE_PADDING = 24
 UPDATE_COOLDOWN_SECONDS = 30
 CARD_SCALE_MIN = 70
 CARD_SCALE_MAX = 140
 CARD_SCALE_KEY = "library_card_scale"
+CATEGORY_KEY = "library_custom_categories"
+SECTION_DOWNLOADS = "__downloads__"
+SECTION_UNCATEGORIZED = "__uncategorized__"
 logger = get_logger(__name__)
+
+
+class CategorySection(QFrame):
+
+    def __init__(
+        self,
+        section_key: str,
+        title: str,
+        on_toggle,
+        on_drop,
+        on_menu=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.section_key = section_key
+        self._title = title
+        self._on_toggle = on_toggle
+        self._on_drop = on_drop
+        self._on_menu = on_menu
+        self._collapsed = False
+        self._drop_active = False
+
+        self.setFrameShape(QFrame.NoFrame)
+        self.setStyleSheet("background: transparent;")
+        self.setAcceptDrops(callable(on_drop))
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+
+        self.header_btn = QPushButton()
+        self.header_btn.setCursor(Qt.PointingHandCursor)
+        self.header_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #f0f0f0;
+                border: none;
+                padding: 6px 0;
+                font-size: 13px;
+                font-weight: 700;
+                text-align: left;
+            }
+            QPushButton:hover { color: #ffffff; }
+        """)
+        self.header_btn.clicked.connect(self._toggle)
+        header_row.addWidget(self.header_btn, 1)
+
+        self.menu_btn = QPushButton("...")
+        self.menu_btn.setCursor(Qt.PointingHandCursor)
+        self.menu_btn.setFixedSize(28, 24)
+        self.menu_btn.setStyleSheet("""
+            QPushButton {
+                background: #202020;
+                color: #cccccc;
+                border: 1px solid #303030;
+                border-radius: 6px;
+                padding-bottom: 2px;
+            }
+            QPushButton:hover { background: #282828; }
+        """)
+        self.menu_btn.clicked.connect(self._show_menu)
+        self.menu_btn.setVisible(callable(on_menu))
+        header_row.addWidget(self.menu_btn, 0, Qt.AlignVCenter)
+
+        root.addLayout(header_row)
+
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(0, 0, 0, 8)
+        self.content_layout.setSpacing(10)
+
+        self.empty_state = QLabel("Drop titles here")
+        self.empty_state.setAlignment(Qt.AlignCenter)
+        self.empty_state.setMinimumHeight(88)
+        self.empty_state.setStyleSheet("")
+        self.empty_state.hide()
+        self.content_layout.addWidget(self.empty_state)
+
+        self.grid_host = QWidget()
+        self.grid_host.setStyleSheet("background: transparent;")
+        self.grid = QGridLayout(self.grid_host)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(CARD_SPACING)
+        self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.content_layout.addWidget(self.grid_host)
+        root.addWidget(self.content)
+
+        self._apply_drop_style()
+        self.set_title(title, 0)
+
+    def set_title(self, title: str, count: int):
+        self._title = title
+        prefix = "▸" if self._collapsed else "▾"
+        self.header_btn.setText(f"{prefix}  {title} ({count})")
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = bool(collapsed)
+        self.content.setVisible(not self._collapsed)
+
+    def set_empty_state(self, visible: bool):
+        self.empty_state.setVisible(visible)
+        self.grid_host.setVisible(not visible)
+
+    def _toggle(self):
+        self.set_collapsed(not self._collapsed)
+        if callable(self._on_toggle):
+            self._on_toggle(self.section_key, self._collapsed)
+
+    def _show_menu(self):
+        if callable(self._on_menu):
+            self._on_menu(self)
+
+    def dragEnterEvent(self, event):
+        if callable(self._on_drop) and event.mimeData().hasFormat("application/x-webtoon-names"):
+            self._drop_active = True
+            self._apply_drop_style()
+            event.acceptProposedAction()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event):
+        if callable(self._on_drop) and event.mimeData().hasFormat("application/x-webtoon-names"):
+            event.acceptProposedAction()
+            return
+        super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self._drop_active = False
+        self._apply_drop_style()
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event):
+        if not callable(self._on_drop) or not event.mimeData().hasFormat("application/x-webtoon-names"):
+            super().dropEvent(event)
+            return
+        try:
+            names = json.loads(bytes(event.mimeData().data("application/x-webtoon-names")).decode("utf-8"))
+        except Exception:
+            self._drop_active = False
+            self._apply_drop_style()
+            event.ignore()
+            return
+        if self._on_drop(self.section_key, [str(name) for name in names if str(name).strip()]):
+            self._drop_active = False
+            self._apply_drop_style()
+            event.acceptProposedAction()
+            return
+        self._drop_active = False
+        self._apply_drop_style()
+        event.ignore()
+
+    def _apply_drop_style(self):
+        border = "rgba(92, 142, 255, 0.75)" if self._drop_active else "rgba(255, 255, 255, 0.08)"
+        background = "rgba(55, 90, 150, 0.16)" if self._drop_active else "rgba(255, 255, 255, 0.025)"
+        text = "#d8e4ff" if self._drop_active else "#747b86"
+        self.empty_state.setStyleSheet(f"""
+            QLabel {{
+                color: {text};
+                background: {background};
+                border: 1px dashed {border};
+                border-radius: 12px;
+                font-size: 12px;
+                font-weight: 500;
+                padding: 12px;
+            }}
+        """)
 
 
 class LibraryPage(QWidget):
@@ -32,11 +219,12 @@ class LibraryPage(QWidget):
     def __init__(self, main_window):
         super().__init__()
 
-        self.main_window   = main_window
+        self.main_window = main_window
         self.progress_store = get_progress_store()
         self.settings_store = get_webtoon_settings()
-        self._webtoons     = []
-        self._cards        = []
+        self._webtoons = []
+        self._cards = []
+        self._cards_by_name = {}
         self._current_cols = 0
         self._pending_search = ""
         self._update_service = None
@@ -49,6 +237,10 @@ class LibraryPage(QWidget):
         self._card_scale = int(load_setting(CARD_SCALE_KEY, 100))
         self._pending_card_scale = self._card_scale
         self._selected_webtoons = set()
+        self._category_names = []
+        self._collapsed_sections = {}
+        self._section_widgets = {}
+        self._section_cards = {}
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -121,6 +313,11 @@ class LibraryPage(QWidget):
         self.update_selected_btn.clicked.connect(self._update_selected)
         batch_layout.addWidget(self.update_selected_btn)
 
+        self.move_selected_btn = QPushButton("Move to Category")
+        self.move_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
+        self.move_selected_btn.clicked.connect(self._show_move_selected_menu)
+        batch_layout.addWidget(self.move_selected_btn)
+
         self.delete_selected_btn = QPushButton("Delete Selected")
         self.delete_selected_btn.setStyleSheet("""
             QPushButton {
@@ -150,11 +347,13 @@ class LibraryPage(QWidget):
 
         self.container = QWidget()
         self.container.setStyleSheet(PAGE_BG_STYLE)
+        self.container.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.container.customContextMenuRequested.connect(self._show_library_context_menu)
 
-        self.grid = QGridLayout(self.container)
-        self.grid.setSpacing(CARD_SPACING)
-        self.grid.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, PAGE_PADDING)
-        self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.sections_layout = QVBoxLayout(self.container)
+        self.sections_layout.setContentsMargins(PAGE_PADDING, PAGE_PADDING, PAGE_PADDING, PAGE_PADDING)
+        self.sections_layout.setSpacing(18)
+        self.sections_layout.setAlignment(Qt.AlignTop)
 
         self.scroll.setWidget(self.container)
         root_layout.addWidget(self.scroll, 1)
@@ -180,13 +379,16 @@ class LibraryPage(QWidget):
         self._input_blocker.setStyleSheet("background: transparent;")
 
         self.load_library()
- 
+
     def load_library(self):
         logger.info("Loading library page contents")
         self._pending_reload = False
-        self._webtoons = scan_library(load_library_path(), self.settings_store)
+        self._webtoons = self._filter_in_progress_manual_downloads(
+            scan_library(load_library_path(), self.settings_store)
+        )
+        self._category_names = self._load_custom_categories()
         self._prune_selection()
-        self._rebuild_grid(self._columns_for_width(self.width()))
+        self._rebuild_sections()
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -194,13 +396,23 @@ class LibraryPage(QWidget):
             self.load_library()
 
     def refresh_progress(self):
-        """Call this when returning from the viewer so badges update."""
         for card in self._cards:
             card._refresh_badges()
 
     def refresh_dynamic_state(self):
         self._sync_update_controls()
         self._sync_manual_download_cards()
+
+    def _load_custom_categories(self) -> list[str]:
+        raw = load_setting(CATEGORY_KEY, "[]")
+        try:
+            values = json.loads(raw) if isinstance(raw, str) else list(raw)
+        except Exception:
+            return []
+        return sorted({str(value).strip() for value in values if str(value).strip()}, key=str.lower)
+
+    def _save_custom_categories(self):
+        save_setting(CATEGORY_KEY, json.dumps(self._category_names))
 
     def _card_width(self) -> int:
         return max(120, int(CARD_WIDTH * (self._card_scale / 100.0)))
@@ -210,78 +422,185 @@ class LibraryPage(QWidget):
         available = max(width - PAGE_PADDING * 2, card_width + 16)
         return max(1, available // (card_width + 16 + CARD_SPACING))
 
-    def _rebuild_grid(self, columns: int):
-        while self.grid.count():
-            item = self.grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-
+    def _clear_sections(self):
+        while self.sections_layout.count():
+            item = self.sections_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._section_widgets = {}
+        self._section_cards = {}
         self._cards = []
-        self._current_cols = columns
+        self._cards_by_name = {}
 
-        display_webtoons = self._display_webtoons()
+    def _build_section_defs(self):
+        defs = []
+        placeholders = []
+        names_in_library = {webtoon.name for webtoon in self._webtoons}
+        for name, state in self._active_manual_downloads.items():
+            if name in names_in_library:
+                continue
+            placeholders.append(SimpleNamespace(
+                name=name,
+                path="",
+                thumbnail=state.get("thumbnail", "") or "",
+                chapters=[],
+                _download_placeholder=True,
+                category=None,
+            ))
+        placeholders.sort(key=lambda item: item.name.lower())
+        if placeholders:
+            defs.append((SECTION_DOWNLOADS, "Active Downloads", placeholders, None))
 
-        for index, webtoon in enumerate(display_webtoons):
-            row = index // columns
-            col = index % columns
-            is_download_placeholder = bool(getattr(webtoon, "_download_placeholder", False))
+        uncategorized = [webtoon for webtoon in self._webtoons if not getattr(webtoon, "category", None)]
+        defs.append((SECTION_UNCATEGORIZED, "Uncategorized", uncategorized, SECTION_UNCATEGORIZED))
 
-            card = WebtoonCard(
-                webtoon,
-                settings_store=self.settings_store,
-                progress_store=self.progress_store,
-                on_open=self._open_detail,
-                on_changed=self._reload_after_edit,
-                on_update=self._start_update,
-                on_delete=self._delete_single_webtoon,
-                on_cancel_download=self._cancel_manual_download,
-                on_select=self._on_card_selected,
-                card_width=self._card_width(),
-                download_placeholder=is_download_placeholder,
+        for category in self._category_names:
+            webtoons = [webtoon for webtoon in self._webtoons if getattr(webtoon, "category", None) == category]
+            defs.append((category, category, webtoons, category))
+        return defs
+
+    def _section_key_for_webtoon(self, webtoon) -> str:
+        if getattr(webtoon, "_download_placeholder", False):
+            return SECTION_DOWNLOADS
+        category = getattr(webtoon, "category", None)
+        return category or SECTION_UNCATEGORIZED
+
+    def _rebuild_sections(self):
+        self._clear_sections()
+        self._current_cols = self._columns_for_width(self.width())
+        for section_key, title, webtoons, drop_key in self._build_section_defs():
+            section = CategorySection(
+                section_key,
+                title,
+                on_toggle=self._on_section_toggled,
+                on_drop=self._handle_section_drop if drop_key is not None else None,
+                on_menu=self._show_section_menu if section_key != SECTION_UNCATEGORIZED else None,
+                parent=self.container,
             )
-            if is_download_placeholder:
-                state = self._active_manual_downloads.get(webtoon.name, {})
-                card.set_download_progress(state.get("current", 0), state.get("total", 0))
-            else:
-                card.set_selected(webtoon.name in self._selected_webtoons)
-            self._cards.append(card)
-            self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
+            self._section_widgets[section_key] = section
+            self.sections_layout.addWidget(section)
 
+            cards = []
+            for webtoon in webtoons:
+                is_download_placeholder = bool(getattr(webtoon, "_download_placeholder", False))
+                card = WebtoonCard(
+                    webtoon,
+                    settings_store=self.settings_store,
+                    progress_store=self.progress_store,
+                    on_open=self._open_detail,
+                    on_changed=self._reload_after_edit,
+                    on_update=self._start_update,
+                    on_delete=self._delete_single_webtoon,
+                    on_cancel_download=self._cancel_manual_download,
+                    on_select=self._on_card_selected,
+                    get_drag_names=self._drag_selection_for,
+                    card_width=self._card_width(),
+                    download_placeholder=is_download_placeholder,
+                    parent=section.grid_host,
+                )
+                if is_download_placeholder:
+                    state = self._active_manual_downloads.get(webtoon.name, {})
+                    card.set_download_progress(state.get("current", 0), state.get("total", 0))
+                else:
+                    card.set_selected(webtoon.name in self._selected_webtoons)
+                    self._cards_by_name[webtoon.name] = card
+                cards.append(card)
+                self._cards.append(card)
+
+            self._section_cards[section_key] = cards
+            section.set_collapsed(self._collapsed_sections.get(section_key, False))
+
+        self.sections_layout.addStretch(1)
+        self._relayout_sections(self._current_cols)
         self._sync_update_controls()
         self._sync_manual_download_cards()
         self._sync_batch_actions()
 
-    def _relayout_cards(self, columns: int | None = None):
+    def _add_section_widget(self, section_key: str):
+        if section_key in self._section_widgets:
+            return self._section_widgets[section_key]
+        title = "Uncategorized" if section_key == SECTION_UNCATEGORIZED else section_key
+        section = CategorySection(
+            section_key,
+            title,
+            on_toggle=self._on_section_toggled,
+            on_drop=self._handle_section_drop if section_key != SECTION_DOWNLOADS else None,
+            on_menu=self._show_section_menu if section_key not in {SECTION_DOWNLOADS, SECTION_UNCATEGORIZED} else None,
+            parent=self.container,
+        )
+        insert_at = max(0, self.sections_layout.count() - 1)
+        if section_key == SECTION_UNCATEGORIZED:
+            insert_at = 0
+            if SECTION_DOWNLOADS in self._section_widgets:
+                insert_at = 1
+        self.sections_layout.insertWidget(insert_at, section)
+        self._section_widgets[section_key] = section
+        self._section_cards[section_key] = []
+        section.set_collapsed(self._collapsed_sections.get(section_key, False))
+        return section
+
+    def _remove_empty_custom_sections(self):
+        for section_key in list(self._section_widgets.keys()):
+            if section_key in {SECTION_DOWNLOADS, SECTION_UNCATEGORIZED}:
+                continue
+            if self._section_cards.get(section_key):
+                continue
+            section = self._section_widgets.pop(section_key)
+            self._section_cards.pop(section_key, None)
+            section.deleteLater()
+
+    def _relayout_sections(self, columns: int | None = None):
         if columns is None:
             columns = self._columns_for_width(self.width())
         columns = max(1, columns)
-
-        while self.grid.count():
-            self.grid.takeAt(0)
-
         self._current_cols = columns
-        visible_cards = []
 
-        for card in self._cards:
-            card.update_card_size(self._card_width())
-            if not card.isHidden():
-                visible_cards.append(card)
-
-        if self._pending_search.strip():
+        scores = {}
+        search_text = self._pending_search.strip()
+        if search_text:
             scores = {
                 webtoon.name: score
-                for score, webtoon in rank_webtoons(self._display_webtoons(), self._pending_search.strip())
+                for score, webtoon in rank_webtoons(self._all_display_webtoons(), search_text)
             }
-            visible_cards.sort(
-                key=lambda card: (-scores.get(card.webtoon.name, 0), card.webtoon.name.lower())
-            )
 
-        for index, card in enumerate(visible_cards):
-            row = index // columns
-            col = index % columns
-            self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
+        for section_key, section in self._section_widgets.items():
+            while section.grid.count():
+                section.grid.takeAt(0)
+
+            cards = list(self._section_cards.get(section_key, []))
+            visible_cards = []
+            for card in cards:
+                card.update_card_size(self._card_width())
+                visible = card.webtoon.name in scores if search_text else True
+                card.setVisible(visible)
+                if visible:
+                    visible_cards.append(card)
+
+            if search_text:
+                visible_cards.sort(
+                    key=lambda card: (-scores.get(card.webtoon.name, 0), card.webtoon.name.lower())
+                )
+
+            for index, card in enumerate(visible_cards):
+                row = index // columns
+                col = index % columns
+                section.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
+
+            hide_empty = bool(search_text) or section_key == SECTION_DOWNLOADS
+            section.setVisible(bool(visible_cards) or not hide_empty)
+            section.set_empty_state(
+                not search_text
+                and section_key != SECTION_DOWNLOADS
+                and len(cards) == 0
+            )
+            section.set_title(section._title, len(visible_cards) if search_text else len(cards))
+            section.set_collapsed(self._collapsed_sections.get(section_key, False))
 
         self.container.updateGeometry()
+
+    def _all_display_webtoons(self):
+        return list(self._webtoons)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -289,13 +608,170 @@ class LibraryPage(QWidget):
         if self._input_blocker.isVisible():
             self._input_blocker.raise_()
         new_cols = self._columns_for_width(event.size().width())
-        if new_cols != self._current_cols and self._cards:
-            self._relayout_cards(new_cols)
+        if new_cols != self._current_cols and self._section_widgets:
+            self._relayout_sections(new_cols)
+
+    def _on_section_toggled(self, section_key: str, collapsed: bool):
+        self._collapsed_sections[section_key] = bool(collapsed)
+
+    def _show_library_context_menu(self, pos):
+        menu = QMenu(self)
+        new_category_action = menu.addAction("New Category")
+        chosen = menu.exec(self.container.mapToGlobal(pos))
+        if chosen == new_category_action:
+            self._prompt_new_category()
+
+    def _show_section_menu(self, section: CategorySection):
+        category = section.section_key
+        menu = QMenu(self)
+        rename_action = menu.addAction("Rename Category")
+        delete_action = menu.addAction("Delete Category")
+        chosen = menu.exec(section.menu_btn.mapToGlobal(section.menu_btn.rect().bottomLeft()))
+        if chosen == rename_action:
+            new_name, ok = QInputDialog.getText(self, "Rename category", "Category name:", text=category)
+            if ok:
+                self._rename_category(category, new_name)
+        elif chosen == delete_action:
+            self._delete_category(category)
+
+    def _prompt_new_category(self):
+        name, ok = QInputDialog.getText(self, "New category", "Category name:")
+        if not ok:
+            return
+        category = self._create_category(name)
+        if category:
+            self._block_library_input(0.3)
+            self._suppress_card_open(0.3)
+            self._rebuild_sections()
+
+    def _create_category(self, raw_name: str) -> str | None:
+        category = str(raw_name).strip()
+        if not category:
+            return None
+        if category not in self._category_names:
+            self._category_names.append(category)
+            self._category_names.sort(key=str.lower)
+            self._save_custom_categories()
+        return category
+
+    def _rename_category(self, old_name: str, new_name: str):
+        normalized = str(new_name).strip()
+        if not normalized or normalized == old_name:
+            return
+        if normalized in self._category_names:
+            QMessageBox.information(self, "Category exists", "A category with that name already exists.")
+            return
+        self._category_names = [normalized if name == old_name else name for name in self._category_names]
+        self._category_names.sort(key=str.lower)
+        for webtoon in self._webtoons:
+            if getattr(webtoon, "category", None) == old_name:
+                self.settings_store.set_category(webtoon.name, normalized)
+                webtoon.category = normalized
+        self._save_custom_categories()
+        self._rebuild_sections()
+
+    def _delete_category(self, category: str):
+        answer = QMessageBox.question(
+            self,
+            "Delete category",
+            f"Delete '{category}'? Titles in it will move to Uncategorized.",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self._category_names = [name for name in self._category_names if name != category]
+        for webtoon in self._webtoons:
+            if getattr(webtoon, "category", None) == category:
+                self.settings_store.clear_category(webtoon.name)
+                webtoon.category = None
+        self._save_custom_categories()
+        self._rebuild_sections()
+
+    def _drag_selection_for(self, webtoon_name: str) -> list[str]:
+        if webtoon_name in self._selected_webtoons:
+            return sorted(self._selected_webtoons)
+        return [webtoon_name]
+
+    def _handle_section_drop(self, section_key: str, names: list[str]) -> bool:
+        if not names:
+            return False
+        if section_key == SECTION_UNCATEGORIZED:
+            self._assign_category_to_webtoons(names, None)
+            return True
+        if section_key in self._category_names:
+            self._assign_category_to_webtoons(names, section_key)
+            return True
+        return False
+
+    def _assign_category_to_webtoons(self, names: list[str], category: str | None):
+        normalized = self._create_category(category) if category else None
+        targets = {name for name in names}
+        self._block_library_input(0.25)
+        self._suppress_card_open(0.25)
+        for webtoon in self._webtoons:
+            if webtoon.name not in targets:
+                continue
+            old_section = self._section_key_for_webtoon(webtoon)
+            if normalized:
+                self.settings_store.set_category(webtoon.name, normalized)
+                webtoon.category = normalized
+            else:
+                self.settings_store.clear_category(webtoon.name)
+                webtoon.category = None
+            new_section = self._section_key_for_webtoon(webtoon)
+            if old_section == new_section:
+                continue
+            card = self._cards_by_name.get(webtoon.name)
+            if card is None:
+                continue
+            if old_section in self._section_cards and card in self._section_cards[old_section]:
+                self._section_cards[old_section].remove(card)
+            self._add_section_widget(new_section)
+            self._section_cards.setdefault(new_section, []).append(card)
+        self._remove_empty_custom_sections()
+        self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))
+        self._clear_selection()
+
+    def _show_move_selected_menu(self):
+        if not self._selected_webtoons:
+            return
+        menu = QMenu(self)
+        uncategorized_action = menu.addAction("Uncategorized")
+        menu.addSeparator()
+        actions = {}
+        for category in self._category_names:
+            actions[menu.addAction(category)] = category
+        menu.addSeparator()
+        new_category_action = menu.addAction("New Category...")
+        chosen = menu.exec(self.move_selected_btn.mapToGlobal(self.move_selected_btn.rect().bottomLeft()))
+        if chosen == uncategorized_action:
+            self._assign_category_to_webtoons(sorted(self._selected_webtoons), None)
+            return
+        if chosen == new_category_action:
+            name, ok = QInputDialog.getText(self, "New category", "Category name:")
+            if ok:
+                category = self._create_category(name)
+                if category:
+                    self._assign_category_to_webtoons(sorted(self._selected_webtoons), category)
+            return
+        category = actions.get(chosen)
+        if category:
+            self._assign_category_to_webtoons(sorted(self._selected_webtoons), category)
 
     def _open_detail(self, webtoon):
         if time.monotonic() < self._ignore_open_until:
-            logger.info("Blocked card open for %s due to cooldown suppression", webtoon.name)
             return
+        if getattr(webtoon, "_download_placeholder", False):
+            if self._manual_download_service is None:
+                return
+            resolved = self._manual_download_service.build_webtoon_from_folder(
+                load_library_path(),
+                webtoon.name,
+            )
+            if resolved is None:
+                return
+            webtoon = resolved
         logger.info("Opening detail from library card for %s", webtoon.name)
         self.main_window.open_detail(webtoon)
 
@@ -307,7 +783,6 @@ class LibraryPage(QWidget):
     def attach_update_service(self, service):
         if self._update_service is service:
             return
-
         logger.info("Attaching shared update service to library page")
         self._update_service = service
         self._update_service.status_changed.connect(self._on_update_status_changed)
@@ -320,7 +795,6 @@ class LibraryPage(QWidget):
     def attach_manual_download_service(self, service):
         if self._manual_download_service is service:
             return
-
         logger.info("Attaching manual download service to library page")
         self._manual_download_service = service
         service.download_started.connect(self._on_manual_download_started)
@@ -334,21 +808,15 @@ class LibraryPage(QWidget):
         if self._update_service is None:
             return
         if self.settings_store.get_completed(webtoon_name):
-            logger.info("Update blocked for completed webtoon %s", webtoon_name)
             self._sync_update_controls()
             return
-
         source_url = self.settings_store.get_source_url(webtoon_name)
         if not source_url:
             return
-
         remaining = self._cooldown_remaining(webtoon_name)
         if remaining > 0:
-            logger.info("Update blocked by cooldown for %s (%ds remaining)", webtoon_name, remaining)
             self._sync_update_controls()
             return
-
-        logger.info("Starting library-triggered update for %s", webtoon_name)
         error = self._update_service.start_download(
             source_url,
             load_library_path(),
@@ -358,7 +826,6 @@ class LibraryPage(QWidget):
             logger.warning("Failed to start update for %s: %s", webtoon_name, error)
             self._sync_update_controls()
             return
-
         self._sync_update_controls()
 
     def _cooldown_remaining(self, webtoon_name: str) -> int:
@@ -385,8 +852,9 @@ class LibraryPage(QWidget):
                 continue
             if not update_allowed:
                 continue
-
-            if active_update is not None or (self._update_service is not None and self._update_service.has_active_download(card.webtoon.name)):
+            if active_update is not None or (
+                self._update_service is not None and self._update_service.has_active_download(card.webtoon.name)
+            ):
                 card.set_update_enabled(False, "Update in progress")
                 card.set_update_status("Downloading")
                 if active_update is not None:
@@ -395,7 +863,6 @@ class LibraryPage(QWidget):
                     if total > 0:
                         card.set_update_progress(current, total)
                 continue
-
             remaining = self._cooldown_remaining(card.webtoon.name)
             if remaining > 0:
                 card.set_update_enabled(
@@ -415,22 +882,6 @@ class LibraryPage(QWidget):
                 continue
             card.set_download_progress(state.get("current", 0), state.get("total", 0))
 
-    def _display_webtoons(self):
-        names_in_library = {webtoon.name for webtoon in self._webtoons}
-        placeholders = []
-        for name, state in self._active_manual_downloads.items():
-            if name in names_in_library:
-                continue
-            placeholders.append(SimpleNamespace(
-                name=name,
-                path="",
-                thumbnail=state.get("thumbnail", "") or "",
-                chapters=[],
-                _download_placeholder=True,
-            ))
-        placeholders.sort(key=lambda item: item.name.lower())
-        return placeholders + list(self._webtoons)
-
     def _on_card_selected(self, webtoon_name: str, selected: bool):
         if selected:
             self._selected_webtoons.add(webtoon_name)
@@ -441,61 +892,47 @@ class LibraryPage(QWidget):
     def _sync_batch_actions(self):
         count = len(self._selected_webtoons)
         self.batch_bar.setVisible(count > 0)
-        show_selection_controls = count > 0
         for card in self._cards:
-            card.set_selection_controls_visible(show_selection_controls)
+            if getattr(card, "_download_placeholder", False):
+                continue
+            card.set_selection_controls_visible(count > 0)
         if count <= 0:
             return
         self.batch_label.setText(f"{count} selected")
-        all_completed = all(
-            self.settings_store.get_completed(name)
-            for name in self._selected_webtoons
-        )
+        all_completed = all(self.settings_store.get_completed(name) for name in self._selected_webtoons)
         self.mark_completed_btn.setText("Mark Ongoing" if all_completed else "Mark Completed")
         updatable = any(
             self.settings_store.get_source_url(name) and not self.settings_store.get_completed(name)
             for name in self._selected_webtoons
         )
         self.update_selected_btn.setEnabled(updatable)
+        self.move_selected_btn.setEnabled(True)
 
     def _clear_selection(self):
         self._selected_webtoons.clear()
         for card in self._cards:
+            if getattr(card, "_download_placeholder", False):
+                continue
             card.set_selected(False)
         self._sync_batch_actions()
 
     def _prune_selection(self):
         valid_names = {webtoon.name for webtoon in self._webtoons}
-        self._selected_webtoons = {
-            name for name in self._selected_webtoons
-            if name in valid_names
-        }
+        self._selected_webtoons = {name for name in self._selected_webtoons if name in valid_names}
 
     def _mark_selected_completed(self):
         selected = sorted(self._selected_webtoons)
         if not selected:
             return
-        all_completed = all(
-            self.settings_store.get_completed(name)
-            for name in selected
-        )
+        all_completed = all(self.settings_store.get_completed(name) for name in selected)
         for name in selected:
             self.settings_store.set_completed(name, not all_completed)
-        logger.info(
-            "Marked %d selected webtoons as %s",
-            len(selected),
-            "ongoing" if all_completed else "completed",
-        )
         self.load_library()
         self._apply_filter()
         self._clear_selection()
 
     def _update_selected(self):
-        selected = [
-            webtoon.name
-            for webtoon in self._webtoons
-            if webtoon.name in self._selected_webtoons
-        ]
+        selected = [webtoon.name for webtoon in self._webtoons if webtoon.name in self._selected_webtoons]
         if not selected:
             return
         for name in selected:
@@ -521,7 +958,6 @@ class LibraryPage(QWidget):
     def _delete_webtoons(self, names: list[str]) -> bool:
         if not names:
             return False
-
         if len(names) == 1:
             message = f"Delete '{names[0]}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings."
             title = "Delete webtoon"
@@ -531,17 +967,9 @@ class LibraryPage(QWidget):
                 "This removes their folders, progress, thumbnail overrides, and saved settings."
             )
             title = "Delete selected webtoons"
-
-        answer = QMessageBox.question(
-            self,
-            title,
-            message,
-            QMessageBox.Yes | QMessageBox.Cancel,
-            QMessageBox.Cancel,
-        )
+        answer = QMessageBox.question(self, title, message, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if answer != QMessageBox.Yes:
             return False
-
         library_path = load_library_path()
         deleted_count = 0
         for name in names:
@@ -554,11 +982,8 @@ class LibraryPage(QWidget):
                 deleted_count += 1
             except Exception as e:
                 logger.error("Failed to delete webtoon %s", name, exc_info=e)
-
         if deleted_count <= 0:
             return False
-
-        logger.info("Deleted %d webtoons", deleted_count)
         self.load_library()
         self._apply_filter()
         return True
@@ -568,14 +993,12 @@ class LibraryPage(QWidget):
         self._sync_update_controls()
 
     def _on_update_finished(self, name: str, status: str):
-        logger.info("Library page received update finished for %s with status=%s", name, status)
         self._active_updates.pop(name, None)
         if status == "Completed":
             self.settings_store.set_last_update_at(name, int(time.time()))
         self._sync_update_controls()
 
     def _on_update_library_changed(self, name: str):
-        logger.info("Library page noticed library_changed from update service")
         if self.isVisible():
             if not self._refresh_updated_webtoon(name):
                 self.load_library()
@@ -601,16 +1024,35 @@ class LibraryPage(QWidget):
             card.set_update_progress(current, total)
 
     def _on_manual_download_started(self, name: str):
-        self._active_manual_downloads[name] = {"current": 0, "total": 0, "thumbnail": ""}
-        self._rebuild_grid(self._current_cols or self._columns_for_width(self.width()))
+        self._active_manual_downloads[name] = {
+            "current": 0,
+            "total": 0,
+            "thumbnail": "",
+            "existing": self._has_webtoon(name),
+        }
+        self._sync_manual_download_cards()
 
     def _on_manual_download_renamed(self, old_name: str, name: str):
-        state = self._active_manual_downloads.pop(old_name, {"current": 0, "total": 0, "thumbnail": ""})
+        state = self._active_manual_downloads.pop(
+            old_name,
+            {"current": 0, "total": 0, "thumbnail": "", "existing": False},
+        )
+        state["existing"] = bool(state.get("existing")) or self._has_webtoon(name)
         self._active_manual_downloads[name] = state
-        self._rebuild_grid(self._current_cols or self._columns_for_width(self.width()))
+        old_card = self._card_for(old_name)
+        if old_card is not None:
+            old_card.clear_download_progress()
+        card = self._card_for(name)
+        if card is not None:
+            card.set_download_progress(state["current"], state["total"])
+            if state.get("thumbnail"):
+                card.set_thumbnail(state["thumbnail"])
 
     def _on_manual_download_progress_changed(self, name: str, current: int, total: int):
-        state = self._active_manual_downloads.setdefault(name, {"current": 0, "total": 0, "thumbnail": ""})
+        state = self._active_manual_downloads.setdefault(
+            name,
+            {"current": 0, "total": 0, "thumbnail": "", "existing": self._has_webtoon(name)},
+        )
         state["current"] = max(0, int(current))
         state["total"] = max(0, int(total))
         card = self._card_for(name)
@@ -618,7 +1060,10 @@ class LibraryPage(QWidget):
             card.set_download_progress(state["current"], state["total"])
 
     def _on_manual_download_thumbnail_resolved(self, name: str, path: str):
-        state = self._active_manual_downloads.setdefault(name, {"current": 0, "total": 0, "thumbnail": ""})
+        state = self._active_manual_downloads.setdefault(
+            name,
+            {"current": 0, "total": 0, "thumbnail": "", "existing": self._has_webtoon(name)},
+        )
         state["thumbnail"] = path or ""
         card = self._card_for(name)
         if card is not None:
@@ -626,35 +1071,42 @@ class LibraryPage(QWidget):
 
     def _on_manual_download_finished(self, name: str, status: str):
         self._active_manual_downloads.pop(name, None)
-        self._rebuild_grid(self._current_cols or self._columns_for_width(self.width()))
+        if status == "Completed":
+            if self.isVisible():
+                self.load_library()
+            else:
+                self._pending_reload = True
+            return
+        card = self._card_for(name)
+        if card is not None:
+            card.clear_download_progress()
 
     def _on_manual_library_changed(self, name: str):
-        logger.info("Library page noticed library_changed from manual downloader")
-        if self.isVisible():
-            self.load_library()
-        else:
+        if not self.isVisible():
             self._pending_reload = True
+            return
+        if not self._has_webtoon(name):
+            return
+        if not self._refresh_updated_webtoon(name, service=self._manual_download_service):
+            self.load_library()
 
     def _cancel_manual_download(self, webtoon_name: str):
         if self._manual_download_service is None:
             return
-        logger.info("Cancelling manual download from library card for %s", webtoon_name)
         self._manual_download_service.cancel_download(webtoon_name)
 
     def _card_for(self, webtoon_name: str) -> WebtoonCard | None:
-        for card in self._cards:
-            if card.webtoon.name == webtoon_name:
-                return card
-        return None
+        return self._cards_by_name.get(webtoon_name)
 
-    def _refresh_updated_webtoon(self, webtoon_name: str) -> bool:
-        if self._update_service is None:
+    def _refresh_updated_webtoon(self, webtoon_name: str, service=None) -> bool:
+        service = service or self._update_service
+        if service is None:
             return False
-
-        updated = self._update_service.build_webtoon_from_folder(load_library_path(), webtoon_name)
+        if self._should_hide_in_progress_manual_download(webtoon_name):
+            return False
+        updated = service.build_webtoon_from_folder(load_library_path(), webtoon_name)
         if updated is None:
             return False
-
         for index, webtoon in enumerate(self._webtoons):
             if webtoon.name != webtoon_name:
                 continue
@@ -665,6 +1117,22 @@ class LibraryPage(QWidget):
             self._sync_update_controls()
             return True
         return False
+
+    def _has_webtoon(self, webtoon_name: str) -> bool:
+        return any(webtoon.name == webtoon_name for webtoon in self._webtoons)
+
+    def _should_hide_in_progress_manual_download(self, webtoon_name: str) -> bool:
+        state = self._active_manual_downloads.get(webtoon_name)
+        if not state:
+            return False
+        return not bool(state.get("existing"))
+
+    def _filter_in_progress_manual_downloads(self, webtoons):
+        return [
+            webtoon
+            for webtoon in webtoons
+            if not self._should_hide_in_progress_manual_download(webtoon.name)
+        ]
 
     def _suppress_card_open(self, seconds: float):
         self._ignore_open_until = max(self._ignore_open_until, time.monotonic() + seconds)
@@ -686,7 +1154,6 @@ class LibraryPage(QWidget):
         self._input_blocker.hide()
 
     def _schedule_filter(self, text):
-        logger.info("Scheduling library filter for query='%s'", text.strip())
         self._pending_search = text
         self._search_timer.start(150)
 
@@ -712,32 +1179,7 @@ class LibraryPage(QWidget):
         self._card_scale = value
         self.size_value_label.setText(f"{value}%")
         save_setting(CARD_SCALE_KEY, value)
-        logger.info("Library card scale changed: %d%%", value)
-        if self._cards:
-            self._relayout_cards(self._columns_for_width(self.width()))
-        else:
-            self._rebuild_grid(self._columns_for_width(self.width()))
+        self._relayout_sections(self._columns_for_width(self.width()))
 
     def _apply_filter(self):
-        text = self._pending_search.strip()
-        scores = {
-            webtoon.name: score
-            for score, webtoon in rank_webtoons(self._display_webtoons(), text)
-        }
-        visible_cards = []
-
-        for card in self._cards:
-            visible = card.webtoon.name in scores if text else True
-            card.setVisible(visible)
-            if visible:
-                visible_cards.append(card)
-
-        if text:
-            visible_cards.sort(
-                key=lambda card: (-scores.get(card.webtoon.name, 0), card.webtoon.name.lower())
-            )
-
-        for i, card in enumerate(visible_cards):
-            row = i // self._current_cols
-            col = i % self._current_cols
-            self.grid.addWidget(card, row, col)
+        self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))

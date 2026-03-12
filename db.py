@@ -65,6 +65,7 @@ def _create_schema(conn: sqlite3.Connection):
             zoom_override     REAL,
             custom_thumbnail  TEXT,
             source_url        TEXT,
+            category          TEXT,
             bookmarked_chapters TEXT,
             last_update_at    INTEGER,
             latest_new_chapter TEXT
@@ -91,6 +92,7 @@ def _migrate_columns(conn: sqlite3.Connection):
         ("zoom_override",    "REAL"),
         ("custom_thumbnail", "TEXT"),
         ("source_url",       "TEXT"),
+        ("category",         "TEXT"),
         ("bookmarked_chapters", "TEXT"),
         ("last_update_at",   "INTEGER"),
         ("latest_new_chapter", "TEXT"),

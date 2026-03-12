@@ -8,11 +8,12 @@ from app_paths import data_path
 logger = get_logger(__name__)
 
 class Webtoon:
-    def __init__(self, name, path, chapters, thumbnail):
+    def __init__(self, name, path, chapters, thumbnail, category=None):
         self.name = name
         self.path = path
         self.chapters = chapters
         self.thumbnail = thumbnail
+        self.category = category
 
 
 def scan_library(library_path: str, settings_store) -> list[Webtoon]:
@@ -60,7 +61,13 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
             )
 
         webtoons.append(
-            Webtoon(webtoon_name, webtoon_path, chapters, thumbnail)
+            Webtoon(
+                webtoon_name,
+                webtoon_path,
+                chapters,
+                thumbnail,
+                settings_store.get_category(webtoon_name),
+            )
         )
 
     logger.info("Library scan completed with %d webtoons", len(webtoons))

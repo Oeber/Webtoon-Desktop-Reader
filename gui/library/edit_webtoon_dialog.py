@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -12,6 +13,7 @@ from PySide6.QtGui import QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QAbstractSpinBox,
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -27,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.library.thumbnail_dialog import ThumbnailDialog
-from gui.settings.settings_page import load_library_path, load_setting
+from gui.settings.settings_page import load_library_path, load_setting, save_setting
 
 
 CARD_W = 140
@@ -35,6 +37,7 @@ CARD_H = 210
 CARD_RADIUS = 12
 ROW_H = 40
 logger = get_logger(__name__)
+CUSTOM_CATEGORIES_KEY = "library_custom_categories"
 
 
 def _safe_name(name: str) -> str:
@@ -60,6 +63,19 @@ def _round_pixmap(src: QPixmap, w: int, h: int, radius: int) -> QPixmap:
     return out
 
 
+def _load_custom_categories() -> list[str]:
+    raw = load_setting(CUSTOM_CATEGORIES_KEY, "[]")
+    try:
+        values = json.loads(raw) if isinstance(raw, str) else list(raw)
+    except Exception:
+        return []
+    return sorted({str(value).strip() for value in values if str(value).strip()}, key=str.lower)
+
+
+def _save_custom_categories(categories: list[str]):
+    save_setting(CUSTOM_CATEGORIES_KEY, json.dumps(sorted({c.strip() for c in categories if c and c.strip()}, key=str.lower)))
+
+
 class EditWebtoonDialog(QDialog):
 
     def __init__(self, webtoon, settings_store, progress_store, parent=None):
@@ -77,7 +93,7 @@ class EditWebtoonDialog(QDialog):
         self.setStyleSheet("""
             QDialog { background: #141414; color: #e8e8e8; }
             QLabel { background: transparent; }
-            QLineEdit, QDoubleSpinBox {
+            QLineEdit, QDoubleSpinBox, QComboBox {
                 background: #1f1f1f;
                 color: #e8e8e8;
                 border: 1px solid #333333;
@@ -85,7 +101,7 @@ class EditWebtoonDialog(QDialog):
                 padding: 8px 10px;
                 font-size: 13px;
             }
-            QLineEdit:focus, QDoubleSpinBox:focus {
+            QLineEdit:focus, QDoubleSpinBox:focus, QComboBox:focus {
                 border-color: #2979ff;
             }
             QCheckBox {
@@ -188,6 +204,12 @@ class EditWebtoonDialog(QDialog):
         self.zoom_input.valueChanged.connect(self._mark_zoom_dirty)
         form.addRow(self._form_label("Zoom"), self._field_row(self.zoom_input))
 
+        self.category_input = QComboBox()
+        self.category_input.setEditable(True)
+        self.category_input.setInsertPolicy(QComboBox.NoInsert)
+        self.category_input.setFixedHeight(ROW_H)
+        form.addRow(self._form_label("Category"), self._field_row(self.category_input))
+
         self.hide_filler_input = QCheckBox("Hide filler chapters for this webtoon")
         form.addRow(self._form_label("Filler"), self._field_row(self.hide_filler_input))
 
@@ -263,6 +285,18 @@ class EditWebtoonDialog(QDialog):
             self.settings_store.get_completed(self.webtoon.name)
         )
         self._update_thumbnail_preview()
+        self._load_categories()
+
+    def _load_categories(self):
+        categories = _load_custom_categories()
+        current = self.settings_store.get_category(self.webtoon.name) or ""
+        self.category_input.blockSignals(True)
+        self.category_input.clear()
+        self.category_input.addItem("")
+        for category in categories:
+            self.category_input.addItem(category)
+        self.category_input.setCurrentText(current)
+        self.category_input.blockSignals(False)
 
     def _form_label(self, text: str) -> QLabel:
         label = QLabel(text)
@@ -349,6 +383,18 @@ class EditWebtoonDialog(QDialog):
                 self.webtoon.name,
                 self.completed_input.isChecked(),
             )
+
+            category = self.category_input.currentText().strip()
+            if category:
+                existing = _load_custom_categories()
+                if category not in existing:
+                    existing.append(category)
+                    _save_custom_categories(existing)
+                self.settings_store.set_category(self.webtoon.name, category)
+                self.webtoon.category = category
+            else:
+                self.settings_store.clear_category(self.webtoon.name)
+                self.webtoon.category = None
 
             if self._zoom_dirty:
                 logger.info("Saving zoom override for %s", self.webtoon.name)

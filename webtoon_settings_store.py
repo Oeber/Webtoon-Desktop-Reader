@@ -219,6 +219,36 @@ class WebtoonSettingsStore:
         )
         conn.commit()
 
+    def get_category(self, webtoon_name: str) -> str | None:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT category FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        if row is None or not row["category"]:
+            return None
+        return str(row["category"])
+
+    def set_category(self, webtoon_name: str, category: str):
+        normalized = str(category).strip()
+        logger.info("Setting category for %s to %s", webtoon_name, normalized)
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            "UPDATE webtoon_settings SET category = ? WHERE webtoon_name = ?",
+            (normalized, webtoon_name)
+        )
+        conn.commit()
+
+    def clear_category(self, webtoon_name: str):
+        logger.info("Clearing category for %s", webtoon_name)
+        conn = get_connection()
+        conn.execute(
+            "UPDATE webtoon_settings SET category = NULL WHERE webtoon_name = ?",
+            (webtoon_name,)
+        )
+        conn.commit()
+
     def get_last_update_at(self, webtoon_name: str) -> int | None:
         conn = get_connection()
         row = conn.execute(
@@ -346,8 +376,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, zoom_override, custom_thumbnail, source_url, bookmarked_chapters, last_update_at, latest_new_chapter)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, zoom_override, custom_thumbnail, source_url, category, bookmarked_chapters, last_update_at, latest_new_chapter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -355,6 +385,7 @@ class WebtoonSettingsStore:
                 row["zoom_override"],
                 custom_path,
                 row["source_url"],
+                row["category"],
                 row["bookmarked_chapters"],
                 row["last_update_at"],
                 row["latest_new_chapter"],
