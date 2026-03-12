@@ -26,6 +26,7 @@ from gui.common.styles import (
     PAGE_BG_STYLE,
     PAGE_TITLE_STYLE,
     STATUS_LABEL_STYLE,
+    VERTICAL_SCROLLBAR_STYLE,
 )
 
 
@@ -67,7 +68,7 @@ LOG_VIEW_STYLE = """
         font-family: Consolas, 'Courier New', monospace;
         font-size: 12px;
     }
-"""
+""" + VERTICAL_SCROLLBAR_STYLE
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
 
