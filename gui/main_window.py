@@ -1,9 +1,9 @@
 from PySide6.QtWidgets import (
     QMainWindow, QStackedWidget,
-    QWidget, QHBoxLayout, QPushButton, QVBoxLayout
+    QWidget, QHBoxLayout, QPushButton, QVBoxLayout, QMessageBox
 )
 
-from PySide6.QtGui import QShortcut, QKeySequence, Qt
+from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, Qt
 from PySide6.QtCore import QSize
 import time
 
@@ -109,6 +109,7 @@ class MainWindow(QMainWindow):
         self.downloader = DownloaderPage(self)
         self.updates = UpdatePage(self)
         self.library.attach_update_service(self.updates.service)
+        self.library.attach_manual_download_service(self.downloader.service)
         self.detail.attach_update_service(self.updates.service)
         self.stack.addWidget(self.downloader)
         self.stack.addWidget(self.updates)
@@ -145,6 +146,13 @@ class MainWindow(QMainWindow):
         self.global_search_shortcut = QShortcut(QKeySequence("Ctrl+K"), self)
         self.global_search_shortcut.setContext(Qt.ApplicationShortcut)
         self.global_search_shortcut.activated.connect(self.global_search.open_dialog)
+        self._shutdown_done = False
+        self._download_sidebar_jobs = {}
+        self._download_sidebar_icon_state = None
+        self._download_sidebar_spin = qta.Spin(self.btn_downloader)
+        self._connect_download_sidebar_signals(self.downloader.service, "manual")
+        self._connect_download_sidebar_signals(self.updates.service, "updates")
+        self._refresh_download_sidebar_indicator()
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)
@@ -164,6 +172,7 @@ class MainWindow(QMainWindow):
 
     def open_library(self):
         self.set_window_context_title()
+        self.library.refresh_dynamic_state()
         self.stack.setCurrentWidget(self.library)
 
     def open_downloader(self):
@@ -174,9 +183,9 @@ class MainWindow(QMainWindow):
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.settings)
 
-    def open_detail(self, webtoon):
+    def open_detail(self, webtoon, force: bool = False):
         """Show the detail / chapter-list page. Also refreshes progress badges."""
-        if time.monotonic() < self._suppress_detail_open_until:
+        if not force and time.monotonic() < self._suppress_detail_open_until:
             logger.info("Suppressed detail open for %s", webtoon.name)
             return
         logger.info("Opening detail page for %s", webtoon.name)
@@ -244,14 +253,169 @@ class MainWindow(QMainWindow):
             self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
             self.btn_library.setText("")
             self.btn_settings.setText("")
-            self.btn_downloader.setText("")
             self.btn_updates.setText("")
             self.sidebar_open = False
         else:
             self.sidebar.setFixedWidth(self.sidebar_expanded_width)
             self.btn_library.setText("  Library")
             self.btn_settings.setText("  Settings")
-            self.btn_downloader.setText("  Download")
             self.btn_updates.setText("  Updates")
             self.sidebar_open = True
+        self._refresh_download_sidebar_indicator()
         logger.info("Sidebar toggled, open=%s", self.sidebar_open)
+
+    def shutdown_background_tasks(self):
+        if self._shutdown_done:
+            return
+
+        self._shutdown_done = True
+        logger.info("Stopping background tasks before app exit")
+
+        try:
+            self.downloader.service.shutdown()
+        except Exception:
+            logger.exception("Failed to shut down downloader service")
+
+        try:
+            self.updates.service.shutdown()
+        except Exception:
+            logger.exception("Failed to shut down update service")
+
+        try:
+            self.viewer.shutdown()
+        except Exception:
+            logger.exception("Failed to shut down viewer")
+
+    def _active_download_summaries(self) -> list[str]:
+        active = []
+        try:
+            active.extend(self.downloader.service.active_download_names())
+        except Exception:
+            logger.exception("Failed to read downloader activity")
+        try:
+            active.extend(self.updates.service.active_download_names())
+        except Exception:
+            logger.exception("Failed to read update activity")
+        return active
+
+    def _confirm_close_with_active_downloads(self) -> bool:
+        active = self._active_download_summaries()
+        if not active:
+            return True
+
+        count = len(active)
+        if count == 1:
+            detail_text = active[0]
+        elif count == 2:
+            detail_text = ", ".join(active)
+        else:
+            detail_text = f"{active[0]}, {active[1]}, and {count - 2} more"
+
+        result = QMessageBox.warning(
+            self,
+            "Downloads in Progress",
+            "Downloads are still running.\n\n"
+            f"Closing now will cancel {count} active download(s): {detail_text}.\n"
+            "The source URL will still be saved for later updates.\n\n"
+            "Close anyway?",
+            QMessageBox.Close | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        return result == QMessageBox.Close
+
+    def _connect_download_sidebar_signals(self, service, prefix: str):
+        service.download_started.connect(
+            lambda name, prefix=prefix: self._on_sidebar_download_started(prefix, name)
+        )
+        service.name_resolved.connect(
+            lambda old_name, new_name, prefix=prefix: self._on_sidebar_download_renamed(prefix, old_name, new_name)
+        )
+        service.progress_changed.connect(
+            lambda name, current, total, prefix=prefix: self._on_sidebar_download_progress(prefix, name, current, total)
+        )
+        service.download_finished.connect(
+            lambda name, status, prefix=prefix: self._on_sidebar_download_finished(prefix, name)
+        )
+
+    def _sidebar_job_key(self, prefix: str, name: str) -> str:
+        return f"{prefix}:{name}"
+
+    def _on_sidebar_download_started(self, prefix: str, name: str):
+        self._download_sidebar_jobs[self._sidebar_job_key(prefix, name)] = {
+            "name": name,
+            "current": 0,
+            "total": 0,
+        }
+        self._refresh_download_sidebar_indicator()
+
+    def _on_sidebar_download_renamed(self, prefix: str, old_name: str, new_name: str):
+        old_key = self._sidebar_job_key(prefix, old_name)
+        state = self._download_sidebar_jobs.pop(old_key, None)
+        if state is None:
+            state = {"name": new_name, "current": 0, "total": 0}
+        state["name"] = new_name
+        self._download_sidebar_jobs[self._sidebar_job_key(prefix, new_name)] = state
+        self._refresh_download_sidebar_indicator()
+
+    def _on_sidebar_download_progress(self, prefix: str, name: str, current: int, total: int):
+        key = self._sidebar_job_key(prefix, name)
+        state = self._download_sidebar_jobs.setdefault(
+            key,
+            {"name": name, "current": 0, "total": 0},
+        )
+        state["current"] = max(0, int(current))
+        state["total"] = max(0, int(total))
+        self._refresh_download_sidebar_indicator()
+
+    def _on_sidebar_download_finished(self, prefix: str, name: str):
+        self._download_sidebar_jobs.pop(self._sidebar_job_key(prefix, name), None)
+        self._refresh_download_sidebar_indicator()
+
+    def _download_sidebar_totals(self) -> tuple[int, int]:
+        current = 0
+        total = 0
+        for state in self._download_sidebar_jobs.values():
+            total += max(0, int(state["total"]))
+            current += min(max(0, int(state["current"])), max(0, int(state["total"])))
+        return current, total
+
+    def _refresh_download_sidebar_indicator(self):
+        active_count = len(self._download_sidebar_jobs)
+        current, total = self._download_sidebar_totals()
+
+        if active_count > 0:
+            remaining = max(0, total - current)
+            icon_state = ("progress", "active")
+            if icon_state != self._download_sidebar_icon_state:
+                self.btn_downloader.setIcon(
+                    qta.icon("fa5s.spinner", color="#f0a500", animation=self._download_sidebar_spin)
+                )
+                self._download_sidebar_icon_state = icon_state
+            if self.sidebar_open:
+                if total > 0:
+                    self.btn_downloader.setText(f"  Download {current} done, {remaining} left")
+                else:
+                    self.btn_downloader.setText(f"  Download ({active_count} active)")
+            else:
+                self.btn_downloader.setText("")
+            if total > 0:
+                self.btn_downloader.setToolTip(f"{active_count} active download(s): {current} done, {remaining} left")
+            else:
+                self.btn_downloader.setToolTip(f"{active_count} active download(s)")
+            return
+
+        if self._download_sidebar_icon_state != ("idle", None):
+            self.btn_downloader.setIcon(qta.icon("fa5s.download", color="#cccccc"))
+            self._download_sidebar_icon_state = ("idle", None)
+        self.btn_downloader.setToolTip("Open downloader")
+        if self.sidebar_open:
+            self.btn_downloader.setText("  Download")
+        else:
+            self.btn_downloader.setText("")
+
+    def closeEvent(self, event):
+        if not self._confirm_close_with_active_downloads():
+            event.ignore()
+            return
+        self.shutdown_background_tasks()
+        super().closeEvent(event)

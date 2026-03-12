@@ -3,6 +3,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 from PySide6.QtCore import Qt, QTimer
+from types import SimpleNamespace
 import os
 import shutil
 import time
@@ -39,6 +40,9 @@ class LibraryPage(QWidget):
         self._current_cols = 0
         self._pending_search = ""
         self._update_service = None
+        self._active_updates = {}
+        self._manual_download_service = None
+        self._active_manual_downloads = {}
         self._ignore_open_until = 0.0
         self._block_input_until = 0.0
         self._pending_reload = False
@@ -188,6 +192,10 @@ class LibraryPage(QWidget):
         for card in self._cards:
             card._refresh_badges()
 
+    def refresh_dynamic_state(self):
+        self._sync_update_controls()
+        self._sync_manual_download_cards()
+
     def _card_width(self) -> int:
         return max(120, int(CARD_WIDTH * (self._card_scale / 100.0)))
 
@@ -205,9 +213,12 @@ class LibraryPage(QWidget):
         self._cards = []
         self._current_cols = columns
 
-        for index, webtoon in enumerate(self._webtoons):
+        display_webtoons = self._display_webtoons()
+
+        for index, webtoon in enumerate(display_webtoons):
             row = index // columns
             col = index % columns
+            is_download_placeholder = bool(getattr(webtoon, "_download_placeholder", False))
 
             card = WebtoonCard(
                 webtoon,
@@ -216,14 +227,22 @@ class LibraryPage(QWidget):
                 on_open=self._open_detail,
                 on_changed=self._reload_after_edit,
                 on_update=self._start_update,
+                on_delete=self._delete_single_webtoon,
+                on_cancel_download=self._cancel_manual_download,
                 on_select=self._on_card_selected,
                 card_width=self._card_width(),
+                download_placeholder=is_download_placeholder,
             )
-            card.set_selected(webtoon.name in self._selected_webtoons)
+            if is_download_placeholder:
+                state = self._active_manual_downloads.get(webtoon.name, {})
+                card.set_download_progress(state.get("current", 0), state.get("total", 0))
+            else:
+                card.set_selected(webtoon.name in self._selected_webtoons)
             self._cards.append(card)
             self.grid.addWidget(card, row, col, Qt.AlignTop | Qt.AlignLeft)
 
         self._sync_update_controls()
+        self._sync_manual_download_cards()
         self._sync_batch_actions()
 
     def resizeEvent(self, event):
@@ -260,6 +279,19 @@ class LibraryPage(QWidget):
         self._update_service.library_changed.connect(self._on_update_library_changed)
         self._sync_update_controls()
 
+    def attach_manual_download_service(self, service):
+        if self._manual_download_service is service:
+            return
+
+        logger.info("Attaching manual download service to library page")
+        self._manual_download_service = service
+        service.download_started.connect(self._on_manual_download_started)
+        service.name_resolved.connect(self._on_manual_download_renamed)
+        service.progress_changed.connect(self._on_manual_download_progress_changed)
+        service.thumbnail_resolved.connect(self._on_manual_download_thumbnail_resolved)
+        service.download_finished.connect(self._on_manual_download_finished)
+        service.library_changed.connect(self._on_manual_library_changed)
+
     def _start_update(self, webtoon_name: str):
         if self._update_service is None:
             return
@@ -289,9 +321,6 @@ class LibraryPage(QWidget):
             self._sync_update_controls()
             return
 
-        self._suppress_card_open(1.0)
-        self._block_library_input(1.0)
-        self.main_window.suppress_detail_open(1.0)
         self._sync_update_controls()
 
     def _cooldown_remaining(self, webtoon_name: str) -> int:
@@ -303,6 +332,11 @@ class LibraryPage(QWidget):
 
     def _sync_update_controls(self):
         for card in self._cards:
+            if getattr(card, "_download_placeholder", False):
+                continue
+            if card.webtoon.name in self._active_manual_downloads:
+                continue
+            active_update = self._active_updates.get(card.webtoon.name)
             has_source = bool(self.settings_store.get_source_url(card.webtoon.name))
             is_completed = self.settings_store.get_completed(card.webtoon.name)
             update_allowed = has_source and not is_completed
@@ -314,9 +348,14 @@ class LibraryPage(QWidget):
             if not update_allowed:
                 continue
 
-            if self._update_service is not None and self._update_service.has_active_download(card.webtoon.name):
+            if active_update is not None or (self._update_service is not None and self._update_service.has_active_download(card.webtoon.name)):
                 card.set_update_enabled(False, "Update in progress")
                 card.set_update_status("Downloading")
+                if active_update is not None:
+                    current = active_update.get("current", 0)
+                    total = active_update.get("total", 0)
+                    if total > 0:
+                        card.set_update_progress(current, total)
                 continue
 
             remaining = self._cooldown_remaining(card.webtoon.name)
@@ -329,6 +368,30 @@ class LibraryPage(QWidget):
             else:
                 card.set_update_enabled(True, "Update this webtoon")
             card.set_update_status("Ready")
+
+    def _sync_manual_download_cards(self):
+        for card in self._cards:
+            state = self._active_manual_downloads.get(card.webtoon.name)
+            if state is None:
+                card.clear_download_progress()
+                continue
+            card.set_download_progress(state.get("current", 0), state.get("total", 0))
+
+    def _display_webtoons(self):
+        names_in_library = {webtoon.name for webtoon in self._webtoons}
+        placeholders = []
+        for name, state in self._active_manual_downloads.items():
+            if name in names_in_library:
+                continue
+            placeholders.append(SimpleNamespace(
+                name=name,
+                path="",
+                thumbnail=state.get("thumbnail", "") or "",
+                chapters=[],
+                _download_placeholder=True,
+            ))
+        placeholders.sort(key=lambda item: item.name.lower())
+        return placeholders + list(self._webtoons)
 
     def _on_card_selected(self, webtoon_name: str, selected: bool):
         if selected:
@@ -406,28 +469,41 @@ class LibraryPage(QWidget):
         selected = sorted(self._selected_webtoons)
         if not selected:
             return
+        if self._delete_webtoons(selected):
+            self._clear_selection()
 
-        if len(selected) == 1:
-            message = f"Delete '{selected[0]}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings."
+    def _delete_single_webtoon(self, webtoon_name: str):
+        if self._delete_webtoons([webtoon_name]):
+            self._selected_webtoons.discard(webtoon_name)
+            self._sync_batch_actions()
+
+    def _delete_webtoons(self, names: list[str]) -> bool:
+        if not names:
+            return False
+
+        if len(names) == 1:
+            message = f"Delete '{names[0]}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings."
+            title = "Delete webtoon"
         else:
             message = (
-                f"Delete {len(selected)} webtoons from the library?\n\n"
+                f"Delete {len(names)} webtoons from the library?\n\n"
                 "This removes their folders, progress, thumbnail overrides, and saved settings."
             )
+            title = "Delete selected webtoons"
 
         answer = QMessageBox.question(
             self,
-            "Delete selected webtoons",
+            title,
             message,
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
         if answer != QMessageBox.Yes:
-            return
+            return False
 
         library_path = load_library_path()
         deleted_count = 0
-        for name in selected:
+        for name in names:
             try:
                 webtoon_path = os.path.join(library_path, name)
                 if os.path.isdir(webtoon_path):
@@ -436,30 +512,29 @@ class LibraryPage(QWidget):
                 self.settings_store.delete_webtoon(name)
                 deleted_count += 1
             except Exception as e:
-                logger.error("Failed to delete selected webtoon %s", name, exc_info=e)
+                logger.error("Failed to delete webtoon %s", name, exc_info=e)
 
-        logger.info("Deleted %d selected webtoons", deleted_count)
+        if deleted_count <= 0:
+            return False
+
+        logger.info("Deleted %d webtoons", deleted_count)
         self.load_library()
         self._apply_filter()
-        self._clear_selection()
+        return True
 
     def _on_update_started(self, name: str):
+        self._active_updates[name] = {"current": 0, "total": 0}
         self._sync_update_controls()
 
     def _on_update_finished(self, name: str, status: str):
         logger.info("Library page received update finished for %s with status=%s", name, status)
+        self._active_updates.pop(name, None)
         if status == "Completed":
             self.settings_store.set_last_update_at(name, int(time.time()))
-        self._suppress_card_open(2.0)
-        self._block_library_input(2.0)
-        self.main_window.suppress_detail_open(2.0)
         self._sync_update_controls()
 
     def _on_update_library_changed(self, name: str):
         logger.info("Library page noticed library_changed from update service")
-        self._suppress_card_open(2.0)
-        self._block_library_input(2.0)
-        self.main_window.suppress_detail_open(2.0)
         if self.isVisible():
             if not self._refresh_updated_webtoon(name):
                 self.load_library()
@@ -470,14 +545,60 @@ class LibraryPage(QWidget):
         card = self._card_for(name)
         if card is None:
             return
+        if status != "Downloading":
+            self._active_updates.pop(name, None)
         if status == "Completed":
             card.set_update_progress(1, 1)
         card.set_update_status(status)
 
     def _on_update_progress_changed(self, name: str, current: int, total: int):
+        state = self._active_updates.setdefault(name, {"current": 0, "total": 0})
+        state["current"] = max(0, int(current))
+        state["total"] = max(0, int(total))
         card = self._card_for(name)
         if card is not None:
             card.set_update_progress(current, total)
+
+    def _on_manual_download_started(self, name: str):
+        self._active_manual_downloads[name] = {"current": 0, "total": 0, "thumbnail": ""}
+        self._rebuild_grid(self._current_cols or self._columns_for_width(self.width()))
+
+    def _on_manual_download_renamed(self, old_name: str, name: str):
+        state = self._active_manual_downloads.pop(old_name, {"current": 0, "total": 0, "thumbnail": ""})
+        self._active_manual_downloads[name] = state
+        self._rebuild_grid(self._current_cols or self._columns_for_width(self.width()))
+
+    def _on_manual_download_progress_changed(self, name: str, current: int, total: int):
+        state = self._active_manual_downloads.setdefault(name, {"current": 0, "total": 0, "thumbnail": ""})
+        state["current"] = max(0, int(current))
+        state["total"] = max(0, int(total))
+        card = self._card_for(name)
+        if card is not None:
+            card.set_download_progress(state["current"], state["total"])
+
+    def _on_manual_download_thumbnail_resolved(self, name: str, path: str):
+        state = self._active_manual_downloads.setdefault(name, {"current": 0, "total": 0, "thumbnail": ""})
+        state["thumbnail"] = path or ""
+        card = self._card_for(name)
+        if card is not None:
+            card.set_thumbnail(path)
+
+    def _on_manual_download_finished(self, name: str, status: str):
+        self._active_manual_downloads.pop(name, None)
+        self._rebuild_grid(self._current_cols or self._columns_for_width(self.width()))
+
+    def _on_manual_library_changed(self, name: str):
+        logger.info("Library page noticed library_changed from manual downloader")
+        if self.isVisible():
+            self.load_library()
+        else:
+            self._pending_reload = True
+
+    def _cancel_manual_download(self, webtoon_name: str):
+        if self._manual_download_service is None:
+            return
+        logger.info("Cancelling manual download from library card for %s", webtoon_name)
+        self._manual_download_service.cancel_download(webtoon_name)
 
     def _card_for(self, webtoon_name: str) -> WebtoonCard | None:
         for card in self._cards:
@@ -544,7 +665,7 @@ class LibraryPage(QWidget):
         text = self._pending_search.strip()
         scores = {
             webtoon.name: score
-            for score, webtoon in rank_webtoons(self._webtoons, text)
+            for score, webtoon in rank_webtoons(self._display_webtoons(), text)
         }
         visible_cards = []
 

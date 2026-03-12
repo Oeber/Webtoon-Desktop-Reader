@@ -26,9 +26,17 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.download_btn.setFixedWidth(100)
         self.download_btn.clicked.connect(self._start_download)
 
+        self.cancel_btn = QPushButton("Cancel Active")
+        self.cancel_btn.setStyleSheet(BTN_STYLE)
+        self.cancel_btn.setFixedWidth(110)
+        self.cancel_btn.clicked.connect(self._cancel_active_downloads)
+        self.cancel_btn.setEnabled(False)
+
         row.addWidget(self.url_input)
         row.addWidget(self.download_btn)
+        row.addWidget(self.cancel_btn)
         self.layout().insertLayout(1, row)
+        self._sync_controls()
 
     def _start_download(self):
         url = self.url_input.text()
@@ -66,9 +74,11 @@ class DownloaderPage(DownloadHistoryPageBase):
 
     def _on_download_started(self, name: str):
         logger.info("Manual download started for %s", name)
+        self._sync_controls()
 
     def _on_download_finished(self, name: str, status: str):
         logger.info("Manual download finished for %s with status=%s", name, status)
+        self._sync_controls()
 
     def _open_downloaded_webtoon_detail(self, webtoon_name: str):
         logger.info("Opening detail for manually downloaded webtoon %s", webtoon_name)
@@ -79,3 +89,11 @@ class DownloaderPage(DownloadHistoryPageBase):
     def _cancel_entry_download(self, entry: CancellableDownloadEntry):
         logger.info("Cancelling manual download for %s", entry.name)
         self.service.cancel_download(entry.name)
+
+    def _cancel_active_downloads(self):
+        logger.info("Cancelling active manual downloads")
+        self.service.cancel_download()
+        self._sync_controls()
+
+    def _sync_controls(self):
+        self.cancel_btn.setEnabled(self.service.is_busy())

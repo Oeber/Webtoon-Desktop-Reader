@@ -98,6 +98,10 @@ class ImageLoader(QObject):
     def reset(self):
         self._cancelled = False
 
+    def shutdown(self):
+        self.cancel()
+        self.executor.shutdown(wait=False, cancel_futures=True)
+
     def load(self, index: int, path: str, width: int):
         if index in self._queued:
             return
@@ -901,6 +905,12 @@ class ViewerPage(QWidget):
         self._panel_build_generation += 1
         self._panel_build_inflight = False
 
+    def shutdown(self):
+        logger.info("Shutting down viewer background workers")
+        self._batch_timer.stop()
+        self._panel_warm_timer.stop()
+        self.loader.shutdown()
+
     def _load_chapter_images(self, chapter):
         self.clear_images()
 
@@ -1130,7 +1140,7 @@ class ViewerPage(QWidget):
         logger.info("Leaving viewer for detail page: %s", self.webtoon.name if self.webtoon else "<none>")
         self._save_progress()
         self.main_window.library.refresh_progress()
-        self.main_window.open_detail(self.webtoon)
+        self.main_window.open_detail(self.webtoon, force=True)
 
     def resizeEvent(self, event):
         self._resize_timer.start()

@@ -50,6 +50,7 @@ class GlobalSearchDialog(QDialog):
         layout.addWidget(self.results)
 
         self.input.textChanged.connect(self._update_results)
+        self.results.itemClicked.connect(self._open_selected)
         self.results.itemActivated.connect(self._open_selected)
 
     def open_dialog(self):

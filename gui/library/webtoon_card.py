@@ -49,8 +49,11 @@ class WebtoonCard(QWidget):
         on_open,
         on_changed,
         on_update=None,
+        on_delete=None,
+        on_cancel_download=None,
         on_select=None,
         card_width: int = CARD_WIDTH,
+        download_placeholder: bool = False,
     ):
         super().__init__()
 
@@ -60,7 +63,11 @@ class WebtoonCard(QWidget):
         self.on_open = on_open
         self.on_changed = on_changed
         self.on_update = on_update
+        self.on_delete = on_delete
+        self.on_cancel_download = on_cancel_download
         self.on_select = on_select
+        self._download_placeholder = download_placeholder
+        self._manual_download_active = False
 
         self._latest_connected = False
         self._lastread_connected = False
@@ -70,12 +77,13 @@ class WebtoonCard(QWidget):
         self._update_button_label = ""
         self._update_menu = None
         self._update_action = None
+        self._current_update_status = None
         self._selected = False
         self.card_width = max(120, card_width)
         self.card_height = int(self.card_width * (CARD_HEIGHT / CARD_WIDTH))
 
         self.setFixedWidth(self.card_width + 16)
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.ArrowCursor if self._download_placeholder else Qt.PointingHandCursor)
         self.setStyleSheet("background: transparent;")
 
         root = QVBoxLayout(self)
@@ -109,6 +117,29 @@ class WebtoonCard(QWidget):
         """)
         self.dots_btn.hide()
         self.dots_btn.clicked.connect(self._show_context_menu_at_btn)
+
+        self.cancel_download_btn = QPushButton()
+        self.cancel_download_btn.setParent(self.image_container)
+        self.cancel_download_btn.setFixedSize(28, 28)
+        self.cancel_download_btn.move(6, 6)
+        self.cancel_download_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_download_btn.setStyleSheet("""
+            QPushButton {
+                background: rgba(104,26,26,0.92);
+                color: #fff;
+                border: none;
+                border-radius: 14px;
+                font-size: 10px;
+                font-weight: 700;
+                padding: 0;
+            }
+            QPushButton:hover { background: rgba(136,34,34,0.98); }
+        """)
+        self.cancel_download_btn.setIcon(qta.icon("fa5s.times", color="#ffffff"))
+        self.cancel_download_btn.setIconSize(QSize(11, 11))
+        self.cancel_download_btn.setToolTip("Cancel download")
+        self.cancel_download_btn.clicked.connect(self._cancel_manual_download)
+        self.cancel_download_btn.hide()
 
         self.update_btn = QPushButton()
         self.update_btn.setParent(self.image_container)
@@ -181,6 +212,18 @@ class WebtoonCard(QWidget):
         font.setWeight(QFont.Medium)
         self.title_label.setFont(font)
 
+        self.info_label = QLabel("")
+        self.info_label.setStyleSheet("""
+            QLabel {
+                color: #9a9a9a;
+                font-size: 10px;
+                background: transparent;
+                border: none;
+                padding: 0 2px;
+            }
+        """)
+        self.info_label.hide()
+
         self.latest_btn = self._make_badge_btn(accent=False)
         self.lastread_btn = self._make_badge_btn(accent=True)
 
@@ -208,11 +251,14 @@ class WebtoonCard(QWidget):
 
         root.addWidget(self.image_container)
         root.addWidget(self.title_label)
+        root.addWidget(self.info_label)
         root.addLayout(latest_row)
         root.addWidget(self.lastread_btn)
 
         self._load_thumbnail(webtoon.thumbnail)
         self._refresh_badges()
+        if self._download_placeholder:
+            self._apply_download_placeholder_mode()
 
     def _make_badge_btn(self, accent=False) -> QPushButton:
         btn = QPushButton()
@@ -240,6 +286,12 @@ class WebtoonCard(QWidget):
         return btn
 
     def _refresh_badges(self):
+        if self._download_placeholder:
+            self.latest_btn.hide()
+            self.lastread_btn.hide()
+            self.new_chip.hide()
+            return
+
         chapters = self.webtoon.chapters
         progress = self.progress_store.get(self.webtoon.name)
         latest_new_chapter = self.settings_store.get_latest_new_chapter(self.webtoon.name)
@@ -319,6 +371,9 @@ class WebtoonCard(QWidget):
 
         self.image_label.setPixmap(rounded)
 
+    def set_thumbnail(self, path: str):
+        self._load_thumbnail(path)
+
     def refresh_webtoon(self, webtoon):
         self.webtoon = webtoon
         self.title_label.setText(webtoon.name)
@@ -327,6 +382,8 @@ class WebtoonCard(QWidget):
         self._refresh_badges()
 
     def set_selected(self, selected: bool):
+        if self._download_placeholder:
+            return
         self._selected = bool(selected)
         self.select_btn.blockSignals(True)
         self.select_btn.setChecked(self._selected)
@@ -363,7 +420,11 @@ class WebtoonCard(QWidget):
         completed_action.triggered.connect(self._toggle_completed)
         menu.addAction(completed_action)
 
-        if self._update_available:
+        if self._manual_download_active:
+            cancel_action = QAction("Cancel Download", self)
+            cancel_action.triggered.connect(self._cancel_manual_download)
+            menu.addAction(cancel_action)
+        elif self._update_available:
             update_action = QAction(self._update_menu_label, self)
             update_action.triggered.connect(self._trigger_update)
             update_action.setEnabled(self.update_btn.isEnabled())
@@ -371,6 +432,10 @@ class WebtoonCard(QWidget):
             self._update_action = update_action
         else:
             self._update_action = None
+
+        delete_action = QAction("Delete", self)
+        delete_action.triggered.connect(self._delete_webtoon)
+        menu.addAction(delete_action)
 
         self._update_menu = menu
         menu.aboutToHide.connect(self._clear_menu_refs)
@@ -401,17 +466,35 @@ class WebtoonCard(QWidget):
         if callable(self.on_changed):
             self.on_changed()
 
+    def _delete_webtoon(self):
+        logger.info("Card delete requested for %s", self.webtoon.name)
+        if callable(self.on_delete):
+            self.on_delete(self.webtoon.name)
+
     def enterEvent(self, event):
+        if self._download_placeholder:
+            if self._manual_download_active:
+                self.cancel_download_btn.show()
+            super().enterEvent(event)
+            return
         self._apply_border_style(hovered=True)
         self.dots_btn.show()
-        if self._update_available:
+        if self._manual_download_active:
+            self.cancel_download_btn.show()
+            self.update_btn.hide()
+        elif self._update_available:
             self.update_btn.show()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
+        if self._download_placeholder:
+            self.cancel_download_btn.hide()
+            super().leaveEvent(event)
+            return
         self._apply_border_style(hovered=False)
         self.dots_btn.hide()
-        if self._update_available and not self.progress_overlay.isVisible():
+        self.cancel_download_btn.hide()
+        if self._update_available and not self.progress_overlay.isVisible() and not self._manual_download_active:
             self.update_btn.hide()
         super().leaveEvent(event)
 
@@ -429,6 +512,9 @@ class WebtoonCard(QWidget):
         """)
 
     def mousePressEvent(self, event):
+        if self._download_placeholder:
+            event.accept()
+            return
         if event.button() == Qt.LeftButton:
             if time.monotonic() < self._ignore_open_until:
                 event.accept()
@@ -436,14 +522,17 @@ class WebtoonCard(QWidget):
 
             target = self.childAt(event.position().toPoint())
             while target is not None and target is not self:
-                if target in (self.dots_btn, self.latest_btn, self.lastread_btn, self.update_btn, self.select_btn):
+                if target in (
+                    self.dots_btn,
+                    self.latest_btn,
+                    self.lastread_btn,
+                    self.update_btn,
+                    self.select_btn,
+                    self.cancel_download_btn,
+                ):
                     event.accept()
                     return
                 target = target.parentWidget()
-
-            if self.progress_overlay.isVisible():
-                event.accept()
-                return
 
             self.on_open(self.webtoon)
             event.accept()
@@ -451,12 +540,16 @@ class WebtoonCard(QWidget):
         super().mousePressEvent(event)
 
     def set_update_available(self, available: bool):
+        if self._download_placeholder:
+            return
         self._update_available = available
-        self.update_btn.setVisible(available and self.underMouse())
+        self.update_btn.setVisible(available and self.underMouse() and not self._manual_download_active)
         if not available:
             self.progress_overlay.hide()
 
     def set_update_enabled(self, enabled: bool, tooltip: str = "", cooldown_text: str | None = None):
+        if self._download_placeholder:
+            return
         self.update_btn.setEnabled(enabled)
         self.update_btn.setToolTip(tooltip)
         if cooldown_text:
@@ -478,18 +571,20 @@ class WebtoonCard(QWidget):
         self.progress_spinner.set_progress(percent)
 
     def set_update_status(self, status: str):
+        if self._download_placeholder:
+            return
+        if status == self._current_update_status:
+            return
+        self._current_update_status = status
         if status == "Downloading":
-            self._ignore_card_open(0.75)
             self.progress_overlay.show()
             self.progress_spinner.set_spinning()
             self.update_btn.hide()
             return
 
-        if status == "Completed":
-            self._ignore_card_open(1.5)
-
-        self.progress_overlay.hide()
-        if self._update_available and self.underMouse():
+        if not self._manual_download_active:
+            self.progress_overlay.hide()
+        if self._update_available and self.underMouse() and not self._manual_download_active:
             self.update_btn.show()
 
     def _center_progress_overlay(self):
@@ -498,7 +593,6 @@ class WebtoonCard(QWidget):
         self.progress_overlay.move(x, y)
 
     def _trigger_update(self):
-        self._ignore_card_open(1.0)
         logger.info("Card-triggered update requested for %s", self.webtoon.name)
         if callable(self.on_update):
             self.on_update(self.webtoon.name)
@@ -516,11 +610,52 @@ class WebtoonCard(QWidget):
             self.update_btn.setIconSize(QSize(12, 12))
 
     def _toggle_selected_from_button(self):
+        if self._download_placeholder:
+            return
         self._selected = self.select_btn.isChecked()
         self._refresh_select_button()
         self._apply_border_style(hovered=self.underMouse())
         if callable(self.on_select):
             self.on_select(self.webtoon.name, self._selected)
+
+    def set_download_progress(self, current: int, total: int):
+        self._manual_download_active = True
+        self.cancel_download_btn.show()
+        self.update_btn.hide()
+        if total > 0:
+            self.info_label.setText(f"Downloading {current} / {total}")
+            self.progress_overlay.show()
+            self.progress_spinner.set_progress(current / total * 100)
+        else:
+            self.info_label.setText("Downloading...")
+            self.progress_overlay.show()
+            self.progress_spinner.set_spinning()
+        self.info_label.show()
+
+    def clear_download_progress(self):
+        self._manual_download_active = False
+        self.cancel_download_btn.hide()
+        if self._download_placeholder:
+            return
+        self.progress_overlay.hide()
+        self.info_label.hide()
+        if self._update_available and self.underMouse():
+            self.update_btn.show()
+
+    def _apply_download_placeholder_mode(self):
+        self.dots_btn.hide()
+        self.update_btn.hide()
+        self.select_btn.hide()
+        self.latest_btn.hide()
+        self.lastread_btn.hide()
+        self.new_chip.hide()
+        self.info_label.show()
+        self._apply_border_style(hovered=False)
+
+    def _cancel_manual_download(self):
+        logger.info("Card cancel-download requested for %s", self.webtoon.name)
+        if callable(self.on_cancel_download):
+            self.on_cancel_download(self.webtoon.name)
 
     def _apply_select_button_style(self):
         self.select_btn.setStyleSheet("""

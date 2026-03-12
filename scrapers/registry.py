@@ -46,7 +46,7 @@ def _iter_external_scraper_classes():
         if path.name.startswith("_"):
             continue
 
-        module_name = f"external_scrapers.{path.stem}"
+        module_name = f"scrapers.sites.{path.stem}"
         try:
             module = _load_external_module(module_name, path)
         except Exception as e:

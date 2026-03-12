@@ -35,11 +35,14 @@ class DownloadCancelled(Exception):
 
 class DownloadJob:
 
-    def __init__(self, initial_name: str):
+    def __init__(self, initial_name: str, source_url: str):
         self.initial_name = initial_name
         self.active_name = initial_name
+        self.source_url = source_url
         self.cancel_requested = False
         self.process = None
+        self.thread = None
+        self.executor = None
         self.temp_dir = str(data_path("_download_temp", f"job-{uuid.uuid4().hex}"))
 
 
@@ -95,7 +98,7 @@ class DownloadService(QObject):
             return f"'{initial_name}' is already downloading."
 
         logger.info("Starting download url=%s preferred_name=%s output=%s", url, preferred_name, output_path)
-        job = DownloadJob(initial_name)
+        job = DownloadJob(initial_name, self._normalized_source_url(url))
         with self._jobs_lock:
             self._jobs[job.initial_name] = job
         self.download_started.emit(job.initial_name)
@@ -105,6 +108,7 @@ class DownloadService(QObject):
             args=(job, url, output_path, preferred_name),
             daemon=True,
         )
+        job.thread = thread
         thread.start()
         return None
 
@@ -120,6 +124,37 @@ class DownloadService(QObject):
             job.cancel_requested = True
             if job.process and job.process.poll() is None:
                 job.process.terminate()
+            if job.executor is not None:
+                try:
+                    job.executor.shutdown(wait=False, cancel_futures=True)
+                except Exception as e:
+                    logger.warning("Failed to stop executor for %s", job.active_name, exc_info=e)
+
+    def shutdown(self, wait_timeout: float = 5.0):
+        logger.info("Shutting down DownloadService")
+        self._save_active_source_urls()
+        self.cancel_download()
+
+        with self._jobs_lock:
+            threads = [job.thread for job in self._jobs.values() if job.thread is not None]
+
+        deadline = time.monotonic() + max(0.0, wait_timeout)
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                thread.join(timeout=remaining)
+            except Exception as e:
+                logger.warning("Failed while joining download thread", exc_info=e)
+
+    def active_download_names(self) -> list[str]:
+        with self._jobs_lock:
+            return [job.active_name or job.initial_name for job in self._jobs.values()]
+
+    def active_download_count(self) -> int:
+        with self._jobs_lock:
+            return len(self._jobs)
 
     def _run_download(self, job: DownloadJob, url: str, output_path: str, preferred_name: str | None):
         name = sanitize_webtoon_name(preferred_name) or job.initial_name or "download"
@@ -150,7 +185,7 @@ class DownloadService(QObject):
                 logger.info("Using gallery-dl fallback for %s", url)
                 saved_name = self._gallery_dl_download(job, url, output_path, name)
 
-            self._save_source_url(saved_name, self._normalized_source_url(url))
+            self._save_source_url(saved_name, job.source_url)
             status = "Completed"
             self.library_changed.emit(saved_name)
         except DownloadCancelled:
@@ -169,14 +204,21 @@ class DownloadService(QObject):
             self.status_changed.emit(job.active_name or name, status)
             self.download_finished.emit(job.active_name or name, status)
 
-    def _get_existing_chapters(self, webtoon_dir: str) -> set[int]:
+    def _format_chapter_number(self, chapter_number: float | None) -> str | None:
+        if chapter_number is None:
+            return None
+        if float(chapter_number).is_integer():
+            return str(int(chapter_number))
+        return format(chapter_number, "g")
+
+    def _get_existing_chapters(self, webtoon_dir: str) -> set[str]:
         existing = set()
         if not os.path.isdir(webtoon_dir):
             return existing
         for folder in os.listdir(webtoon_dir):
-            match = re.match(r"^Chapter (\d+)$", folder)
+            match = re.match(r"^Chapter (\d+(?:\.\d+)?)$", folder)
             if match:
-                existing.add(int(match.group(1)))
+                existing.add(match.group(1))
         return existing
 
     def _resolve_name(self, url: str) -> str:
@@ -251,6 +293,16 @@ class DownloadService(QObject):
         except Exception as e:
             logger.warning("Failed to save source URL for '%s'", webtoon_name, exc_info=e)
 
+    def _save_active_source_urls(self):
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+
+        for job in jobs:
+            name = sanitize_webtoon_name(job.active_name) or sanitize_webtoon_name(job.initial_name)
+            if not name or not job.source_url:
+                continue
+            self._save_source_url(name, job.source_url)
+
     def _normalized_source_url(self, url: str) -> str:
         normalized_url = (url or "").strip()
         if not normalized_url:
@@ -311,7 +363,7 @@ class DownloadService(QObject):
         if url_type == "series":
             completed_chapters = sum(
                 1 for chapter in chapter_list
-                if chapter.number is not None and int(chapter.number) in existing
+                if self._format_chapter_number(chapter.number) in existing
             )
 
         self.progress_changed.emit(series_name, completed_chapters, total_chapters)
@@ -320,12 +372,23 @@ class DownloadService(QObject):
             if job.cancel_requested:
                 raise DownloadCancelled()
 
-            chapter_num = int(chapter.number) if chapter.number is not None else None
+            chapter_num = self._format_chapter_number(chapter.number)
             if chapter_num is not None and chapter_num in existing and url_type == "series":
                 logger.info("Skipping existing chapter %s for %s", chapter_num, series_name)
                 continue
 
-            pages = scraper.get_chapter_pages(chapter.url)
+            try:
+                pages = scraper.get_chapter_pages(chapter.url)
+            except ScraperError as e:
+                if url_type == "series":
+                    logger.warning(
+                        "Skipping chapter %s for %s because page extraction failed",
+                        chapter.url,
+                        series_name,
+                        exc_info=e,
+                    )
+                    continue
+                raise
             if not pages:
                 continue
 
@@ -341,7 +404,9 @@ class DownloadService(QObject):
             failure_count = 0
             max_workers = min(8, max(1, len(pages)))
 
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            executor = ThreadPoolExecutor(max_workers=max_workers)
+            job.executor = executor
+            try:
                 future_to_page = {}
                 for page in pages:
                     raw_url = page.image_url.split("?", 1)[0]
@@ -363,7 +428,6 @@ class DownloadService(QObject):
                         future.result()
                         success_count += 1
                     except DownloadCancelled:
-                        executor.shutdown(wait=False, cancel_futures=True)
                         shutil.rmtree(chapter_dir, ignore_errors=True)
                         raise
                     except Exception as e:
@@ -373,6 +437,12 @@ class DownloadService(QObject):
                             future_to_page[future],
                             exc_info=e,
                         )
+            finally:
+                try:
+                    executor.shutdown(wait=not job.cancel_requested, cancel_futures=job.cancel_requested)
+                finally:
+                    if job.executor is executor:
+                        job.executor = None
 
             if success_count == 0:
                 shutil.rmtree(chapter_dir, ignore_errors=True)
@@ -383,6 +453,7 @@ class DownloadService(QObject):
                 latest_new_chapter_name = chapter_dir_name
             completed_chapters += 1
             self.progress_changed.emit(series_name, completed_chapters, total_chapters)
+            self.library_changed.emit(series_name)
 
             if failure_count > 0:
                 logger.warning(

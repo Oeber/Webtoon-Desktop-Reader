@@ -36,6 +36,7 @@ else:
 window = MainWindow()
 if app_icon_path.exists():
     window.setWindowIcon(icon)
+app.aboutToQuit.connect(window.shutdown_background_tasks)
 window.show()
 logger.info("Main window shown")
 
