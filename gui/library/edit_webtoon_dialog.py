@@ -38,7 +38,7 @@ from PySide6.QtWidgets import (
 )
 
 from gui.library.thumbnail_dialog import ThumbnailDialog
-from gui.settings.settings_page import load_library_path, load_setting
+from gui.settings.settings_page import LIBRARY_USE_CATEGORIES_KEY, load_library_path, load_setting
 from library_categories import load_custom_categories, save_custom_categories
 
 
@@ -163,7 +163,9 @@ class EditWebtoonDialog(QDialog):
         self.category_input.setEditable(True)
         self.category_input.setInsertPolicy(QComboBox.NoInsert)
         self.category_input.setFixedHeight(ROW_H)
-        form.addRow(self._form_label("Category"), self._field_row(self.category_input))
+        self.category_label = self._form_label("Category")
+        self.category_row = self._field_row(self.category_input)
+        form.addRow(self.category_label, self.category_row)
 
         self.hide_filler_input = QCheckBox("Hide filler chapters for this webtoon")
         form.addRow(self._form_label("Filler"), self._field_row(self.hide_filler_input))
@@ -223,6 +225,9 @@ class EditWebtoonDialog(QDialog):
         self.completed_input.setChecked(
             self.settings_store.get_completed(self.webtoon.name)
         )
+        categories_enabled = bool(load_setting(LIBRARY_USE_CATEGORIES_KEY, True))
+        self.category_label.setVisible(categories_enabled)
+        self.category_row.setVisible(categories_enabled)
         self._update_thumbnail_preview()
         self._load_categories()
 
@@ -323,17 +328,18 @@ class EditWebtoonDialog(QDialog):
                 self.completed_input.isChecked(),
             )
 
-            category = self.category_input.currentText().strip()
-            if category:
-                existing = load_custom_categories()
-                if category not in existing:
-                    existing.append(category)
-                    save_custom_categories(existing)
-                self.settings_store.set_category(self.webtoon.name, category)
-                self.webtoon.category = category
-            else:
-                self.settings_store.clear_category(self.webtoon.name)
-                self.webtoon.category = None
+            if load_setting(LIBRARY_USE_CATEGORIES_KEY, True):
+                category = self.category_input.currentText().strip()
+                if category:
+                    existing = load_custom_categories()
+                    if category not in existing:
+                        existing.append(category)
+                        save_custom_categories(existing)
+                    self.settings_store.set_category(self.webtoon.name, category)
+                    self.webtoon.category = category
+                else:
+                    self.settings_store.clear_category(self.webtoon.name)
+                    self.webtoon.category = None
 
             if self._zoom_dirty:
                 logger.info("Saving zoom override for %s", self.webtoon.name)

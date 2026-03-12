@@ -43,6 +43,9 @@ from gui.common.styles import (
 logger = get_logger(__name__)
 
 DEFAULT_PATH = str(default_library_path())
+LIBRARY_USE_CATEGORIES_KEY = "library_use_categories"
+LIBRARY_SHOW_NEW_SECTION_KEY = "library_show_new_section"
+LIBRARY_SHOW_DOWNLOADS_SECTION_KEY = "library_show_downloads_section"
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
 _app_settings = get_app_settings_store()
@@ -140,6 +143,25 @@ class SettingsPage(QWidget):
         row.addWidget(self.path_input)
         row.addWidget(browse_btn)
         library_layout.addLayout(row)
+
+        self.use_categories_checkbox = QCheckBox("Enable library categories")
+        self.use_categories_checkbox.setChecked(load_setting(LIBRARY_USE_CATEGORIES_KEY, True))
+        self.use_categories_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.use_categories_checkbox.toggled.connect(self._on_use_categories_changed)
+        library_layout.addWidget(self.use_categories_checkbox)
+
+        self.show_new_section_checkbox = QCheckBox("Show New section")
+        self.show_new_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True))
+        self.show_new_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.show_new_section_checkbox.toggled.connect(self._on_show_new_section_changed)
+        library_layout.addWidget(self.show_new_section_checkbox)
+
+        self.show_downloads_section_checkbox = QCheckBox("Show Active Downloads section")
+        self.show_downloads_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True))
+        self.show_downloads_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.show_downloads_section_checkbox.toggled.connect(self._on_show_downloads_section_changed)
+        library_layout.addWidget(self.show_downloads_section_checkbox)
+
         layout.addWidget(library_card)
 
         reader_card, reader_layout = self._build_card()
@@ -281,10 +303,25 @@ class SettingsPage(QWidget):
         self.path_input.setText(DEFAULT_PATH)
         save_setting("viewer_auto_skip", True)
         save_setting("viewer_zoom", 0.5)
+        save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
+        save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
+        save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
 
         self.auto_skip_checkbox.blockSignals(True)
         self.auto_skip_checkbox.setChecked(True)
         self.auto_skip_checkbox.blockSignals(False)
+
+        self.use_categories_checkbox.blockSignals(True)
+        self.use_categories_checkbox.setChecked(True)
+        self.use_categories_checkbox.blockSignals(False)
+
+        self.show_new_section_checkbox.blockSignals(True)
+        self.show_new_section_checkbox.setChecked(True)
+        self.show_new_section_checkbox.blockSignals(False)
+
+        self.show_downloads_section_checkbox.blockSignals(True)
+        self.show_downloads_section_checkbox.setChecked(True)
+        self.show_downloads_section_checkbox.blockSignals(False)
 
         self.zoom_slider.blockSignals(True)
         self.zoom_slider.setValue(50)
@@ -348,6 +385,24 @@ class SettingsPage(QWidget):
                 viewer.preview.set_zoom(zoom)
             if getattr(viewer, "image_labels", None):
                 viewer.rescale_images()
+
+    def _on_use_categories_changed(self, checked: bool):
+        save_setting(LIBRARY_USE_CATEGORIES_KEY, checked)
+        logger.info("Library categories enabled changed: %s", checked)
+        self.status_label.setText("Library settings saved.")
+        self.main_window.library.load_library()
+
+    def _on_show_new_section_changed(self, checked: bool):
+        save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, checked)
+        logger.info("Library New section visibility changed: %s", checked)
+        self.status_label.setText("Library settings saved.")
+        self.main_window.library.load_library()
+
+    def _on_show_downloads_section_changed(self, checked: bool):
+        save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, checked)
+        logger.info("Library Active Downloads section visibility changed: %s", checked)
+        self.status_label.setText("Library settings saved.")
+        self.main_window.library.load_library()
 
     def _on_tab_changed(self, index: int):
         if self.tabs.tabText(index) == "Logs":
