@@ -52,15 +52,15 @@ class _UrlWorker(QThread):
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-ACCENT   = "#2979ff"
-ACCENT_D = "#1a5abf"
-BG       = "#141414"
-SURFACE  = "#1c1c1c"
-SURFACE2 = "#242424"
-BORDER   = "#2e2e2e"
-BORDER_H = "#3d3d3d"
-TEXT     = "#e8e8e8"
-MUTED    = "#6b6b6b"
+ACCENT   = "#ff8a7a"
+ACCENT_D = "#d86f60"
+BG       = "#120e0e"
+SURFACE  = "#171111"
+SURFACE2 = "#1f1514"
+BORDER   = "#35211f"
+BORDER_H = "#4b302c"
+TEXT     = "#fff0ec"
+MUTED    = "#b18b84"
 SUCCESS  = "#22c55e"
 ERROR    = "#ef4444"
 
@@ -101,7 +101,7 @@ class _DropZone(QFrame):
     """
     _HOVER_STYLE = f"""
         QFrame {{
-            background: #1a2540;
+            background: #241615;
             border: 2px dashed {ACCENT};
             border-radius: {RADIUS}px;
         }}

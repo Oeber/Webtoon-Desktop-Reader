@@ -1,4 +1,6 @@
 import sqlite3
+import threading
+import time
 
 from core.app_logging import get_logger
 from core.app_paths import data_path
@@ -9,14 +11,41 @@ logger = get_logger(__name__)
 DB_PATH = data_path("reader.db")
 
 _connection: sqlite3.Connection | None = None
+_connection_lock = threading.Lock()
 
 
 def get_connection() -> sqlite3.Connection:
     global _connection
-    if _connection is None:
-        logger.info("Opening SQLite connection at %s", DB_PATH)
-        _connection = _init_db()
+    if _connection is not None:
+        return _connection
+
+    with _connection_lock:
+        if _connection is None:
+            started_at = time.perf_counter()
+            logger.info("Opening SQLite connection at %s", DB_PATH)
+            _connection = _init_db()
+            logger.info(
+                "SQLite initialization finished in %.1f ms",
+                (time.perf_counter() - started_at) * 1000.0,
+            )
     return _connection
+
+
+def prewarm_connection_async():
+    if _connection is not None:
+        return
+
+    def _worker():
+        try:
+            get_connection()
+        except Exception:
+            logger.exception("Failed to prewarm SQLite connection")
+
+    threading.Thread(
+        target=_worker,
+        name="sqlite-prewarm",
+        daemon=True,
+    ).start()
 
 
 # --------------------------------------------------------------------------- #

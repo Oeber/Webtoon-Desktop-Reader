@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QApplication
 from core.app_logging import setup_logging, get_logger
 from core.app_paths import resource_path
 from gui.main_window import MainWindow
+from stores.db import prewarm_connection_async
 
 setup_logging()
 logger = get_logger(__name__)
@@ -38,6 +39,7 @@ if app_icon_path.exists():
     window.setWindowIcon(icon)
 app.aboutToQuit.connect(window.shutdown_background_tasks)
 window.show()
+prewarm_connection_async()
 logger.info("Main window shown")
 
 sys.exit(app.exec())

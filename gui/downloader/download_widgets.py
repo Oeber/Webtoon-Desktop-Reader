@@ -5,6 +5,8 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from gui.common.styles import (
+    ACCENT,
+    ACCENT_MUTED,
     BUTTON_STYLE_DISABLED,
     DOWNLOAD_ENTRY_FRAME_STYLE,
     DOWNLOAD_ENTRY_NAME_STYLE,
@@ -17,11 +19,11 @@ from gui.common.styles import (
 BTN_STYLE = BUTTON_STYLE_DISABLED
 
 STATUS_COLORS = {
-    "Ready": "#888888",
-    "Downloading": "#f0a500",
+    "Ready": "#b18b84",
+    "Downloading": ACCENT,
     "Completed": "#4caf50",
     "Failed": "#f44336",
-    "Cancelled": "#888888",
+    "Cancelled": "#b18b84",
 }
 
 
@@ -92,27 +94,27 @@ class SpinnerCircle(QWidget):
         rect = self.rect().adjusted(3, 3, -3, -3)
 
         if self._spinning:
-            painter.setPen(QPen(QColor("#333333"), 3))
+            painter.setPen(QPen(QColor("#4b302c"), 3))
             painter.drawEllipse(rect)
-            pen = QPen(QColor("#f0a500"), 3)
+            pen = QPen(QColor(ACCENT), 3)
             pen.setCapStyle(Qt.RoundCap)
             painter.setPen(pen)
             painter.drawArc(rect, -self._angle * 16, 270 * 16)
         elif self._percent == 0:
-            painter.setPen(QPen(QColor("#333333"), 3))
+            painter.setPen(QPen(QColor("#4b302c"), 3))
             painter.drawEllipse(rect)
-            painter.setPen(QPen(QColor("#888888"), 2))
+            painter.setPen(QPen(QColor("#b18b84"), 2))
             margin = 8
             diagonal_rect = self.rect().adjusted(margin, margin, -margin, -margin)
             painter.drawLine(diagonal_rect.topLeft(), diagonal_rect.bottomRight())
             painter.drawLine(diagonal_rect.topRight(), diagonal_rect.bottomLeft())
         elif self._percent is None:
-            painter.setPen(QPen(QColor("#333333"), 3))
+            painter.setPen(QPen(QColor("#4b302c"), 3))
             painter.drawEllipse(rect)
-            painter.setPen(QPen(QColor("#777777"), 3))
+            painter.setPen(QPen(QColor("#9b7670"), 3))
             painter.drawArc(rect, 90 * 16, -360 * 16)
         else:
-            painter.setPen(QPen(QColor("#333333"), 3))
+            painter.setPen(QPen(QColor("#4b302c"), 3))
             painter.drawEllipse(rect)
             pen = QPen(QColor("#22c55e"), 3)
             pen.setCapStyle(Qt.RoundCap)
@@ -124,7 +126,7 @@ class SpinnerCircle(QWidget):
             font.setPixelSize(9)
             font.setBold(True)
             painter.setFont(font)
-            painter.setPen(QColor("#e0e0e0"))
+            painter.setPen(QColor(ACCENT_MUTED))
             painter.drawText(self.rect(), Qt.AlignCenter, f"{self._percent}%")
 
 
@@ -185,7 +187,7 @@ class DownloadEntry(QFrame):
         self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
 
     def set_status(self, status: str):
-        color = STATUS_COLORS.get(status, "#cccccc")
+        color = STATUS_COLORS.get(status, ACCENT_MUTED)
         self.status_label.setText(status)
         self.status_label.setStyleSheet(status_text_style(color))
 
