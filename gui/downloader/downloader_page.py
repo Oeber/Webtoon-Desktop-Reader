@@ -49,10 +49,10 @@ class DownloaderPage(DownloadHistoryPageBase):
             self.history_layout.removeWidget(entry)
             entry.deleteLater()
             self._remove_entry(entry)
-            self.error_label.setText(error)
+            self.set_error_text(error)
             return
 
-        self.error_label.setText("")
+        self.set_error_text("")
         self.url_input.clear()
 
     def _next_entry_name(self, url: str) -> str:

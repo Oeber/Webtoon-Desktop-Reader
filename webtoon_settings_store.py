@@ -238,6 +238,35 @@ class WebtoonSettingsStore:
         )
         conn.commit()
 
+    def get_latest_new_chapter(self, webtoon_name: str) -> str | None:
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT latest_new_chapter FROM webtoon_settings WHERE webtoon_name = ?",
+            (webtoon_name,)
+        ).fetchone()
+        if row is None or not row["latest_new_chapter"]:
+            return None
+        return str(row["latest_new_chapter"])
+
+    def set_latest_new_chapter(self, webtoon_name: str, chapter: str):
+        logger.info("Setting latest new chapter for %s to %s", webtoon_name, chapter)
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            "UPDATE webtoon_settings SET latest_new_chapter = ? WHERE webtoon_name = ?",
+            (str(chapter), webtoon_name)
+        )
+        conn.commit()
+
+    def clear_latest_new_chapter(self, webtoon_name: str):
+        logger.info("Clearing latest new chapter for %s", webtoon_name)
+        conn = get_connection()
+        conn.execute(
+            "UPDATE webtoon_settings SET latest_new_chapter = NULL WHERE webtoon_name = ?",
+            (webtoon_name,)
+        )
+        conn.commit()
+
     def get(self, webtoon_name: str) -> str | None:
         conn = get_connection()
         row = conn.execute(
@@ -316,8 +345,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, zoom_override, custom_thumbnail, source_url, bookmarked_chapters, last_update_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, zoom_override, custom_thumbnail, source_url, bookmarked_chapters, last_update_at, latest_new_chapter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -327,6 +356,7 @@ class WebtoonSettingsStore:
                 row["source_url"],
                 row["bookmarked_chapters"],
                 row["last_update_at"],
+                row["latest_new_chapter"],
             )
         )
         conn.execute(

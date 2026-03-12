@@ -1,8 +1,10 @@
 from db import get_connection
 from app_logging import get_logger
+from webtoon_settings_store import get_instance as get_webtoon_settings
 
 
 logger = get_logger(__name__)
+settings_store = get_webtoon_settings()
 
 _instance = None
 
@@ -69,6 +71,53 @@ class ProgressStore:
                    total_images = excluded.total_images,
                    updated_at   = excluded.updated_at""",
             (webtoon_name, chapter, scroll, total_images)
+        )
+        conn.commit()
+
+        latest_new_chapter = settings_store.get_latest_new_chapter(webtoon_name)
+        if latest_new_chapter == chapter and (scroll > 0.0 or total_images > 0):
+            settings_store.clear_latest_new_chapter(webtoon_name)
+
+    def save_many(self, webtoon_name: str, entries: list[tuple[str, float, int]]):
+        if not entries:
+            return
+        logger.info("Saving progress for %d chapters in %s", len(entries), webtoon_name)
+        conn = get_connection()
+        conn.executemany(
+            """INSERT INTO progress (webtoon_name, chapter, scroll, total_images, updated_at)
+               VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+               ON CONFLICT(webtoon_name, chapter) DO UPDATE SET
+                   scroll       = excluded.scroll,
+                   total_images = excluded.total_images,
+                   updated_at   = excluded.updated_at""",
+            [(webtoon_name, chapter, scroll, total_images) for chapter, scroll, total_images in entries]
+        )
+        conn.commit()
+
+        latest_new_chapter = settings_store.get_latest_new_chapter(webtoon_name)
+        if latest_new_chapter and any(
+            chapter == latest_new_chapter and (scroll > 0.0 or total_images > 0)
+            for chapter, scroll, total_images in entries
+        ):
+            settings_store.clear_latest_new_chapter(webtoon_name)
+
+    def clear_chapter(self, webtoon_name: str, chapter: str):
+        logger.info("Clearing progress webtoon=%s chapter=%s", webtoon_name, chapter)
+        conn = get_connection()
+        conn.execute(
+            "DELETE FROM progress WHERE webtoon_name = ? AND chapter = ?",
+            (webtoon_name, chapter)
+        )
+        conn.commit()
+
+    def clear_chapters(self, webtoon_name: str, chapters: list[str]):
+        if not chapters:
+            return
+        logger.info("Clearing progress for %d chapters in %s", len(chapters), webtoon_name)
+        conn = get_connection()
+        conn.executemany(
+            "DELETE FROM progress WHERE webtoon_name = ? AND chapter = ?",
+            [(webtoon_name, chapter) for chapter in chapters]
         )
         conn.commit()
 

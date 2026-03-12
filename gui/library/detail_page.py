@@ -27,6 +27,7 @@ THUMB_H = 210
 RADIUS  = 12
 ACTION_BTN_H = 36
 ACTION_BTN_W = 168
+SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
 # ── Small circular progress indicator ────────────────────────────────────────
@@ -79,6 +80,8 @@ class DetailPage(QWidget):
         self.hide_specials  = False
         self.show_only_bookmarked = False
         self.bookmarked_chapters = set()
+        self.selected_chapters = set()
+        self.latest_new_chapter = None
         self.settings_store = get_webtoon_settings()
         self._update_service = None
         self._update_timer = QTimer(self)
@@ -123,13 +126,8 @@ class DetailPage(QWidget):
         """)
         self.edit_btn.clicked.connect(self._open_edit_dialog)
 
-        self.bar_title = QLabel()
-        self.bar_title.setStyleSheet("color: #e0e0e0; font-size: 15px; font-weight: 600;")
-        self.bar_title.setAlignment(Qt.AlignCenter)
-
         tb_layout.addWidget(self.back_btn)
-        tb_layout.addSpacing(8)
-        tb_layout.addWidget(self.bar_title, 1)
+        tb_layout.addStretch()
         tb_layout.addWidget(self.edit_btn)
         root.addWidget(top_bar)
 
@@ -321,6 +319,73 @@ class DetailPage(QWidget):
         sh_layout.addWidget(self.sort_btn)
         root.addWidget(section_header)
 
+        self.chapter_batch_bar = QWidget()
+        self.chapter_batch_bar.setStyleSheet("""
+            QWidget {
+                background: #171717;
+                border-top: 1px solid #242424;
+                border-bottom: 1px solid #242424;
+            }
+        """)
+        batch_layout = QHBoxLayout(self.chapter_batch_bar)
+        batch_layout.setContentsMargins(32, 10, 32, 10)
+        batch_layout.setSpacing(10)
+
+        self.chapter_batch_label = QLabel("")
+        self.chapter_batch_label.setStyleSheet("color: #d0d0d0; font-size: 12px;")
+        batch_layout.addWidget(self.chapter_batch_label)
+
+        chapter_batch_btn_style = """
+            QPushButton {
+                background: #2a2a2a;
+                color: #f0f0f0;
+                border: 1px solid #343434;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #333333; }
+        """
+        self.select_all_chapters_btn = QPushButton("Select All")
+        self.select_all_chapters_btn.setStyleSheet(chapter_batch_btn_style)
+        self.select_all_chapters_btn.clicked.connect(self._select_all_chapters)
+        batch_layout.addWidget(self.select_all_chapters_btn)
+
+        self.mark_read_btn = QPushButton("Mark Read")
+        self.mark_read_btn.setStyleSheet(chapter_batch_btn_style)
+        self.mark_read_btn.clicked.connect(self._mark_selected_chapters_read)
+        batch_layout.addWidget(self.mark_read_btn)
+
+        self.mark_unread_btn = QPushButton("Mark Unread")
+        self.mark_unread_btn.setStyleSheet(chapter_batch_btn_style)
+        self.mark_unread_btn.clicked.connect(self._mark_selected_chapters_unread)
+        batch_layout.addWidget(self.mark_unread_btn)
+
+        self.delete_chapters_btn = QPushButton("Delete")
+        self.delete_chapters_btn.setStyleSheet("""
+            QPushButton {
+                background: #4a1f1f;
+                color: #ffffff;
+                border: 1px solid #703030;
+                border-radius: 6px;
+                padding: 6px 12px;
+                font-size: 12px;
+                font-weight: 600;
+            }
+            QPushButton:hover { background: #5a2727; }
+        """)
+        self.delete_chapters_btn.clicked.connect(self._delete_selected_chapters)
+        batch_layout.addWidget(self.delete_chapters_btn)
+
+        self.clear_chapter_selection_btn = QPushButton("Clear")
+        self.clear_chapter_selection_btn.setStyleSheet(chapter_batch_btn_style)
+        self.clear_chapter_selection_btn.clicked.connect(self._clear_chapter_selection)
+        batch_layout.addWidget(self.clear_chapter_selection_btn)
+        batch_layout.addStretch()
+
+        self.chapter_batch_bar.hide()
+
         # ── Chapter list ─────────────────────────────────────────────────
         self.chapter_scroll = QScrollArea()
         self.chapter_scroll.setWidgetResizable(True)
@@ -336,6 +401,7 @@ class DetailPage(QWidget):
 
         self.chapter_scroll.setWidget(self.chapter_list_widget)
         root.addWidget(self.chapter_scroll, 1)
+        root.addWidget(self.chapter_batch_bar)
 
     # ------------------------------------------------------------------ #
     #  Public API                                                          #
@@ -347,6 +413,8 @@ class DetailPage(QWidget):
         self.progress_store = progress_store
         self.progress_map   = progress_store.get_progress_map(webtoon.name)
         self.bookmarked_chapters = self.settings_store.get_bookmarked_chapters(webtoon.name)
+        self.selected_chapters = set()
+        self.latest_new_chapter = self.settings_store.get_latest_new_chapter(webtoon.name)
         self.show_only_bookmarked = False
         self.bookmarks_filter_btn.setChecked(False)
 
@@ -357,7 +425,6 @@ class DetailPage(QWidget):
         self.hide_specials_btn.setIcon(qta.icon(icon_name, color="#888888"))
         self.hide_specials_btn.setIconSize(QSize(12, 12))
 
-        self.bar_title.setText(webtoon.name)
         self.title_label.setText(webtoon.name)
         self._update_chapter_count_label()
         self._sync_update_button()
@@ -396,6 +463,7 @@ class DetailPage(QWidget):
             self.continue_btn.hide()
 
         self._build_chapter_list(progress)
+        self._sync_chapter_batch_actions()
 
     def _calc_percent(self, scroll: float, total_images: int) -> int:
         if total_images <= 0:
@@ -442,10 +510,57 @@ class DetailPage(QWidget):
         layout.setContentsMargins(12, 0, 12, 0)
         layout.setSpacing(12)
 
+        select_btn = QToolButton()
+        select_btn.setCursor(Qt.PointingHandCursor)
+        select_btn.setAutoRaise(True)
+        select_btn.setCheckable(True)
+        select_btn.setChecked(chapter in self.selected_chapters)
+        select_btn.setIconSize(QSize(14, 14))
+        select_btn.setStyleSheet("""
+            QToolButton {
+                border: none;
+                padding: 4px;
+                background: transparent;
+            }
+            QToolButton:hover {
+                background: #222222;
+                border-radius: 8px;
+            }
+        """)
+        self._apply_select_icon(select_btn, select_btn.isChecked())
+        select_btn.clicked.connect(
+            lambda checked, ch=chapter, btn=select_btn: self._toggle_chapter_selected(ch, btn, checked)
+        )
+        layout.addWidget(select_btn)
+
         color = "#2979ff" if is_last_read else "#cccccc"
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+
         name_lbl = QLabel(chapter)
         name_lbl.setStyleSheet(f"color: {color}; font-size: 14px; border: none;")
-        layout.addWidget(name_lbl, 1)
+        title_row.addWidget(name_lbl)
+
+        if chapter == self.latest_new_chapter:
+            new_chip = QLabel("NEW")
+            new_chip.setStyleSheet("""
+                QLabel {
+                    color: #ffffff;
+                    background: #c62828;
+                    border: 1px solid #e53935;
+                    border-radius: 6px;
+                    padding: 0 5px;
+                    font-size: 8px;
+                    font-weight: 700;
+                }
+            """)
+            new_chip.setAlignment(Qt.AlignCenter)
+            new_chip.setFixedHeight(14)
+            title_row.addWidget(new_chip)
+
+        title_row.addStretch()
+        layout.addLayout(title_row, 1)
 
         bookmark_btn = QToolButton()
         bookmark_btn.setCursor(Qt.PointingHandCursor)
@@ -534,6 +649,32 @@ class DetailPage(QWidget):
         color = "#f5c451" if is_bookmarked else "#666666"
         button.setIcon(qta.icon("fa5s.star", color=color))
 
+    def _apply_select_icon(self, button: QToolButton, is_selected: bool):
+        color = "#2979ff" if is_selected else "#666666"
+        icon_name = "fa5s.check-circle" if is_selected else "fa5s.circle"
+        button.setIcon(qta.icon(icon_name, color=color))
+
+    def _toggle_chapter_selected(self, chapter: str, button: QToolButton, is_selected: bool):
+        if is_selected:
+            self.selected_chapters.add(chapter)
+        else:
+            self.selected_chapters.discard(chapter)
+        self._apply_select_icon(button, is_selected)
+        self._sync_chapter_batch_actions()
+
+    def _sync_chapter_batch_actions(self):
+        count = len(self.selected_chapters)
+        self.chapter_batch_bar.setVisible(count > 0)
+        if count <= 0:
+            return
+        self.chapter_batch_label.setText(f"{count} chapters selected")
+
+    def _select_all_chapters(self):
+        self.selected_chapters = set(self._filtered_chapters())
+        progress = self.progress_store.get(self.webtoon.name) if self.webtoon and self.progress_store else None
+        self._build_chapter_list(progress)
+        self._sync_chapter_batch_actions()
+
     def _toggle_chapter_bookmark(self, chapter: str, button: QToolButton):
         if self.webtoon is None:
             return
@@ -559,6 +700,85 @@ class DetailPage(QWidget):
         if self.show_only_bookmarked:
             progress = self.progress_store.get(self.webtoon.name)
             self._build_chapter_list(progress)
+
+    def _clear_chapter_selection(self):
+        self.selected_chapters.clear()
+        progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
+        self._build_chapter_list(progress)
+        self._sync_chapter_batch_actions()
+
+    def _chapter_total_images(self, chapter: str) -> int:
+        scroll, total = self.progress_map.get(chapter, (0.0, 0))
+        if total > 0:
+            return total
+        if self.webtoon is None:
+            return 0
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        if not os.path.isdir(chapter_path):
+            return 0
+        return sum(
+            1 for filename in os.listdir(chapter_path)
+            if os.path.isfile(os.path.join(chapter_path, filename))
+            and filename.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
+        )
+
+    def _mark_selected_chapters_read(self):
+        if self.webtoon is None or self.progress_store is None or not self.selected_chapters:
+            return
+        entries = []
+        for chapter in sorted(self.selected_chapters, key=chapter_sort_key):
+            total = self._chapter_total_images(chapter)
+            entries.append((chapter, float(total), total))
+        self.progress_store.save_many(self.webtoon.name, entries)
+        for chapter, scroll, total in entries:
+            self.progress_map[chapter] = (float(total), total)
+        self.latest_new_chapter = self.settings_store.get_latest_new_chapter(self.webtoon.name)
+        self.selected_chapters.clear()
+        progress = self.progress_store.get(self.webtoon.name)
+        self._build_chapter_list(progress)
+        self._sync_chapter_batch_actions()
+
+    def _mark_selected_chapters_unread(self):
+        if self.webtoon is None or self.progress_store is None or not self.selected_chapters:
+            return
+        chapters = sorted(self.selected_chapters, key=chapter_sort_key)
+        self.progress_store.clear_chapters(self.webtoon.name, chapters)
+        for chapter in chapters:
+            self.progress_map.pop(chapter, None)
+        self.selected_chapters.clear()
+        progress = self.progress_store.get(self.webtoon.name)
+        self._build_chapter_list(progress)
+        self._sync_chapter_batch_actions()
+
+    def _delete_selected_chapters(self):
+        if self.webtoon is None or self.progress_store is None or not self.selected_chapters:
+            return
+        selected = sorted(self.selected_chapters, key=chapter_sort_key)
+        answer = QMessageBox.question(
+            self,
+            "Delete selected chapters",
+            f"Delete {len(selected)} selected chapters from disk?",
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        import shutil
+
+        for chapter in selected:
+            chapter_path = os.path.join(self.webtoon.path, chapter)
+            if os.path.isdir(chapter_path):
+                shutil.rmtree(chapter_path, ignore_errors=True)
+            self.progress_store.clear_chapter(self.webtoon.name, chapter)
+            self.progress_map.pop(chapter, None)
+            self.bookmarked_chapters.discard(chapter)
+            if self.latest_new_chapter == chapter:
+                self.settings_store.clear_latest_new_chapter(self.webtoon.name)
+                self.latest_new_chapter = None
+
+        self._refresh_webtoon_from_disk()
+        self._clear_chapter_selection()
 
     def _toggle_hide_specials(self):
         self.hide_specials = self.hide_specials_btn.isChecked()
@@ -600,9 +820,12 @@ class DetailPage(QWidget):
 
         logger.info("Detail page refreshed chapter list from disk for %s", self.webtoon.name)
         self.webtoon.chapters = chapter_dirs
+        self.selected_chapters &= set(chapter_dirs)
+        self.latest_new_chapter = self.settings_store.get_latest_new_chapter(self.webtoon.name)
         progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
         self._update_chapter_count_label()
         self._build_chapter_list(progress)
+        self._sync_chapter_batch_actions()
         return True
 
     def _open_chapter(self, chapter: str):
@@ -616,6 +839,9 @@ class DetailPage(QWidget):
                 f"'{chapter}' no longer exists on disk. The chapter list has been refreshed.",
             )
             return
+        if self.latest_new_chapter == chapter:
+            self.settings_store.clear_latest_new_chapter(self.webtoon.name)
+            self.latest_new_chapter = None
         idx = self.webtoon.chapters.index(chapter)
         self.main_window.open_chapter_with_prompt(self.webtoon, idx)
 
@@ -641,7 +867,7 @@ class DetailPage(QWidget):
 
     def _go_back(self):
         logger.info("Returning from detail page to library")
-        self.main_window.stack.setCurrentWidget(self.main_window.library)
+        self.main_window.open_library()
 
     def attach_update_service(self, service):
         if self._update_service is service:
@@ -717,6 +943,7 @@ class DetailPage(QWidget):
         logger.info("Detail page received update finished for %s with status=%s", name, status)
         if status == "Completed" and self.webtoon and name == self.webtoon.name:
             self.settings_store.set_last_update_at(name, int(time.time()))
+            self.latest_new_chapter = self.settings_store.get_latest_new_chapter(name)
             self._refresh_webtoon_from_disk()
         self._sync_update_button()
 

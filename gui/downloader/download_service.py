@@ -148,7 +148,7 @@ class DownloadService(QObject):
                 logger.info("Using gallery-dl fallback for %s", url)
                 saved_name = self._gallery_dl_download(job, url, output_path, name)
 
-            self._save_source_url(saved_name, url)
+            self._save_source_url(saved_name, self._normalized_source_url(url))
             status = "Completed"
             self.library_changed.emit(saved_name)
         except DownloadCancelled:
@@ -249,6 +249,24 @@ class DownloadService(QObject):
         except Exception as e:
             logger.warning("Failed to save source URL for '%s'", webtoon_name, exc_info=e)
 
+    def _normalized_source_url(self, url: str) -> str:
+        normalized_url = (url or "").strip()
+        if not normalized_url:
+            return normalized_url
+
+        try:
+            scraper = get_scraper(normalized_url)
+        except Exception:
+            scraper = None
+
+        if scraper is not None and scraper.is_chapter_url(normalized_url):
+            try:
+                return scraper.series_url_from_chapter_url(normalized_url)
+            except Exception as e:
+                logger.warning("Failed to normalize chapter URL %s", normalized_url, exc_info=e)
+
+        return normalized_url
+
     def _custom_download(self, job: DownloadJob, url: str, output_path: str, target_name: str | None = None):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -267,7 +285,8 @@ class DownloadService(QObject):
             chapter_list = series.chapters
 
         series_name = sanitize_webtoon_name(target_name or series.title) or "download"
-        self.name_resolved.emit(job.initial_name, series_name)
+        previous_name = job.active_name or job.initial_name
+        self.name_resolved.emit(previous_name, series_name)
         job.active_name = series_name
         logger.info("Custom scraper resolved series name %s", series_name)
 
@@ -280,9 +299,11 @@ class DownloadService(QObject):
         os.makedirs(target_base, exist_ok=True)
 
         existing = self._get_existing_chapters(target_base)
+        had_existing_chapters = bool(existing)
         total_chapters = len(chapter_list)
         completed_chapters = 0
         any_chapter_succeeded = False
+        latest_new_chapter_name = None
 
         if url_type == "series":
             completed_chapters = sum(
@@ -355,6 +376,8 @@ class DownloadService(QObject):
                 raise ScraperError(f"Chapter download failed completely: {chapter.title}")
 
             any_chapter_succeeded = True
+            if had_existing_chapters:
+                latest_new_chapter_name = chapter_dir_name
             completed_chapters += 1
             self.progress_changed.emit(series_name, completed_chapters, total_chapters)
 
@@ -377,6 +400,9 @@ class DownloadService(QObject):
             if thumb_path:
                 self.thumbnail_resolved.emit(series_name, thumb_path)
 
+        if latest_new_chapter_name:
+            self.settings_store.set_latest_new_chapter(series_name, latest_new_chapter_name)
+
         return series_name
 
     def _gallery_dl_download(self, job: DownloadJob, url: str, output_path: str, name: str):
@@ -385,11 +411,12 @@ class DownloadService(QObject):
 
         url_type = detect_url_type(url)
         target_base = os.path.join(output_path, name)
+        existing = self._get_existing_chapters(target_base)
+        had_existing_chapters = bool(existing)
         cmd = ["gallery-dl", "--verbose", "-D", job.temp_dir]
         missing_chapters = []
 
         if url_type == "series":
-            existing = self._get_existing_chapters(target_base)
             if existing:
                 existing_str = ", ".join(str(e) for e in sorted(existing))
                 cmd += ["--filter", f"episode_no not in [{existing_str}]"]
@@ -454,6 +481,7 @@ class DownloadService(QObject):
 
         os.makedirs(target_base, exist_ok=True)
         completed_now = set()
+        latest_new_chapter_name = None
 
         if url_type == "chapter":
             episode_no = extract_episode_number(url) or 1
@@ -464,6 +492,8 @@ class DownloadService(QObject):
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
             completed_now.add(episode_no)
+            if had_existing_chapters:
+                latest_new_chapter_name = f"Chapter {episode_no}"
         else:
             for filename in all_files:
                 match = re.match(r"^(\d+)", filename)
@@ -476,6 +506,8 @@ class DownloadService(QObject):
                 if os.path.isfile(src):
                     shutil.move(src, os.path.join(chapter_dir, filename))
                 completed_now.add(chapter_num)
+                if had_existing_chapters:
+                    latest_new_chapter_name = f"Chapter {chapter_num}"
 
         if missing_chapters:
             final_current = sum(1 for chapter in missing_chapters if chapter in completed_now)
@@ -484,6 +516,9 @@ class DownloadService(QObject):
         thumb_path = self._create_auto_thumbnail_from_webtoon_folder(name, target_base)
         if thumb_path:
             self.thumbnail_resolved.emit(name, thumb_path)
+
+        if latest_new_chapter_name:
+            self.settings_store.set_latest_new_chapter(name, latest_new_chapter_name)
 
         return name
 

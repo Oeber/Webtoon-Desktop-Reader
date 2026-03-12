@@ -50,6 +50,7 @@ class DownloadHistoryPageBase(QWidget):
 
         self.error_label = QLabel("")
         self.error_label.setStyleSheet(ERROR_LABEL_STYLE)
+        self.error_label.hide()
         layout.addWidget(self.error_label)
 
         section_label = QLabel(section_text)
@@ -69,6 +70,10 @@ class DownloadHistoryPageBase(QWidget):
 
         self.scroll.setWidget(self.history_container)
         layout.addWidget(self.scroll)
+
+    def set_error_text(self, text: str):
+        self.error_label.setText(text)
+        self.error_label.setVisible(bool(text.strip()))
 
     def _register_entry(self, entry):
         self._entries_by_name[entry.name] = entry
@@ -93,6 +98,11 @@ class DownloadHistoryPageBase(QWidget):
 
     def _on_name_resolved(self, old_name: str, name: str):
         entry = self._entries_by_name.pop(old_name, None)
+        if entry is None:
+            for current_name, current_entry in list(self._entries_by_name.items()):
+                if current_entry.name == old_name:
+                    entry = self._entries_by_name.pop(current_name, None)
+                    break
         if entry is not None:
             entry.name = name
             entry.name_label.setText(name)

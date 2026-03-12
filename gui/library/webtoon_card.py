@@ -1,6 +1,6 @@
 from PySide6.QtCore import QPoint, Qt, QSize
 from PySide6.QtGui import QAction, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap
-from PySide6.QtWidgets import QDialog, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
 import qtawesome as qta
 import time
 
@@ -163,7 +163,7 @@ class WebtoonCard(QWidget):
         self._center_progress_overlay()
 
         self.title_label = ElidedLabel(webtoon.name)
-        self.title_label.setFixedWidth(self.card_width)
+        self.title_label.setFixedWidth(max(80, self.card_width - 42))
         self.title_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         self.title_label.setWordWrap(False)
         self.title_label.setMaximumHeight(18)
@@ -184,9 +184,31 @@ class WebtoonCard(QWidget):
         self.latest_btn = self._make_badge_btn(accent=False)
         self.lastread_btn = self._make_badge_btn(accent=True)
 
+        self.new_chip = QLabel("NEW")
+        self.new_chip.setAlignment(Qt.AlignCenter)
+        self.new_chip.setFixedHeight(14)
+        self.new_chip.setStyleSheet("""
+            QLabel {
+                color: #ffffff;
+                background: #c62828;
+                border: 1px solid #e53935;
+                border-radius: 6px;
+                padding: 0 5px;
+                font-size: 8px;
+                font-weight: 700;
+            }
+        """)
+        self.new_chip.hide()
+
+        latest_row = QHBoxLayout()
+        latest_row.setContentsMargins(0, 0, 0, 0)
+        latest_row.setSpacing(6)
+        latest_row.addWidget(self.latest_btn, 1)
+        latest_row.addWidget(self.new_chip, 0, Qt.AlignVCenter)
+
         root.addWidget(self.image_container)
         root.addWidget(self.title_label)
-        root.addWidget(self.latest_btn)
+        root.addLayout(latest_row)
         root.addWidget(self.lastread_btn)
 
         self._load_thumbnail(webtoon.thumbnail)
@@ -220,11 +242,13 @@ class WebtoonCard(QWidget):
     def _refresh_badges(self):
         chapters = self.webtoon.chapters
         progress = self.progress_store.get(self.webtoon.name)
+        latest_new_chapter = self.settings_store.get_latest_new_chapter(self.webtoon.name)
 
         if chapters:
             latest = chapters[-1]
             self.latest_btn.setText(f"Play  {latest}")
             self.latest_btn.show()
+            self.new_chip.setVisible(latest == latest_new_chapter)
             if self._latest_connected:
                 self.latest_btn.clicked.disconnect()
             self.latest_btn.clicked.connect(
@@ -233,6 +257,7 @@ class WebtoonCard(QWidget):
             self._latest_connected = True
         else:
             self.latest_btn.hide()
+            self.new_chip.hide()
 
         if progress:
             last_ch = progress["chapter"]

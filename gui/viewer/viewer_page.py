@@ -824,7 +824,7 @@ class ViewerPage(QWidget):
 
     def _load_chapter_with_prompt(self, index):
         if not self.webtoon:
-            return
+            return False
         chapter = self.webtoon.chapters[index]
         logger.info("Viewer loading chapter with prompt: %s / %s", self.webtoon.name, chapter)
 
@@ -834,17 +834,18 @@ class ViewerPage(QWidget):
             dlg = ContinueDialog(chapter, parent=self)
             if dlg.exec() != QDialog.Accepted:
                 logger.info("Resume dialog cancelled for %s / %s", self.webtoon.name, chapter)
-                return
+                return False
             if dlg.choice == "continue":
                 packed = saved_scroll
                 logger.info("Resume dialog chose continue for %s / %s", self.webtoon.name, chapter)
             elif dlg.choice != "restart":
-                return
+                return False
             else:
                 logger.info("Resume dialog chose restart for %s / %s", self.webtoon.name, chapter)
 
         self._unpack_restore(packed)
         self._load_chapter_no_prompt(index)
+        return True
 
     def _load_chapter_no_prompt(self, index):
         if not self.webtoon:

@@ -65,7 +65,8 @@ def _create_schema(conn: sqlite3.Connection):
             custom_thumbnail  TEXT,
             source_url        TEXT,
             bookmarked_chapters TEXT,
-            last_update_at    INTEGER
+            last_update_at    INTEGER,
+            latest_new_chapter TEXT
         );
 
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -91,6 +92,7 @@ def _migrate_columns(conn: sqlite3.Connection):
         ("source_url",       "TEXT"),
         ("bookmarked_chapters", "TEXT"),
         ("last_update_at",   "INTEGER"),
+        ("latest_new_chapter", "TEXT"),
     ]:
         if col not in existing:
             conn.execute(f"ALTER TABLE webtoon_settings ADD COLUMN {col} {definition}")

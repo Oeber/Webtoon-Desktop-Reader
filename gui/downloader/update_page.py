@@ -36,7 +36,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self._pending_search = ""
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search updates...")
+        self.search_input.setPlaceholderText("Search titles...")
         self.search_input.setFixedHeight(36)
         self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
         self.search_input.textChanged.connect(self._schedule_filter)
@@ -147,10 +147,10 @@ class UpdatePage(DownloadHistoryPageBase):
         )
         if error:
             logger.warning("Update-page download rejected for %s: %s", entry.name, error)
-            self.error_label.setText(error)
+            self.set_error_text(error)
             return
 
-        self.error_label.setText("")
+        self.set_error_text("")
 
     def _sync_update_buttons(self):
         for index in range(self.history_layout.count()):
@@ -179,11 +179,12 @@ class UpdatePage(DownloadHistoryPageBase):
             if entry is not None:
                 entry.set_last_update_at(timestamp)
         self._sync_update_buttons()
-        self._refresh_timer.start(2500)
+        if not self.service.is_busy():
+            self._refresh_timer.start(2500)
 
     def _on_library_changed(self, name: str):
         logger.info("Update page noticed library_changed")
         super()._on_library_changed(name)
-        if self.isVisible():
+        if self.isVisible() and not self.service.is_busy():
             self._refresh_timer.stop()
             self._refresh_timer.start(0)

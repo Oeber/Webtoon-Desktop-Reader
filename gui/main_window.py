@@ -9,6 +9,7 @@ import time
 
 import qtawesome as qta
 from app_logging import get_logger
+from webtoon_settings_store import get_instance as get_webtoon_settings
 
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
@@ -19,6 +20,7 @@ from gui.downloader.update_page import UpdatePage
 from gui.search.global_search import GlobalSearchDialog
 
 logger = get_logger(__name__)
+APP_TITLE = "Webtoon Desktop Reader"
 
 class MainWindow(QMainWindow):
 
@@ -26,8 +28,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         logger.info("Initializing main window")
 
+        self.set_window_context_title()
         self.resize(1400, 900)
         self._suppress_detail_open_until = 0.0
+        self.settings_store = get_webtoon_settings()
 
         self.stack = QStackedWidget()
 
@@ -93,9 +97,7 @@ class MainWindow(QMainWindow):
         self.btn_library = QPushButton()
         self.btn_library.setIcon(qta.icon("fa5s.book-open", color=icon_color))
         self.btn_library.setIconSize(QSize(16, 16))
-        self.btn_library.clicked.connect(
-            lambda: self.stack.setCurrentWidget(self.library)
-        )
+        self.btn_library.clicked.connect(self.open_library)
 
         self.toggle_btn.setStyleSheet(button_style)
         self.btn_library.setStyleSheet(button_style)
@@ -114,9 +116,7 @@ class MainWindow(QMainWindow):
         self.btn_downloader.setIcon(qta.icon("fa5s.download", color=icon_color))
         self.btn_downloader.setIconSize(QSize(16, 16))
         self.btn_downloader.setStyleSheet(button_style)
-        self.btn_downloader.clicked.connect(
-            lambda: self.stack.setCurrentWidget(self.downloader)
-        )
+        self.btn_downloader.clicked.connect(self.open_downloader)
         sidebar_layout.addWidget(self.btn_downloader)
 
         self.btn_updates = QPushButton()
@@ -132,9 +132,7 @@ class MainWindow(QMainWindow):
         self.btn_settings.setIcon(qta.icon("fa5s.cog", color=icon_color))
         self.btn_settings.setIconSize(QSize(16, 16))
         self.btn_settings.setStyleSheet(button_style)
-        self.btn_settings.clicked.connect(
-            lambda: self.stack.setCurrentWidget(self.settings)
-        )
+        self.btn_settings.clicked.connect(self.open_settings)
         sidebar_layout.addWidget(self.btn_settings)
         self.btn_settings.setStyleSheet(button_style)
 
@@ -151,7 +149,30 @@ class MainWindow(QMainWindow):
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)
 
+    def set_window_context_title(self, webtoon_name: str | None = None):
+        title = APP_TITLE if not webtoon_name else f"{APP_TITLE} | {webtoon_name}"
+        self.setWindowTitle(title)
+
+    def _clear_new_chapter_marker(self, webtoon, chapter_index: int):
+        if webtoon is None or chapter_index < 0 or chapter_index >= len(webtoon.chapters):
+            return
+        chapter = webtoon.chapters[chapter_index]
+        if self.settings_store.get_latest_new_chapter(webtoon.name) == chapter:
+            self.settings_store.clear_latest_new_chapter(webtoon.name)
+
     # ------------------------------------------------------------------ #
+
+    def open_library(self):
+        self.set_window_context_title()
+        self.stack.setCurrentWidget(self.library)
+
+    def open_downloader(self):
+        self.set_window_context_title()
+        self.stack.setCurrentWidget(self.downloader)
+
+    def open_settings(self):
+        self.set_window_context_title()
+        self.stack.setCurrentWidget(self.settings)
 
     def open_detail(self, webtoon):
         """Show the detail / chapter-list page. Also refreshes progress badges."""
@@ -161,6 +182,7 @@ class MainWindow(QMainWindow):
         logger.info("Opening detail page for %s", webtoon.name)
         self.library.refresh_progress()
         self.detail.load_webtoon(webtoon, self.library.progress_store)
+        self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.detail)
 
     def suppress_detail_open(self, seconds: float):
@@ -181,9 +203,11 @@ class MainWindow(QMainWindow):
             chapter_index,
             scroll_pct,
         )
+        self._clear_new_chapter_marker(webtoon, chapter_index)
         self.viewer.load_webtoon(webtoon,
                                  start_chapter=chapter_index,
                                  start_scroll=scroll_pct)
+        self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
 
     def open_chapter_with_prompt(self, webtoon, chapter_index: int):
@@ -193,12 +217,16 @@ class MainWindow(QMainWindow):
         """
         logger.info("Opening chapter with prompt for %s index=%d", webtoon.name, chapter_index)
         webtoon.path = __import__("os").path.abspath(webtoon.path)
+        self._clear_new_chapter_marker(webtoon, chapter_index)
         self.viewer.webtoon = webtoon
         self.viewer._apply_webtoon_settings(webtoon)
         self.viewer._repopulate_chapter_selector()
         # This path goes through the prompt logic
         self.viewer._pending_scroll_pct = 0.0
-        self.viewer._load_chapter_with_prompt(chapter_index)
+        opened = self.viewer._load_chapter_with_prompt(chapter_index)
+        if not opened:
+            return
+        self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
 
     def open_viewer(self, webtoon):
@@ -208,6 +236,7 @@ class MainWindow(QMainWindow):
     def open_updates(self):
         logger.info("Opening updates page")
         self.updates.refresh_entries()
+        self.set_window_context_title()
         self.stack.setCurrentWidget(self.updates)
     
     def toggle_sidebar(self):
