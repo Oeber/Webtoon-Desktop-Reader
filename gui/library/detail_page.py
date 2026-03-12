@@ -57,6 +57,7 @@ THUMB_H = 210
 RADIUS  = 12
 ACTION_BTN_H = 36
 ACTION_BTN_W = 168
+BATCH_ACTION_BTN_H = 42
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
@@ -308,7 +309,20 @@ class DetailPage(QWidget):
         self.chapter_batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.chapter_batch_label)
 
-        chapter_batch_btn_style = SECONDARY_ACTION_BUTTON_STYLE
+        chapter_batch_btn_style = SECONDARY_ACTION_BUTTON_STYLE + f"""
+            QPushButton {{
+                min-height: {BATCH_ACTION_BTN_H}px;
+                padding: 0 16px;
+                font-size: 14px;
+            }}
+        """
+        chapter_delete_btn_style = DELETE_BUTTON_STYLE + f"""
+            QPushButton {{
+                min-height: {BATCH_ACTION_BTN_H}px;
+                padding: 0 16px;
+                font-size: 14px;
+            }}
+        """
         self.select_all_chapters_btn = QPushButton("Select All")
         self.select_all_chapters_btn.setStyleSheet(chapter_batch_btn_style)
         self.select_all_chapters_btn.clicked.connect(self._select_all_chapters)
@@ -325,7 +339,7 @@ class DetailPage(QWidget):
         batch_layout.addWidget(self.mark_unread_btn)
 
         self.delete_chapters_btn = QPushButton("Delete")
-        self.delete_chapters_btn.setStyleSheet(DELETE_BUTTON_STYLE)
+        self.delete_chapters_btn.setStyleSheet(chapter_delete_btn_style)
         self.delete_chapters_btn.clicked.connect(self._delete_selected_chapters)
         batch_layout.addWidget(self.delete_chapters_btn)
 
