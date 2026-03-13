@@ -19,7 +19,6 @@ reader/
 |   |-- models.py
 |   `-- discovery_sites/
 |       |-- __init__.py
-|       `-- omega_scans.py
 |
 `-- gui/
     `-- discovery/
@@ -195,7 +194,7 @@ class AsuraScansDiscoveryProvider(BaseDiscoveryProvider):
         )
 ```
 
-Once the file exists, `discovery_registry.py` auto-loads it. No registry edit is needed.
+Once the file exists, `discovery_registry.py` auto-loads it. In packaged builds, make sure the provider package is bundled as well, for example with `collect_submodules("scrapers.discovery_sites")` in `main.spec`.
 
 ## Step-by-Step Process
 
@@ -230,6 +229,8 @@ Each `CatalogSeries` should include as much of this as possible:
 - description if available
 - latest chapter if available
 - total chapters if available
+
+Prefer source-side filtering when the site already exposes it. For example, the current Hipercool provider uses the site's native manhwa taxonomy route instead of loading the full mixed catalog and filtering titles one by one after the fact.
 
 ### 3. Prefer stable identity fields
 
@@ -295,6 +296,32 @@ def downloaded_entries(self, entries_by_site: dict[str, list[CatalogSeries]]) ->
     return entries
 ```
 
+### 7a. Reuse saved site sessions when needed
+
+If a discovery site is protected by Cloudflare or similar anti-bot layers, the provider should reuse the browser-captured session from `core/site_session.py` instead of inventing provider-specific GUI behavior.
+
+Typical pattern:
+
+```python
+from core.site_session import apply_site_cookies, load_site_user_agent, site_cookie_header
+
+session = requests.Session()
+apply_site_cookies(session, self.site_name)
+headers = dict(self.HEADERS)
+headers["User-Agent"] = load_site_user_agent(self.site_name, headers["User-Agent"])
+cookie_header = site_cookie_header(self.site_name)
+if cookie_header:
+    headers["Cookie"] = cookie_header
+```
+
+Use this for:
+
+- catalog requests
+- remote search requests
+- cover-image headers when the image host requires the same session
+
+Providers should raise a clear `ScraperError` when the site still returns a challenge page so the shared discovery UI can trigger authorization and retry.
+
 ### 7. Use correct cover headers
 
 If a cover host blocks direct requests unless the right headers are present, attach them to `CatalogSeries.cover_headers`.
@@ -311,6 +338,16 @@ CatalogSeries(
     },
 )
 ```
+
+## Filtering Guidance
+
+When a site needs discovery filtered to one content type, prefer this order:
+
+1. use the site's own filtered route or API parameter
+2. use stable metadata already present on the catalog payload
+3. only fall back to per-series detail lookups if there is no better source
+
+The third option is usually the slowest and should be treated as a last resort, especially on sites that already require authenticated sessions.
 
 ## Error Handling Rules
 
@@ -337,7 +374,7 @@ Good discovery-provider behaviour:
 from scrapers.discovery_registry import get_all_discovery_providers
 
 providers = {provider.site_name: provider for provider in get_all_discovery_providers()}
-provider = providers["omega_scans"]
+provider = providers["hiper_cool"]
 page = provider.get_catalog_page(page=1, search_query="")
 
 print(page.site)
@@ -428,6 +465,17 @@ Cause:
 
 Fix:
 - set `cover_headers` on the `CatalogSeries`
+
+### Protected site never loads in discovery
+
+Cause:
+- provider is not reusing the saved browser session
+- provider challenge detection is too vague or missing
+
+Fix:
+- reuse `core/site_session.py` helpers for cookies and user agent
+- detect challenge pages explicitly and raise `ScraperError` with a clear access-block message
+- let the shared discovery UI handle authorization and retry
 
 ### Page 1 loads but pagination is broken
 
