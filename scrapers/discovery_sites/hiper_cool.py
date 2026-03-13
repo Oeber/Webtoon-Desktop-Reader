@@ -19,6 +19,7 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
 
     BASE = "https://hiper.cool"
     CATALOG_PATH = "/manga/"
+    MANHWA_PATH = "/manga-genre/manhwa/"
 
     HEADERS = {
         "User-Agent": (
@@ -81,9 +82,11 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         if search_query:
             encoded_query = quote_plus(search_query)
             if page <= 1:
+                candidates.append(f"{self.BASE}{self.MANHWA_PATH}?s={encoded_query}&post_type=wp-manga")
                 candidates.append(f"{self.BASE}/?s={encoded_query}&post_type=wp-manga")
                 candidates.append(f"{self.BASE}{self.CATALOG_PATH}?s={encoded_query}&post_type=wp-manga")
             else:
+                candidates.append(f"{self.BASE}{self.MANHWA_PATH}page/{page}/?s={encoded_query}&post_type=wp-manga")
                 candidates.append(f"{self.BASE}/page/{page}/?s={encoded_query}&post_type=wp-manga")
                 candidates.append(f"{self.BASE}{self.CATALOG_PATH}page/{page}/?s={encoded_query}&post_type=wp-manga")
             return candidates
@@ -91,15 +94,15 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         if page <= 1:
             candidates.extend(
                 [
-                    f"{self.BASE}{self.CATALOG_PATH}",
-                    f"{self.BASE}{self.CATALOG_PATH}?m_orderby=latest",
+                    f"{self.BASE}{self.MANHWA_PATH}",
+                    f"{self.BASE}{self.MANHWA_PATH}?m_orderby=latest",
                 ]
             )
         else:
             candidates.extend(
                 [
-                    f"{self.BASE}{self.CATALOG_PATH}page/{page}/",
-                    f"{self.BASE}{self.CATALOG_PATH}page/{page}/?m_orderby=latest",
+                    f"{self.BASE}{self.MANHWA_PATH}page/{page}/",
+                    f"{self.BASE}{self.MANHWA_PATH}page/{page}/?m_orderby=latest",
                 ]
             )
         return candidates
@@ -138,6 +141,7 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         title = self._extract_title(link, slug)
         if not title:
             return None
+
 
         seen_urls.add(href)
         container = self._entry_container(link)
