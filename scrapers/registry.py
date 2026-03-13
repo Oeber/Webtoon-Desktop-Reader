@@ -25,7 +25,10 @@ def _iter_scraper_module_names(package):
 
 def _iter_builtin_scraper_classes():
     package_name = "scrapers.sites"
-    package = importlib.import_module(package_name)
+    try:
+        package = importlib.import_module(package_name)
+    except ModuleNotFoundError:
+        return
 
     for module_name in _iter_scraper_module_names(package):
         module = importlib.import_module(f"{package_name}.{module_name}")
@@ -63,6 +66,15 @@ def _iter_external_scraper_classes():
 
 
 def _load_external_module(module_name: str, path: Path):
+    package_name = module_name.rpartition(".")[0]
+    package = sys.modules.get(package_name)
+    if package is not None:
+        package_paths = getattr(package, "__path__", None)
+        if package_paths is not None:
+            parent_str = str(path.parent)
+            if parent_str not in package_paths:
+                package_paths.append(parent_str)
+
     spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ImportError(f"Could not create import spec for {path}")
