@@ -503,3 +503,4 @@ class DiscoveryDetailPage(QWidget):
             return "1 chapter"
         return f"{count} chapters"
 
+
