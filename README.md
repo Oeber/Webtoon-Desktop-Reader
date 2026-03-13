@@ -25,18 +25,6 @@ On desktop, that same reading style is harder to reproduce because scrolling wit
 
 Quick skip helps with that by letting you move through those large empty gaps more comfortably while still reading the same chapter in order.
 
-## Table of Contents
-
-- [Chapter 1: Overview](#chapter-1-overview)
-- [Chapter 2: Using the App](#chapter-2-using-the-app)
-- [Chapter 3: Library and Files](#chapter-3-library-and-files)
-- [Chapter 4: Running the App](#chapter-4-running-the-app)
-- [Chapter 5: Advanced Downloading](#chapter-5-advanced-downloading)
-- [Chapter 6: Building for Scraper Testing](#chapter-6-building-for-scraper-testing)
-- [Chapter 7: Troubleshooting](#chapter-7-troubleshooting)
-- [Chapter 8: Project Status](#chapter-8-project-status)
-- [Chapter 9: Creating Scrapers](#chapter-9-creating-scrapers)
-
 ### What This App Does
 
 This project is meant for people who want a local, desktop-first way to manage webtoons.
