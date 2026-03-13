@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import re
 from urllib.parse import parse_qs, urlparse
 
-from .models import SeriesInfo, PageInfo
+from .models import PageInfo, SeriesInfo
 
 
 class ScraperError(Exception):

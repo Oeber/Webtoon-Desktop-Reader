@@ -351,6 +351,20 @@ class DownloadService(QObject):
         except Exception as e:
             logger.warning("Failed to save source URL for '%s'", webtoon_name, exc_info=e)
 
+    def _save_series_source_metadata(self, webtoon_name: str, series, source_url: str):
+        if not webtoon_name:
+            return
+        try:
+            self.settings_store.save_source_metadata(
+                webtoon_name,
+                source_url=source_url or None,
+                source_site=getattr(series, "site", None),
+                source_series_id=getattr(series, "series_id", None),
+                source_title=getattr(series, "title", None),
+            )
+        except Exception as e:
+            logger.warning("Failed to save source metadata for '%s'", webtoon_name, exc_info=e)
+
     def _save_active_source_urls(self):
         with self._jobs_lock:
             jobs = list(self._jobs.values())
@@ -408,6 +422,7 @@ class DownloadService(QObject):
             ok, result = self.settings_store.set_from_url(series_name, series.cover_url)
             if ok:
                 self.thumbnail_resolved.emit(series_name, result)
+        self._save_series_source_metadata(series_name, series, job.source_url)
 
         target_base = os.path.join(output_path, series_name)
         os.makedirs(target_base, exist_ok=True)

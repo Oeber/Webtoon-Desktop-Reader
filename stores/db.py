@@ -86,6 +86,9 @@ def _create_schema(conn: sqlite3.Connection):
             zoom_override       REAL,
             custom_thumbnail    TEXT,
             source_url          TEXT,
+            source_site         TEXT,
+            source_series_id    TEXT,
+            source_title        TEXT,
             category            TEXT,
             bookmarked_chapters TEXT,
             last_update_at      INTEGER,
@@ -117,6 +120,9 @@ def _create_schema(conn: sqlite3.Connection):
     _ensure_column(conn, "webtoon_settings", "zoom_override", "REAL")
     _ensure_column(conn, "webtoon_settings", "custom_thumbnail", "TEXT")
     _ensure_column(conn, "webtoon_settings", "source_url", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "source_site", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "source_series_id", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "source_title", "TEXT")
     _ensure_column(conn, "webtoon_settings", "category", "TEXT")
     _ensure_column(conn, "webtoon_settings", "bookmarked_chapters", "TEXT")
     _ensure_column(conn, "webtoon_settings", "last_update_at", "INTEGER")

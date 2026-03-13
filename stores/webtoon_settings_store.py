@@ -190,6 +190,53 @@ class WebtoonSettingsStore:
     def clear_source_url(self, webtoon_name: str):
         self._clear_scalar(webtoon_name, "source_url", log_message="Clearing source URL for %s")
 
+    def get_source_site(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "source_site", default=None, coerce=str)
+
+    def set_source_site(self, webtoon_name: str, source_site: str):
+        self._set_scalar(webtoon_name, "source_site", source_site, log_message="Saving source site for %s: %s")
+
+    def get_source_series_id(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "source_series_id", default=None, coerce=str)
+
+    def set_source_series_id(self, webtoon_name: str, source_series_id: str):
+        self._set_scalar(
+            webtoon_name,
+            "source_series_id",
+            source_series_id,
+            log_message="Saving source series id for %s: %s",
+        )
+
+    def get_source_title(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "source_title", default=None, coerce=str)
+
+    def set_source_title(self, webtoon_name: str, source_title: str):
+        self._set_scalar(webtoon_name, "source_title", source_title, log_message="Saving source title for %s: %s")
+
+    def save_source_metadata(
+        self,
+        webtoon_name: str,
+        *,
+        source_url: str | None = None,
+        source_site: str | None = None,
+        source_series_id: str | None = None,
+        source_title: str | None = None,
+    ):
+        conn = get_connection()
+        self._ensure_row(conn, webtoon_name)
+        conn.execute(
+            """
+            UPDATE webtoon_settings
+            SET source_url = COALESCE(?, source_url),
+                source_site = COALESCE(?, source_site),
+                source_series_id = COALESCE(?, source_series_id),
+                source_title = COALESCE(?, source_title)
+            WHERE webtoon_name = ?
+            """,
+            (source_url, source_site, source_series_id, source_title, webtoon_name),
+        )
+        conn.commit()
+
     def get_category(self, webtoon_name: str) -> str | None:
         return self._get_scalar(webtoon_name, "category", default=None, coerce=str)
 
@@ -283,8 +330,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, category, bookmarked_chapters, last_update_at, latest_new_chapter)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -293,6 +340,9 @@ class WebtoonSettingsStore:
                 row["zoom_override"],
                 custom_path,
                 row["source_url"],
+                row["source_site"],
+                row["source_series_id"],
+                row["source_title"],
                 row["category"],
                 row["bookmarked_chapters"],
                 row["last_update_at"],

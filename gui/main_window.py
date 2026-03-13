@@ -16,6 +16,7 @@ from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
+from gui.discovery.site_browser_page import SiteBrowserPage
 from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
 from gui.downloader.download_widgets import SpinnerCircle
@@ -42,11 +43,13 @@ class MainWindow(QMainWindow):
         self.detail   = DetailPage(self)
         self.viewer   = ViewerPage(self)
         self.settings = SettingsPage(self)
+        self.discovery = SiteBrowserPage(self)
 
         self.stack.addWidget(self.library)
         self.stack.addWidget(self.detail)
         self.stack.addWidget(self.viewer)
         self.stack.addWidget(self.settings)
+        self.stack.addWidget(self.discovery)
 
         root = QWidget()
         root.setStyleSheet(f"background-color: {BG};")
@@ -92,12 +95,20 @@ class MainWindow(QMainWindow):
             self.btn_library.setText("")
 
         sidebar_layout.addWidget(self.btn_library)
+        self.btn_discovery = QPushButton()
+        self.btn_discovery.setIcon(qta.icon("fa5s.compass", color=icon_color))
+        self.btn_discovery.setIconSize(QSize(16, 16))
+        self.btn_discovery.setStyleSheet(SIDEBAR_BUTTON_STYLE)
+        self.btn_discovery.clicked.connect(self.open_discovery)
+        sidebar_layout.addWidget(self.btn_discovery)
         self.downloader = DownloaderPage(self)
         self.updates = UpdatePage(self)
         self.library.attach_update_service(self.updates.service)
         self.library.attach_manual_download_service(self.downloader.service)
         self.detail.attach_update_service(self.updates.service)
         self.detail.attach_manual_download_service(self.downloader.service)
+        self.discovery.attach_update_service(self.updates.service)
+        self.discovery.attach_manual_download_service(self.downloader.service)
         self.downloader.attach_history_service(self.updates.service)
         self.stack.addWidget(self.downloader)
         self.stack.addWidget(self.updates)
@@ -195,6 +206,12 @@ class MainWindow(QMainWindow):
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.downloader)
         self._set_sidebar_target("downloader")
+
+    def open_discovery(self):
+        self._hide_chapter_loading_overlay()
+        self.set_window_context_title()
+        self.stack.setCurrentWidget(self.discovery)
+        self._set_sidebar_target("discovery")
 
     def open_settings(self):
         self._hide_chapter_loading_overlay()
@@ -303,12 +320,14 @@ class MainWindow(QMainWindow):
         if self.sidebar_open:
             self.sidebar.setFixedWidth(self.sidebar_collapsed_width)
             self.btn_library.setText("")
+            self.btn_discovery.setText("")
             self.btn_settings.setText("")
             self.btn_updates.setText("")
             self.sidebar_open = False
         else:
             self.sidebar.setFixedWidth(self.sidebar_expanded_width)
             self.btn_library.setText("  Library")
+            self.btn_discovery.setText("  Discover")
             self.btn_settings.setText("  Settings")
             self.btn_updates.setText("  Updates")
             self.sidebar_open = True
@@ -335,6 +354,7 @@ class MainWindow(QMainWindow):
         for button in (
             self.toggle_btn,
             self.btn_library,
+            self.btn_discovery,
             self.btn_downloader,
             self.btn_updates,
             self.btn_settings,
@@ -353,6 +373,7 @@ class MainWindow(QMainWindow):
     def _refresh_sidebar_nav_state(self):
         button_specs = (
             (self.btn_library, "library", "fa5s.book-open"),
+            (self.btn_discovery, "discovery", "fa5s.compass"),
             (self.btn_updates, "updates", "fa5s.sync"),
             (self.btn_settings, "settings", "fa5s.cog"),
         )
