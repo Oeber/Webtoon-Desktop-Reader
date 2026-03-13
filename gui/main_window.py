@@ -17,6 +17,7 @@ from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
 from gui.discovery.site_browser_page import SiteBrowserPage
+from gui.discovery.detail_page import DiscoveryDetailPage
 from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
 from gui.downloader.download_widgets import SpinnerCircle
@@ -44,12 +45,14 @@ class MainWindow(QMainWindow):
         self.viewer   = ViewerPage(self)
         self.settings = SettingsPage(self)
         self.discovery = SiteBrowserPage(self)
+        self.discovery_detail = DiscoveryDetailPage(self)
 
         self.stack.addWidget(self.library)
         self.stack.addWidget(self.detail)
         self.stack.addWidget(self.viewer)
         self.stack.addWidget(self.settings)
         self.stack.addWidget(self.discovery)
+        self.stack.addWidget(self.discovery_detail)
 
         root = QWidget()
         root.setStyleSheet(f"background-color: {BG};")
@@ -211,6 +214,14 @@ class MainWindow(QMainWindow):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.discovery)
+        self._set_sidebar_target("discovery")
+
+    def open_discovery_detail(self, entry):
+        self._hide_chapter_loading_overlay()
+        title = getattr(entry, "title", None) or None
+        self.set_window_context_title(title)
+        self.discovery_detail.load_entry(entry)
+        self.stack.setCurrentWidget(self.discovery_detail)
         self._set_sidebar_target("discovery")
 
     def open_settings(self):
@@ -557,3 +568,6 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_chapter_loading_overlay()
+
+
+

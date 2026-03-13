@@ -89,6 +89,7 @@ class DownloadService(QObject):
         output_path: str,
         preferred_name: str | None = None,
         job_name: str | None = None,
+        chapter_urls: list[str] | None = None,
     ) -> str | None:
         url = (url or "").strip().strip("'\"")
         if not url:
@@ -112,7 +113,7 @@ class DownloadService(QObject):
 
         thread = threading.Thread(
             target=self._run_download,
-            args=(job, url, output_path, preferred_name),
+            args=(job, url, output_path, preferred_name, list(chapter_urls or [])),
             daemon=True,
         )
         job.thread = thread
@@ -173,7 +174,14 @@ class DownloadService(QObject):
                     return int(job.progress_current), int(job.progress_total)
         return 0, 0
 
-    def _run_download(self, job: DownloadJob, url: str, output_path: str, preferred_name: str | None):
+    def _run_download(
+        self,
+        job: DownloadJob,
+        url: str,
+        output_path: str,
+        preferred_name: str | None,
+        chapter_urls: list[str] | None,
+    ):
         name = sanitize_webtoon_name(preferred_name) or job.initial_name or "download"
         status = "Failed"
 
@@ -199,8 +207,16 @@ class DownloadService(QObject):
 
             if scraper is not None:
                 logger.info("Using custom scraper for %s", url)
-                saved_name = self._custom_download(job, url, output_path, target_name=preferred_name)
+                saved_name = self._custom_download(
+                    job,
+                    url,
+                    output_path,
+                    target_name=preferred_name,
+                    selected_chapter_urls=chapter_urls or None,
+                )
             else:
+                if chapter_urls:
+                    raise ScraperError("Chapter selection is only available for supported scraper sites.")
                 logger.info("Using gallery-dl fallback for %s", url)
                 saved_name = self._gallery_dl_download(job, url, output_path, name)
 
@@ -394,13 +410,26 @@ class DownloadService(QObject):
 
         return normalized_url
 
-    def _custom_download(self, job: DownloadJob, url: str, output_path: str, target_name: str | None = None):
+    def _custom_download(
+        self,
+        job: DownloadJob,
+        url: str,
+        output_path: str,
+        target_name: str | None = None,
+        selected_chapter_urls: list[str] | None = None,
+    ):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         scraper = get_scraper(url)
         scraper_session = self._get_job_session(job)
         headers = scraper.get_request_headers(url)
         url_type = "chapter" if scraper.is_chapter_url(url) else "series"
+
+        selected_url_set = {
+            str(chapter_url).rstrip("/")
+            for chapter_url in (selected_chapter_urls or [])
+            if chapter_url
+        }
 
         if url_type == "chapter":
             series_url = scraper.series_url_from_chapter_url(url)
@@ -411,6 +440,11 @@ class DownloadService(QObject):
         else:
             series = self._scraper_get_series_info(scraper, url, session=scraper_session)
             chapter_list = series.chapters
+
+        if selected_url_set:
+            chapter_list = [chapter for chapter in chapter_list if chapter.url.rstrip("/") in selected_url_set]
+            if not chapter_list:
+                raise ScraperError("None of the selected chapters could be matched for download.")
 
         series_name = sanitize_webtoon_name(target_name or series.title) or "download"
         previous_name = job.active_name or job.initial_name
@@ -628,7 +662,6 @@ class DownloadService(QObject):
         os.makedirs(target_base, exist_ok=True)
         completed_now = set()
         latest_new_chapter_name = None
-
         if url_type == "chapter":
             episode_no = extract_episode_number(url) or 1
             chapter_dir = os.path.join(target_base, f"Chapter {episode_no}")
@@ -749,3 +782,4 @@ class DownloadService(QObject):
             except TypeError:
                 pass
         return scraper.get_chapter_pages(chapter_url)
+

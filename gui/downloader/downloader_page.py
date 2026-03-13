@@ -63,9 +63,14 @@ class DownloaderPage(DownloadHistoryPageBase):
         logger.info("Manual download requested for url=%s", url.strip())
         self.start_download_from_url(url)
 
-    def start_download_from_url(self, url: str) -> str | None:
+    def start_download_from_url(
+        self,
+        url: str,
+        preferred_name: str | None = None,
+        chapter_urls: list[str] | None = None,
+    ) -> str | None:
         url = (url or "").strip()
-        entry_name = self._next_entry_name(url)
+        entry_name = self._next_entry_name(preferred_name or url)
 
         entry = CancellableDownloadEntry(
             entry_name,
@@ -75,7 +80,13 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.history_layout.insertWidget(0, entry)
         self._register_entry(entry)
 
-        error = self.service.start_download(url, load_library_path(), job_name=entry_name)
+        error = self.service.start_download(
+            url,
+            load_library_path(),
+            preferred_name=preferred_name,
+            job_name=entry_name,
+            chapter_urls=chapter_urls,
+        )
         if error:
             logger.warning("Manual download rejected: %s", error)
             self.history_layout.removeWidget(entry)

@@ -1,7 +1,4 @@
 import threading
-import urllib.request
-from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QObject, QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QImageReader, QPainter, QPainterPath, QPen, QPixmap
@@ -35,11 +32,13 @@ from gui.common.styles import (
     TRANSPARENT_BG_STYLE,
     card_image_border_style,
 )
+from gui.discovery.cover_loader import DiscoveryCoverLoader
 from gui.library.webtoon_card import CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH
 from library.library_manager import scan_library
 from gui.settings.settings_page import load_library_path
 from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
+from scrapers.discovery_support import build_discovery_library_snapshot
 from scrapers.models import CatalogSeries
 
 logger = get_logger(__name__)
@@ -124,65 +123,6 @@ class DiscoveryTitleLabel(QLabel):
         super().setText(metrics.elidedText(self._full_text, Qt.ElideRight, width))
 
 
-class DiscoveryCoverLoader(QObject):
-
-    loaded = Signal(object, object, str)
-    _MAX_WORKERS = 8
-    _MAX_CACHE_ENTRIES = 256
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._executor = ThreadPoolExecutor(
-            max_workers=self._MAX_WORKERS,
-            thread_name_prefix="discovery-cover",
-        )
-        self._lock = threading.Lock()
-        self._inflight: dict[tuple[str, tuple[tuple[str, str], ...]], list[object]] = {}
-        self._cache: OrderedDict[tuple[str, tuple[tuple[str, str], ...]], tuple[bytes | None, str]] = OrderedDict()
-
-    def load(self, widget, url: str, headers: dict[str, str] | None):
-        request_headers = dict(headers or {})
-        key = (url, tuple(sorted(request_headers.items())))
-
-        with self._lock:
-            cached = self._cache.get(key)
-            if cached is not None:
-                self._cache.move_to_end(key)
-                data, error = cached
-                self.loaded.emit(widget, data, error)
-                return
-
-            waiting_widgets = self._inflight.get(key)
-            if waiting_widgets is not None:
-                waiting_widgets.append(widget)
-                return
-
-            self._inflight[key] = [widget]
-
-        self._executor.submit(self._fetch_cover, key, request_headers)
-
-    def _fetch_cover(self, key: tuple[str, tuple[tuple[str, str], ...]], headers: dict[str, str]) -> None:
-        url = key[0]
-        data = None
-        error = ""
-        try:
-            request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=20) as response:
-                data = response.read()
-        except Exception as e:
-            error = str(e)
-
-        with self._lock:
-            waiting_widgets = self._inflight.pop(key, [])
-            self._cache[key] = (data, error)
-            self._cache.move_to_end(key)
-            while len(self._cache) > self._MAX_CACHE_ENTRIES:
-                self._cache.popitem(last=False)
-
-        for widget in waiting_widgets:
-            self.loaded.emit(widget, data, error)
-
-
 class DiscoveryCatalogLoader(QObject):
 
     loaded = Signal(int, str, int, bool, object, str)
@@ -205,10 +145,10 @@ class DiscoveryCatalogLoader(QObject):
 
 class DiscoveryEntryWidget(QFrame):
 
-    def __init__(self, entry, on_download, cover_loader: DiscoveryCoverLoader, local_info: dict | None):
+    def __init__(self, entry, on_open_detail, cover_loader: DiscoveryCoverLoader, local_info: dict | None):
         super().__init__()
         self.entry = entry
-        self._on_download = on_download
+        self._on_open_detail = on_open_detail
         self._cover_loader = cover_loader
         self._local_info = local_info or {}
         self._card_width = CARD_WIDTH
@@ -261,7 +201,7 @@ class DiscoveryEntryWidget(QFrame):
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
-            self._on_download(self.entry.url)
+            self._on_open_detail(self.entry)
             event.accept()
             return
         super().mouseReleaseEvent(event)
@@ -358,7 +298,7 @@ class DiscoveryEntryWidget(QFrame):
         remote_count = self.entry.total_chapters
         if local_count and remote_count and remote_count > local_count:
             parts.append(f"New chapters available: {remote_count - local_count}")
-        parts.append("Click to download")
+        parts.append("Click to open details")
         return "\n".join(parts)
 
     def _refresh_new_chip(self):
@@ -535,7 +475,7 @@ class SiteBrowserPage(QWidget):
 
         self._show_message("", is_error=False)
         search_query = self._remote_search_query()
-        loading_label = f"Loading {self._display_name(provider.site_name)} page {self._current_page}"
+        loading_label = f"Loading {provider.get_display_name()} page {self._current_page}"
         if search_query:
             loading_label += f" for '{search_query}'"
         self.status_label.setText(loading_label + "...")
@@ -549,14 +489,14 @@ class SiteBrowserPage(QWidget):
 
     def _reload_scrapers(self, load_catalog: bool = True):
         current_key = self.site_combo.currentData()
-        self._providers_by_key = {
-            provider.site_name: provider for provider in get_all_discovery_providers()
-        }
+        providers = get_all_discovery_providers()
+        providers.sort(key=lambda provider: provider.get_display_name().casefold())
+        self._providers_by_key = {provider.site_name: provider for provider in providers}
 
         self.site_combo.blockSignals(True)
         self.site_combo.clear()
-        for site_name in sorted(self._providers_by_key):
-            self.site_combo.addItem(self._display_name(site_name), site_name)
+        for provider in providers:
+            self.site_combo.addItem(provider.get_display_name(), provider.site_name)
         self.site_combo.blockSignals(False)
 
         if self.site_combo.count() == 0:
@@ -709,7 +649,7 @@ class SiteBrowserPage(QWidget):
 
     def _show_empty_state(self):
         empty = QLabel("No series found for this page.")
-        if self._normalized_search_text():
+        if self._search_text.strip():
             empty.setText("No series match your search.")
         elif self.downloaded_only_btn.isChecked():
             empty.setText("No downloaded titles match the loaded discovery results.")
@@ -724,7 +664,7 @@ class SiteBrowserPage(QWidget):
             local_info = self._local_info_for_entry(entry)
             widget = DiscoveryEntryWidget(
                 entry,
-                on_download=self._start_download_for_entry,
+                on_open_detail=self._open_entry_detail,
                 cover_loader=self._cover_loader,
                 local_info=local_info,
             )
@@ -732,24 +672,16 @@ class SiteBrowserPage(QWidget):
             widget.installEventFilter(self)
             self._entry_widgets.append(widget)
 
-    def _start_download_for_entry(self, url: str):
-        if not url:
+    def _open_entry_detail(self, entry):
+        if not getattr(entry, "url", ""):
             self._show_message("This entry does not expose a downloadable series URL.", is_error=True)
             return
-        error = self.main_window.downloader.start_download_from_url(url)
-        if error:
-            self._show_message(error, is_error=True)
-            return
-        self._show_message("Download added to the downloader queue.", is_error=False)
-        self.main_window.open_downloader()
+        self.main_window.open_discovery_detail(entry)
 
     def _show_message(self, text: str, is_error: bool):
         self.error_label.setVisible(is_error and bool(text))
         self.error_label.setText(text if is_error else "")
         self.status_label.setText("" if is_error else text)
-
-    def _display_name(self, site_name: str) -> str:
-        return site_name.replace("_", " ").title()
 
     def _refresh_library_snapshot(self):
         try:
@@ -761,43 +693,10 @@ class SiteBrowserPage(QWidget):
             self._library_entries_by_site = {}
             return
 
-        title_snapshot = {}
-        source_snapshot = {}
-        library_entries_by_site = {}
-        for webtoon in webtoons:
-            info = {
-                "name": webtoon.name,
-                "webtoon": webtoon,
-                "chapters": len(getattr(webtoon, "chapters", []) or []),
-                "source_url": self.main_window.settings_store.get_source_url(webtoon.name),
-                "source_title": self.main_window.settings_store.get_source_title(webtoon.name),
-                "source_site": self.main_window.settings_store.get_source_site(webtoon.name),
-                "source_series_id": self.main_window.settings_store.get_source_series_id(webtoon.name),
-            }
-            title_snapshot[self._normalize_title(webtoon.name)] = info
-            source_title = info["source_title"]
-            if source_title:
-                title_snapshot.setdefault(self._normalize_title(source_title), info)
-            source_site = info["source_site"]
-            source_series_id = info["source_series_id"]
-            source_url = info["source_url"]
-            normalized_site = str(source_site).strip()
-            normalized_series_id = str(source_series_id).strip()
-            if normalized_site and normalized_series_id:
-                source_snapshot[(normalized_site, normalized_series_id)] = info
-            if normalized_site and source_url:
-                library_entries_by_site.setdefault(normalized_site, []).append(
-                    CatalogSeries(
-                        site=normalized_site,
-                        series_id=normalized_series_id or webtoon.name,
-                        title=str(info["source_title"] or webtoon.name),
-                        url=str(source_url),
-                        total_chapters=info["chapters"],
-                    )
-                )
-        self._library_titles = title_snapshot
-        self._library_sources = source_snapshot
-        self._library_entries_by_site = library_entries_by_site
+        snapshot = build_discovery_library_snapshot(webtoons, self.main_window.settings_store)
+        self._library_titles = snapshot.title_matches
+        self._library_sources = snapshot.source_matches
+        self._library_entries_by_site = snapshot.entries_by_site
         self._library_snapshot_dirty = False
         self._library_snapshot_path = load_library_path()
 
@@ -818,9 +717,6 @@ class SiteBrowserPage(QWidget):
         if service is None:
             return
         service.library_changed.connect(self._on_library_changed)
-
-    def _normalize_title(self, title: str) -> str:
-        return " ".join((title or "").casefold().split())
 
     def resizeEvent(self, event):
         scrollbar = self.scroll.verticalScrollBar()
@@ -925,7 +821,7 @@ class SiteBrowserPage(QWidget):
             self._append_entries(entries)
         visible_count = len(self._visible_entries())
         self.status_label.setText(
-            f"{visible_count} series loaded from {self._display_name(provider_key)}"
+            f"{visible_count} series loaded from {self._provider_display_name(provider_key)}"
         )
         self._sync_paging()
         if not self.downloaded_only_btn.isChecked() and not self._remote_search_query():
@@ -982,23 +878,34 @@ class SiteBrowserPage(QWidget):
             self._ensure_library_snapshot()
             self._render_entries()
 
+    def _provider_for_site(self, site_name: str | None):
+        if not site_name:
+            return None
+        return self._providers_by_key.get(str(site_name))
+
+    def _provider_for_entry(self, entry):
+        provider = self._provider_for_site(getattr(entry, "site", ""))
+        if provider is not None:
+            return provider
+        return self._current_provider()
+
+    def _provider_display_name(self, site_name: str | None) -> str:
+        provider = self._provider_for_site(site_name)
+        if provider is not None:
+            return provider.get_display_name()
+        return str(site_name or "Unknown")
+
     def _local_info_for_entry(self, entry) -> dict | None:
-        source_key = self._entry_source_key(entry)
-        if source_key is not None:
-            match = self._library_sources.get(source_key)
-            if match is not None:
-                return match
-        return self._library_titles.get(self._normalize_title(entry.title))
+        provider = self._provider_for_entry(entry)
+        if provider is None:
+            return None
+        return provider.match_entry_to_library(entry, self._library_sources, self._library_titles)
 
     def _entry_key(self, entry) -> str:
-        return str(getattr(entry, "url", "") or getattr(entry, "series_id", "") or getattr(entry, "title", ""))
-
-    def _entry_source_key(self, entry) -> tuple[str, str] | None:
-        site = str(getattr(entry, "site", "") or "").strip()
-        series_id = str(getattr(entry, "series_id", "") or "").strip()
-        if not site or not series_id:
-            return None
-        return site, series_id
+        provider = self._provider_for_entry(entry)
+        if provider is None:
+            return entry.identity_key()
+        return provider.entry_key(entry)
 
     def _visible_entries(self):
         if self.downloaded_only_btn.isChecked():
@@ -1011,13 +918,9 @@ class SiteBrowserPage(QWidget):
     def _downloaded_only_entries(self):
         self._ensure_library_snapshot()
         provider = self._current_provider()
-        provider_key = getattr(provider, "site_name", "") if provider is not None else ""
-        entries = list(self._library_entries_by_site.get(provider_key, []))
-        entries.sort(key=lambda entry: self._normalize_title(getattr(entry, "title", "")))
-        return entries
-
-    def _normalized_search_text(self) -> str:
-        return self._normalize_title(self._search_text)
+        if provider is None:
+            return []
+        return provider.downloaded_entries(self._library_entries_by_site)
 
     def _remote_search_query(self) -> str:
         if self.downloaded_only_btn.isChecked():
@@ -1025,15 +928,10 @@ class SiteBrowserPage(QWidget):
         return " ".join(str(self._search_text or "").split()).strip()
 
     def _entry_matches_search(self, entry) -> bool:
-        haystack = " ".join(
-            [
-                str(getattr(entry, "title", "") or ""),
-                str(getattr(entry, "author", "") or ""),
-                str(getattr(entry, "description", "") or ""),
-                str(getattr(entry, "latest_chapter", "") or ""),
-            ]
-        )
-        return self._normalized_search_text() in self._normalize_title(haystack)
+        provider = self._provider_for_entry(entry)
+        if provider is None:
+            return entry.matches_query(self._search_text)
+        return provider.matches_search(entry, self._search_text)
 
     def _on_search_text_changed(self, text: str):
         self._search_text = text
@@ -1167,3 +1065,4 @@ class SiteBrowserPage(QWidget):
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
+

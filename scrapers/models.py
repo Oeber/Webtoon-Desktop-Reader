@@ -2,6 +2,10 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
+def normalize_catalog_text(value: str) -> str:
+    return " ".join((value or "").casefold().split())
+
+
 @dataclass
 class PageInfo:
     index: int
@@ -42,6 +46,35 @@ class CatalogSeries:
     description: Optional[str] = None
     latest_chapter: Optional[str] = None
     total_chapters: Optional[int] = None
+
+    def normalized_title(self) -> str:
+        return normalize_catalog_text(self.title)
+
+    def source_key(self) -> tuple[str, str] | None:
+        site = str(self.site or "").strip()
+        series_id = str(self.series_id or "").strip()
+        if not site or not series_id:
+            return None
+        return site, series_id
+
+    def identity_key(self) -> str:
+        return str(self.url or self.series_id or self.title or "")
+
+    def search_text(self) -> str:
+        return " ".join(
+            [
+                str(self.title or ""),
+                str(self.author or ""),
+                str(self.description or ""),
+                str(self.latest_chapter or ""),
+            ]
+        )
+
+    def matches_query(self, query: str) -> bool:
+        normalized_query = normalize_catalog_text(query)
+        if not normalized_query:
+            return True
+        return normalized_query in normalize_catalog_text(self.search_text())
 
 
 @dataclass
