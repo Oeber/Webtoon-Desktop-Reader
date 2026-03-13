@@ -59,6 +59,7 @@ With it, you can:
 
 ### Library
 
+![Alt text](imgs/example/library.png)
 The Library page is your home screen.
 
 It shows all webtoons found inside your configured library folder and lets you:
@@ -73,6 +74,7 @@ It shows all webtoons found inside your configured library folder and lets you:
 
 ### Series Detail Page
 
+![Alt text](imgs/example/details.png)
 When you open a title, you get a series detail page.
 
 This page shows the chapter list and lets you:
@@ -83,14 +85,6 @@ This page shows the chapter list and lets you:
 - bookmark individual chapters
 - select multiple chapters for batch actions
 - start an update if the series has a saved source
-
-### Chapters
-
-Chapters are shown on the series detail page as your main reading list.
-
-From there, you can:
-
-- open any chapter directly
 - resume a chapter from your saved position
 - see which chapters are new
 - bookmark individual chapters
@@ -101,6 +95,7 @@ The app also remembers reading progress per chapter, so coming back later is eas
 
 ### Reader
 
+![Alt text](imgs/example/reader.png)
 The Reader page displays chapter images from your local files.
 
 It remembers your progress and supports:
@@ -112,6 +107,7 @@ It remembers your progress and supports:
 
 ### Discover
 
+![Alt text](imgs/example/discover.png)
 The Discover page lets you browse supported remote catalogs from inside the app.
 
 You can:
@@ -124,18 +120,21 @@ You can:
 
 ### Download
 
+![Alt text](imgs/example/download.png)
 The Download page is for one-off downloads.
 
 Paste a supported series or chapter URL and the app will try to download it into your library. Recent activity is kept in the app so you can see what finished, failed, or is still running.
 
 ### Updates
 
+![Alt text](imgs/example/updates.png)
 The Updates page is for titles already in your library that have a saved source URL.
 
 It scans your library for updateable series and lets you pull in new chapters without redownloading everything.
 
 ### Settings
 
+![Alt text](imgs/example/settings.png)
 The Settings page is where you configure app behavior.
 
 This includes things like:
@@ -146,6 +145,10 @@ This includes things like:
 - log viewing
 
 ### Ctrl+K Menu
+
+
+![Alt text](imgs/example/search1.png) 
+![Alt text](imgs/example/search2.png)
 
 Press `Ctrl+K` anywhere in the app to open the quick command menu.
 
