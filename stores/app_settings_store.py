@@ -14,6 +14,7 @@ def get_instance() -> "AppSettingsStore":
 class AppSettingsStore:
 
     def get(self, key: str, default=None):
+        key = self._normalize_key(key)
         conn = get_connection()
         row = conn.execute(
             "SELECT value FROM app_settings WHERE key = ?",
@@ -28,6 +29,7 @@ class AppSettingsStore:
         return self._coerce_value(raw_value, default)
 
     def set(self, key: str, value):
+        key = self._normalize_key(key)
         conn = get_connection()
         conn.execute(
             """INSERT INTO app_settings (key, value, updated_at)
@@ -38,6 +40,11 @@ class AppSettingsStore:
             (key, self._serialize_value(value)),
         )
         conn.commit()
+
+    def _normalize_key(self, key) -> str:
+        if key is None:
+            return ""
+        return str(key)
 
     def _serialize_value(self, value) -> str:
         if isinstance(value, bool):

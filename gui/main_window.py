@@ -230,8 +230,16 @@ class MainWindow(QMainWindow):
         self._set_sidebar_target("discovery")
 
     def open_site_authorization(self, site_name: str, url: str = "") -> bool:
-        dialog = SiteAuthDialog(site_name, url=url, parent=self)
-        return bool(dialog.exec())
+        dialog = SiteAuthDialog(site_name, url=url, parent=None)
+        dialog.setWindowModality(Qt.ApplicationModal)
+        dialog.showNormal()
+        dialog.raise_()
+        dialog.activateWindow()
+        result = bool(dialog.exec())
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+        return result
 
     def open_settings(self):
         self._hide_chapter_loading_overlay()

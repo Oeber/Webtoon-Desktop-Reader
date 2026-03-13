@@ -1,6 +1,7 @@
-param(
+﻿param(
     [string[]]$Site,
-    [switch]$ClearUserAgent
+    [switch]$ClearUserAgent,
+    [switch]$ClearWebEngine
 )
 
 $ErrorActionPreference = "Stop"
@@ -8,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $dbPath = Join-Path $projectRoot "data\reader.db"
+$webEngineRoot = Join-Path $projectRoot "data\webengine"
 
 if (-not (Test-Path $dbPath)) {
     throw "Database not found at $dbPath. Start the app once so it can create data\reader.db."
@@ -89,7 +91,6 @@ try:
     print(f"sites_with_cookie_values={total_cleared}")
 finally:
     conn.close()
-
 '@
 
 $arguments = @("-", $dbPath, $clearUserAgentFlag)
@@ -101,4 +102,28 @@ $script | & $pythonExe $arguments
 
 if ($LASTEXITCODE -ne 0) {
     throw "Failed to clear cached site cookies."
+}
+
+if ($ClearWebEngine -and (Test-Path $webEngineRoot)) {
+    $sitesToClear = @()
+    if ($Site) {
+        $sitesToClear = $Site
+    }
+    else {
+        $sitesToClear = Get-ChildItem $webEngineRoot -Directory |
+            ForEach-Object { $_.Name -replace '-cache$', '' } |
+            Select-Object -Unique
+    }
+
+    foreach ($siteName in $sitesToClear) {
+        foreach ($target in @(
+            (Join-Path $webEngineRoot $siteName),
+            (Join-Path $webEngineRoot "$siteName-cache")
+        )) {
+            if (Test-Path $target) {
+                Remove-Item $target -Recurse -Force -ErrorAction Stop
+                Write-Host "webengine_cleared=$target"
+            }
+        }
+    }
 }
