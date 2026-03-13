@@ -4,7 +4,23 @@ Webtoon Desktop Reader is a Windows desktop app for collecting, reading, and upd
 
 It gives you a library view, a reader, download/update tools, reading progress tracking, bookmarks, categories, and a discovery screen for browsing supported sources without leaving the app.
 
-## Chapter 1: Overview
+## Chapter 1: Installation and Running
+
+This project is intended to be released as a packaged executable.
+
+### Windows
+
+Launch the packaged `.exe` build and set your library folder from the Settings page the first time you open it.
+
+With the current build setup, Windows users do **not** need Python installed. The packaged `Webtoon Desktop Reader.exe` is built as a self-contained PyInstaller executable.
+
+### Linux
+
+Linux users cannot use the Windows `.exe` build directly.
+
+I do not currently provide a Linux build. If you want Linux support, a separate build would need to be created on Linux and released for Linux users.
+
+## Chapter 2: Overview
 
 ### Key Features
 
@@ -39,7 +55,7 @@ With it, you can:
 - organize titles with categories, bookmarks, and custom thumbnails
 - browse supported sites from inside the app and start downloads there
 
-## Chapter 2: Using the App
+## Chapter 3: Using the App
 
 ### Main Parts of the App
 
@@ -148,7 +164,7 @@ You can use it to:
 
 If you use keyboard navigation often, `Ctrl+K` is one of the fastest ways to work inside the app.
 
-## Chapter 3: Library and Files
+## Chapter 4: Library and Files
 
 ### How Your Files Are Organized
 
@@ -184,22 +200,6 @@ That includes:
 - `data/logs/`: current and archived log files
 - `data/profiles/`: optional profiler output
 - `data/thumbnails/`: generated or cached cover images
-
-## Chapter 4: Running the App
-
-This project is intended to be released as a packaged executable.
-
-### Windows
-
-Launch the packaged `.exe` build and set your library folder from the Settings page the first time you open it.
-
-With the current build setup, Windows users do **not** need Python installed. The packaged `Webtoon Desktop Reader.exe` is built as a self-contained PyInstaller executable.
-
-### Linux
-
-Linux users cannot use the Windows `.exe` build directly.
-
-I do not currently provide a Linux build. If you want Linux support, a separate build would need to be created on Linux and released for Linux users.
 
 ## Chapter 5: Advanced Downloading
 
