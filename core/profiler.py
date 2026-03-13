@@ -11,6 +11,7 @@ from core.app_paths import data_path
 DEFAULT_LIMIT = 75
 DEFAULT_CLOCK = "wall"
 DEFAULT_SORT = "ttot"
+MAX_PROFILE_RUNS = 5
 CLOCK_CHOICES = ("wall", "cpu")
 SORT_CHOICES = ("name", "ncall", "ttot", "tsub", "tavg")
 
@@ -77,6 +78,7 @@ class SessionProfiler:
         thread_stats = yappi.get_thread_stats()
         thread_stats.sort("ttot", "desc")
         self._write_thread_summary(thread_stats, self._config.output_dir / f"{self._config.name}.threads.txt")
+        self._trim_old_runs()
 
         yappi.clear_stats()
         self._logger.info("Profiler results written to %s", self._config.output_dir)
@@ -118,6 +120,37 @@ class SessionProfiler:
             lines.append(f"{stat.name[:40]:40} {stat.id:>8} {stat.sched_count:>8} {stat.ttot:>12.6f}")
 
         output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _trim_old_runs(self) -> None:
+        assert self._config.output_dir is not None
+
+        suffixes = (".functions.txt", ".threads.txt", ".callgrind", ".pstat")
+        runs: dict[str, list[Path]] = {}
+
+        for path in self._config.output_dir.iterdir():
+            if not path.is_file():
+                continue
+            for suffix in suffixes:
+                if path.name.endswith(suffix):
+                    run_name = path.name[: -len(suffix)]
+                    runs.setdefault(run_name, []).append(path)
+                    break
+
+        if len(runs) <= MAX_PROFILE_RUNS:
+            return
+
+        sorted_runs = sorted(
+            runs.items(),
+            key=lambda item: max(file.stat().st_mtime for file in item[1]),
+            reverse=True,
+        )
+
+        for _, files in sorted_runs[MAX_PROFILE_RUNS:]:
+            for file in files:
+                try:
+                    file.unlink()
+                except FileNotFoundError:
+                    continue
 
 
 def parse_profile_args(argv: list[str]) -> tuple[ProfileConfig, list[str]]:
