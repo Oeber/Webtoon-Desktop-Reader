@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$exePath = Join-Path $projectRoot "dist\main.exe"
+$exePath = Join-Path $projectRoot "dist\Webtoon Desktop Reader.exe"
 $logPath = Join-Path $projectRoot "dist\data\logs\current.log"
 
 if (-not (Test-Path $exePath)) {
