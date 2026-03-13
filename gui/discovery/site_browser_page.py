@@ -1,5 +1,7 @@
 import threading
 import urllib.request
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QObject, QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QFont, QFontMetrics, QImageReader, QPainter, QPainterPath, QPixmap
@@ -123,18 +125,60 @@ class DiscoveryTitleLabel(QLabel):
 class DiscoveryCoverLoader(QObject):
 
     loaded = Signal(object, object, str)
+    _MAX_WORKERS = 8
+    _MAX_CACHE_ENTRIES = 256
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._executor = ThreadPoolExecutor(
+            max_workers=self._MAX_WORKERS,
+            thread_name_prefix="discovery-cover",
+        )
+        self._lock = threading.Lock()
+        self._inflight: dict[tuple[str, tuple[tuple[str, str], ...]], list[object]] = {}
+        self._cache: OrderedDict[tuple[str, tuple[tuple[str, str], ...]], tuple[bytes | None, str]] = OrderedDict()
 
     def load(self, widget, url: str, headers: dict[str, str] | None):
-        def worker():
-            try:
-                request = urllib.request.Request(url, headers=headers or {})
-                with urllib.request.urlopen(request, timeout=20) as response:
-                    data = response.read()
-                self.loaded.emit(widget, data, "")
-            except Exception as e:
-                self.loaded.emit(widget, None, str(e))
+        request_headers = dict(headers or {})
+        key = (url, tuple(sorted(request_headers.items())))
 
-        threading.Thread(target=worker, daemon=True).start()
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                self._cache.move_to_end(key)
+                data, error = cached
+                self.loaded.emit(widget, data, error)
+                return
+
+            waiting_widgets = self._inflight.get(key)
+            if waiting_widgets is not None:
+                waiting_widgets.append(widget)
+                return
+
+            self._inflight[key] = [widget]
+
+        self._executor.submit(self._fetch_cover, key, request_headers)
+
+    def _fetch_cover(self, key: tuple[str, tuple[tuple[str, str], ...]], headers: dict[str, str]) -> None:
+        url = key[0]
+        data = None
+        error = ""
+        try:
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = response.read()
+        except Exception as e:
+            error = str(e)
+
+        with self._lock:
+            waiting_widgets = self._inflight.pop(key, [])
+            self._cache[key] = (data, error)
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._MAX_CACHE_ENTRIES:
+                self._cache.popitem(last=False)
+
+        for widget in waiting_widgets:
+            self.loaded.emit(widget, data, error)
 
 
 class DiscoveryCatalogLoader(QObject):
@@ -168,6 +212,7 @@ class DiscoveryEntryWidget(QFrame):
         self._card_width = CARD_WIDTH
         self._card_height = int(CARD_WIDTH * (CARD_HEIGHT / CARD_WIDTH))
         self.setCursor(Qt.PointingHandCursor)
+        self.setMouseTracking(True)
         self.setStyleSheet(TRANSPARENT_BG_STYLE)
         self.setFixedWidth(self._card_width + 16)
 
@@ -209,7 +254,8 @@ class DiscoveryEntryWidget(QFrame):
         layout.addLayout(info_row)
 
         self.setToolTip(self._build_tooltip())
-        self._load_cover()
+        self._cover_requested = False
+        self._cover_applied = False
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -226,13 +272,17 @@ class DiscoveryEntryWidget(QFrame):
         self.thumb_label.setStyleSheet(card_image_border_style("#2a2a2a", CARD_RADIUS))
         super().leaveEvent(event)
 
-    def _load_cover(self):
+    def ensure_cover_requested(self):
+        if self._cover_requested or self._cover_applied:
+            return
         if not self.entry.cover_url or self._cover_loader is None:
             return
+        self._cover_requested = True
         self._cover_loader.load(self, self.entry.cover_url, self.entry.cover_headers or {})
 
     def apply_cover_data(self, data):
         if not data:
+            self._cover_requested = False
             return
         pixmap = self._decode_cover_pixmap(data)
         if pixmap.isNull():
@@ -259,6 +309,7 @@ class DiscoveryEntryWidget(QFrame):
 
         self.thumb_label.setPixmap(rounded)
         self.thumb_label.setText("")
+        self._cover_applied = True
 
     def _decode_cover_pixmap(self, data) -> QPixmap:
         byte_array = QByteArray(data)
@@ -326,6 +377,7 @@ class SiteBrowserPage(QWidget):
     AUTO_LOAD_MORE_THRESHOLD_PX = 120
     AUTO_LOAD_MORE_TRIGGER_RATIO = 0.35
     AUTO_LOAD_MORE_DELAY_MS = 40
+    COVER_PRELOAD_MARGIN_PX = 240
 
     def __init__(self, main_window):
         super().__init__()
@@ -434,9 +486,12 @@ class SiteBrowserPage(QWidget):
         self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
         self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_position_changed)
         self.scroll.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
+        self.scroll.viewport().setMouseTracking(True)
         self.scroll.viewport().installEventFilter(self)
 
         self.content = QWidget()
+        self.content.setMouseTracking(True)
+        self.content.installEventFilter(self)
         self.content.setStyleSheet(f"background: {BG};")
         self.content_layout = QGridLayout(self.content)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
@@ -659,14 +714,15 @@ class SiteBrowserPage(QWidget):
     def _append_entry_widgets(self, entries):
         for entry in entries:
             local_info = self._local_info_for_entry(entry)
-            self._entry_widgets.append(
-                DiscoveryEntryWidget(
-                    entry,
-                    on_download=self._start_download_for_entry,
-                    cover_loader=self._cover_loader,
-                    local_info=local_info,
-                )
+            widget = DiscoveryEntryWidget(
+                entry,
+                on_download=self._start_download_for_entry,
+                cover_loader=self._cover_loader,
+                local_info=local_info,
             )
+            widget.setMouseTracking(True)
+            widget.installEventFilter(self)
+            self._entry_widgets.append(widget)
 
     def _start_download_for_entry(self, url: str):
         if not url:
@@ -793,6 +849,24 @@ class SiteBrowserPage(QWidget):
                 loading_row += 1
             self.content_layout.addWidget(self._loading_more_label, loading_row, 0, 1, columns, Qt.AlignTop)
 
+        self._request_visible_covers()
+
+    def _request_visible_covers(self):
+        if not self._entry_widgets:
+            return
+        viewport = self.scroll.viewport()
+        viewport_rect = viewport.rect().adjusted(
+            0,
+            -self.COVER_PRELOAD_MARGIN_PX,
+            0,
+            self.COVER_PRELOAD_MARGIN_PX,
+        )
+        for widget in self._entry_widgets:
+            top_left = widget.mapTo(viewport, widget.rect().topLeft())
+            widget_rect = widget.rect().translated(top_left)
+            if widget_rect.intersects(viewport_rect):
+                widget.ensure_cover_requested()
+
     def _on_cover_loaded(self, widget, data, error: str):
         if widget not in self._entry_widgets:
             return
@@ -855,9 +929,11 @@ class SiteBrowserPage(QWidget):
         self.refresh_btn.setEnabled(enabled)
 
     def _on_scroll_position_changed(self, _value: int):
+        self._request_visible_covers()
         self._schedule_auto_load_more(force_fill=False)
 
     def _on_scroll_range_changed(self, _minimum: int, _maximum: int):
+        self._request_visible_covers()
         self._schedule_auto_load_more(force_fill=True)
 
     def _schedule_auto_load_more(self, *, force_fill: bool):
@@ -980,36 +1056,52 @@ class SiteBrowserPage(QWidget):
                 scrollbar.setValue(scrollbar.maximum())
             else:
                 scrollbar.setValue(min(old_value, scrollbar.maximum()))
+            self._request_visible_covers()
 
         QTimer.singleShot(0, restore)
 
+    def _set_auto_scroll_enabled(self, enabled: bool, *, origin: QPoint | None = None):
+        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        if viewport is None:
+            return
+        self.auto_scroll = enabled
+        if enabled:
+            point = origin if origin is not None else QPoint()
+            self.auto_scroll_origin = QPoint(point)
+            self.current_mouse_pos = QPoint(point)
+            viewport.setCursor(Qt.SizeAllCursor)
+            if not self.scroll_timer.isActive():
+                self.scroll_timer.start(16)
+        else:
+            self.scroll_timer.stop()
+            viewport.unsetCursor()
+
     def eventFilter(self, obj, event):
         viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
-        if obj == viewport:
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
-                if self.auto_scroll:
-                    self.auto_scroll = False
-                    self.scroll_timer.stop()
-                    viewport.unsetCursor()
-                else:
-                    self.auto_scroll = True
-                    self.auto_scroll_origin = event.pos()
-                    self.current_mouse_pos = event.pos()
-                    viewport.setCursor(Qt.SizeAllCursor)
-                    self.scroll_timer.start(16)
-                viewport.update()
-                return True
+        if viewport is not None and isinstance(obj, QWidget):
+            handles_scroll_area_event = obj == viewport or obj == self.content or viewport.isAncestorOf(obj)
+            if handles_scroll_area_event:
+                event_type = event.type()
 
-            if event.type() == QEvent.MouseMove and self.auto_scroll:
-                self.current_mouse_pos = event.pos()
-                return True
+                if event_type in (QEvent.MouseButtonPress, QEvent.MouseMove):
+                    event_pos = event.pos() if obj == viewport else obj.mapTo(viewport, event.pos())
 
-            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and self.auto_scroll:
-                self.auto_scroll = False
-                self.scroll_timer.stop()
-                viewport.unsetCursor()
-                viewport.update()
-                return True
+                    if event_type == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                        self._set_auto_scroll_enabled(not self.auto_scroll, origin=event_pos)
+                        viewport.update()
+                        return True
+
+                    if event_type == QEvent.MouseMove and self.auto_scroll:
+                        self.current_mouse_pos = event_pos
+                        return True
+
+                    if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and self.auto_scroll:
+                        self._set_auto_scroll_enabled(False)
+                        viewport.update()
+                        return True
+
+                if event_type in (QEvent.Leave, QEvent.Hide, QEvent.FocusOut) and self.auto_scroll:
+                    self._set_auto_scroll_enabled(False)
 
         return super().eventFilter(obj, event)
 
