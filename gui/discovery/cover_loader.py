@@ -1,8 +1,8 @@
 import threading
-import urllib.request
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
+import requests
 from PySide6.QtCore import QObject, Signal
 
 
@@ -18,6 +18,7 @@ class DiscoveryCoverLoader(QObject):
             thread_name_prefix="discovery-cover",
         )
         self._lock = threading.Lock()
+        self._session_local = threading.local()
         self._inflight: dict[tuple[str, tuple[tuple[str, str], ...]], list[object]] = {}
         self._cache: OrderedDict[tuple[str, tuple[tuple[str, str], ...]], tuple[bytes | None, str]] = OrderedDict()
 
@@ -42,14 +43,30 @@ class DiscoveryCoverLoader(QObject):
 
         self._executor.submit(self._fetch_cover, key, request_headers)
 
+    def _get_session(self) -> requests.Session:
+        session = getattr(self._session_local, "session", None)
+        if session is not None:
+            return session
+
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=self._MAX_WORKERS,
+            pool_maxsize=self._MAX_WORKERS,
+        )
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        self._session_local.session = session
+        return session
+
     def _fetch_cover(self, key: tuple[str, tuple[tuple[str, str], ...]], headers: dict[str, str]) -> None:
         url = key[0]
         data = None
         error = ""
         try:
-            request = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(request, timeout=20) as response:
-                data = response.read()
+            session = self._get_session()
+            response = session.get(url, headers=headers, timeout=20)
+            response.raise_for_status()
+            data = response.content
         except Exception as e:
             error = str(e)
 

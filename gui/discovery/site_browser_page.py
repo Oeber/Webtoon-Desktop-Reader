@@ -1,4 +1,5 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QObject, QPoint, QSize, Qt, Signal, QTimer
 from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QImageReader, QPainter, QPainterPath, QPen, QPixmap
@@ -127,6 +128,13 @@ class DiscoveryCatalogLoader(QObject):
 
     loaded = Signal(int, str, int, bool, object, str)
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._executor = ThreadPoolExecutor(
+            max_workers=2,
+            thread_name_prefix="discovery-catalog",
+        )
+
     def load(self, request_id: int, provider, page: int, reset: bool, search_query: str = ""):
         provider_key = getattr(provider, "site_name", "") or ""
 
@@ -140,7 +148,7 @@ class DiscoveryCatalogLoader(QObject):
                 logger.exception("Unexpected catalog loading failure for %s", provider_key)
                 self.loaded.emit(request_id, provider_key, page, reset, None, str(e))
 
-        threading.Thread(target=worker, daemon=True).start()
+        self._executor.submit(worker)
 
 
 class DiscoveryEntryWidget(QFrame):
@@ -198,6 +206,8 @@ class DiscoveryEntryWidget(QFrame):
         self.setToolTip(self._build_tooltip())
         self._cover_requested = False
         self._cover_applied = False
+        if not self.entry.cover_url:
+            self._apply_local_cover_fallback()
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -218,6 +228,7 @@ class DiscoveryEntryWidget(QFrame):
         if self._cover_requested or self._cover_applied:
             return
         if not self.entry.cover_url or self._cover_loader is None:
+            self._apply_local_cover_fallback()
             return
         self._cover_requested = True
         self._cover_loader.load(self, self.entry.cover_url, self.entry.cover_headers or {})
@@ -225,10 +236,18 @@ class DiscoveryEntryWidget(QFrame):
     def apply_cover_data(self, data):
         if not data:
             self._cover_requested = False
+            self._apply_local_cover_fallback()
             return
         pixmap = self._decode_cover_pixmap(data)
         if pixmap.isNull():
+            self._cover_requested = False
+            self._apply_local_cover_fallback()
             return
+        self._apply_cover_pixmap(pixmap)
+
+    def _apply_cover_pixmap(self, pixmap: QPixmap) -> bool:
+        if pixmap.isNull():
+            return False
         scaled = pixmap.scaled(
             self._card_width,
             self._card_height,
@@ -252,6 +271,17 @@ class DiscoveryEntryWidget(QFrame):
         self.thumb_label.setPixmap(rounded)
         self.thumb_label.setText("")
         self._cover_applied = True
+        return True
+
+    def _apply_local_cover_fallback(self) -> bool:
+        local_webtoon = self._local_info.get("webtoon") if isinstance(self._local_info, dict) else None
+        local_path = getattr(local_webtoon, "thumbnail", "") or ""
+        if not local_path:
+            return False
+        pixmap = QPixmap(local_path)
+        if pixmap.isNull():
+            return False
+        return self._apply_cover_pixmap(pixmap)
 
     def _decode_cover_pixmap(self, data) -> QPixmap:
         byte_array = QByteArray(data)
@@ -319,7 +349,9 @@ class SiteBrowserPage(QWidget):
     AUTO_LOAD_MORE_THRESHOLD_PX = 120
     AUTO_LOAD_MORE_TRIGGER_RATIO = 0.35
     AUTO_LOAD_MORE_DELAY_MS = 40
-    COVER_PRELOAD_MARGIN_PX = 240
+    COVER_PRELOAD_MARGIN_PX = 120
+    COVER_REQUEST_BATCH_SIZE = 12
+    COVER_REQUEST_DEBOUNCE_MS = 16
 
     def __init__(self, main_window):
         super().__init__()
@@ -334,6 +366,9 @@ class SiteBrowserPage(QWidget):
         self._catalog_loader.loaded.connect(self._on_catalog_loaded)
         self._catalog_request_id = 0
         self._catalog_loading = False
+        self._inflight_catalog_signature = None
+        self._last_catalog_signature = None
+        self._pending_catalog_request = None
         self._library_titles = {}
         self._library_sources = {}
         self._library_entries_by_site = {}
@@ -344,7 +379,9 @@ class SiteBrowserPage(QWidget):
         self._empty_state_label = None
         self._loading_more_label = None
         self._entry_keys = set()
+        self._entry_columns = 1
         self._search_text = ""
+        self._last_cover_request_signature = None
         self._pending_append_anchor_bottom = False
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -358,6 +395,9 @@ class SiteBrowserPage(QWidget):
         self._auto_load_timer = QTimer(self)
         self._auto_load_timer.setSingleShot(True)
         self._auto_load_timer.timeout.connect(self._trigger_auto_load_more)
+        self._cover_request_timer = QTimer(self)
+        self._cover_request_timer.setSingleShot(True)
+        self._cover_request_timer.timeout.connect(self._request_visible_covers_now)
         self._auto_scroll_direction = 0
         self._auth_in_progress = False
         self._auto_scroll_cursors = {
@@ -411,7 +451,7 @@ class SiteBrowserPage(QWidget):
 
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setStyleSheet(BUTTON_STYLE)
-        self.refresh_btn.clicked.connect(lambda: self.refresh_catalog(reset=True))
+        self.refresh_btn.clicked.connect(lambda: self.refresh_catalog(reset=True, force=True))
         controls.addWidget(self.refresh_btn)
 
         controls.addStretch()
@@ -460,10 +500,7 @@ class SiteBrowserPage(QWidget):
             self._loaded_once = True
             self.refresh_catalog(reset=True)
 
-    def refresh_catalog(self, reset: bool = False):
-        if self._catalog_loading:
-            logger.info("Ignoring discovery refresh while a catalog request is already in flight")
-            return
+    def refresh_catalog(self, reset: bool = False, force: bool = False, page_override: int | None = None):
         provider = self._current_provider()
         if provider is None:
             self._show_message("No discovery providers are available yet.", is_error=False)
@@ -471,22 +508,58 @@ class SiteBrowserPage(QWidget):
             self._sync_paging()
             return
 
-        if reset:
-            self._current_page = 1
+        search_query = self._remote_search_query()
+        requested_page = max(1, int(page_override if page_override is not None else (1 if reset else self._current_page)))
+        signature = (provider.site_name, requested_page, search_query)
+
+        if self._catalog_loading:
+            if self._inflight_catalog_signature == signature and not force:
+                logger.info(
+                    "Ignoring duplicate discovery refresh for %s page=%d search=%r while request is in flight",
+                    provider.site_name,
+                    requested_page,
+                    search_query,
+                )
+                return
+            self._pending_catalog_request = {
+                "reset": reset,
+                "force": force,
+                "page": requested_page,
+                "signature": signature,
+            }
+            logger.info(
+                "Queued discovery refresh for %s page=%d search=%r force=%s",
+                provider.site_name,
+                requested_page,
+                search_query,
+                force,
+            )
+            return
+
+        if not force and self._last_catalog_signature == signature:
+            logger.info(
+                "Skipping no-op discovery refresh for %s page=%d search=%r",
+                provider.site_name,
+                requested_page,
+                search_query,
+            )
+            self._sync_paging()
+            return
 
         self._show_message("", is_error=False)
-        search_query = self._remote_search_query()
-        loading_label = f"Loading {provider.get_display_name()} page {self._current_page}"
+        loading_label = f"Loading {provider.get_display_name()} page {requested_page}"
         if search_query:
             loading_label += f" for '{search_query}'"
         self.status_label.setText(loading_label + "...")
-        logger.info("Loading catalog page %d for %s", self._current_page, provider.site_name)
+        logger.info("Loading catalog page %d for %s", requested_page, provider.site_name)
         self._ensure_library_snapshot()
         self._catalog_loading = True
+        self._inflight_catalog_signature = signature
+        self._current_page = requested_page
         self._set_controls_enabled(False)
-        self._set_loading_more_visible(not reset and not self.downloaded_only_btn.isChecked() and not self._remote_search_query())
+        self._set_loading_more_visible(not reset and not self.downloaded_only_btn.isChecked() and not search_query)
         self._catalog_request_id += 1
-        self._catalog_loader.load(self._catalog_request_id, provider, self._current_page, reset, self._remote_search_query())
+        self._catalog_loader.load(self._catalog_request_id, provider, requested_page, reset, search_query)
 
     def _reload_scrapers(self, load_catalog: bool = True):
         current_key = self.site_combo.currentData()
@@ -636,6 +709,14 @@ class SiteBrowserPage(QWidget):
     def _on_site_changed(self, _index: int):
         if self._catalog_loading:
             return
+        self.scroll.verticalScrollBar().setValue(0)
+        self._pending_append_anchor_bottom = False
+        if self.downloaded_only_btn.isChecked():
+            self._pending_catalog_request = None
+            self._last_catalog_signature = None
+            self._ensure_library_snapshot()
+            self._render_entries()
+            return
         self.refresh_catalog(reset=True)
 
     def load_more_catalog(self):
@@ -656,8 +737,8 @@ class SiteBrowserPage(QWidget):
             scrollbar.maximum(),
             self._pending_append_anchor_bottom,
         )
-        self._current_page += 1
-        self.refresh_catalog(reset=False)
+        next_page = self._current_page + 1
+        self.refresh_catalog(reset=False, page_override=next_page)
 
     def _sync_paging(self):
         self.page_label.setText(f"Page {self._current_page}")
@@ -691,6 +772,7 @@ class SiteBrowserPage(QWidget):
         anchor_to_bottom = self._pending_append_anchor_bottom or (old_maximum > 0 and self._is_near_bottom(scrollbar, value=old_value, maximum=old_maximum))
 
         self._clear_rendered_entries()
+        self._last_cover_request_signature = None
         visible_entries = self._visible_entries()
         if not visible_entries:
             self._show_empty_state()
@@ -753,6 +835,7 @@ class SiteBrowserPage(QWidget):
             if widget is not None:
                 widget.deleteLater()
         self._entry_widgets = []
+        self._entry_columns = 1
         self._empty_state_label = None
         if self._loading_more_label is not None:
             self._loading_more_label.deleteLater()
@@ -852,6 +935,7 @@ class SiteBrowserPage(QWidget):
         viewport_width = max(1, self.scroll.viewport().width())
         card_span = CARD_WIDTH + 16 + DISCOVERY_CARD_SPACING
         columns = max(1, viewport_width // max(1, card_span))
+        self._entry_columns = columns
 
         for index, widget in enumerate(self._entry_widgets):
             row = index // columns
@@ -864,38 +948,79 @@ class SiteBrowserPage(QWidget):
                 loading_row += 1
             self.content_layout.addWidget(self._loading_more_label, loading_row, 0, 1, columns, Qt.AlignTop)
 
-        self._request_visible_covers()
+        self._queue_visible_cover_request(force=True)
+
+    def _queue_visible_cover_request(self, *, force: bool = False):
+        if force:
+            self._last_cover_request_signature = None
+        if self._cover_request_timer.isActive():
+            return
+        self._cover_request_timer.start(self.COVER_REQUEST_DEBOUNCE_MS)
 
     def _request_visible_covers(self):
+        self._queue_visible_cover_request()
+
+    def _request_visible_covers_now(self):
         if not self._entry_widgets:
             return
         viewport = self.scroll.viewport()
+        scrollbar = self.scroll.verticalScrollBar()
+        content_top = max(0, scrollbar.value() - self.COVER_PRELOAD_MARGIN_PX)
+        content_bottom = scrollbar.value() + viewport.height() + self.COVER_PRELOAD_MARGIN_PX
         viewport_rect = viewport.rect().adjusted(
             0,
             -self.COVER_PRELOAD_MARGIN_PX,
             0,
             self.COVER_PRELOAD_MARGIN_PX,
         )
-        for widget in self._entry_widgets:
+        signature = (
+            content_top,
+            content_bottom,
+            viewport.width(),
+            self._entry_columns,
+            len(self._entry_widgets),
+        )
+        if signature == self._last_cover_request_signature:
+            return
+        self._last_cover_request_signature = signature
+
+        columns = max(1, self._entry_columns)
+        widget_height = self._entry_widgets[0].height() + DISCOVERY_CARD_SPACING
+        first_row = max(0, content_top // max(1, widget_height) - 1)
+        last_row = max(first_row, content_bottom // max(1, widget_height) + 1)
+        start_index = min(len(self._entry_widgets), first_row * columns)
+        end_index = min(len(self._entry_widgets), (last_row + 1) * columns)
+
+        visible_widgets = []
+        viewport_center_y = viewport.rect().center().y()
+        for widget in self._entry_widgets[start_index:end_index]:
             top_left = widget.mapTo(viewport, widget.rect().topLeft())
             widget_rect = widget.rect().translated(top_left)
             if widget_rect.intersects(viewport_rect):
-                widget.ensure_cover_requested()
+                distance = abs(widget_rect.center().y() - viewport_center_y)
+                visible_widgets.append((distance, widget))
+        visible_widgets.sort(key=lambda item: item[0])
+        for _distance, widget in visible_widgets[:self.COVER_REQUEST_BATCH_SIZE]:
+            widget.ensure_cover_requested()
 
     def _on_cover_loaded(self, widget, data, error: str):
         if widget not in self._entry_widgets:
             return
         if error:
             logger.warning("Discovery cover request failed for %s: %s", widget.entry.title, error)
+            self._queue_visible_cover_request(force=True)
             return
         widget.apply_cover_data(data)
+        self._queue_visible_cover_request(force=True)
 
     def _on_catalog_loaded(self, request_id: int, provider_key: str, page_number: int, reset: bool, page, error: str):
         if request_id != self._catalog_request_id:
             logger.info("Ignoring stale discovery catalog response for %s page %d", provider_key, page_number)
             return
 
+        completed_signature = self._inflight_catalog_signature
         self._catalog_loading = False
+        self._inflight_catalog_signature = None
         self._set_controls_enabled(True)
 
         current_provider = self._current_provider()
@@ -908,7 +1033,7 @@ class SiteBrowserPage(QWidget):
             if self._looks_like_expected_provider_block(error):
                 logger.info("Catalog access blocked for %s page %d: %s", provider_key, page_number, error)
                 if provider_key == "hiper_cool" and self._authorize_current_site():
-                    self.refresh_catalog(reset=True)
+                    self.refresh_catalog(reset=True, force=True)
                     return
             else:
                 logger.warning("Catalog loading failed for %s page %d: %s", provider_key, page_number, error)
@@ -918,6 +1043,7 @@ class SiteBrowserPage(QWidget):
                 self._has_next_page = False
             self._set_loading_more_visible(False)
             self._sync_paging()
+            self._run_pending_catalog_request(completed_signature)
             return
 
         self._set_loading_more_visible(False)
@@ -936,6 +1062,7 @@ class SiteBrowserPage(QWidget):
             self._set_entries(entries)
         else:
             self._append_entries(entries)
+        self._last_catalog_signature = completed_signature
         visible_count = len(self._visible_entries())
         self.status_label.setText(
             f"{visible_count} series loaded from {self._provider_display_name(provider_key)}"
@@ -943,6 +1070,27 @@ class SiteBrowserPage(QWidget):
         self._sync_paging()
         if not self.downloaded_only_btn.isChecked() and not self._remote_search_query():
             self._schedule_auto_load_more(force_fill=True)
+        self._run_pending_catalog_request(completed_signature)
+
+    def _run_pending_catalog_request(self, completed_signature=None):
+        pending = self._pending_catalog_request
+        self._pending_catalog_request = None
+        if not pending:
+            return
+        signature = pending.get("signature")
+        if signature == completed_signature and not pending.get("force"):
+            logger.info(
+                "Dropping queued duplicate discovery refresh for %s page=%d search=%r",
+                signature[0],
+                signature[1],
+                signature[2],
+            )
+            return
+        self.refresh_catalog(
+            reset=bool(pending.get("reset", False)),
+            force=bool(pending.get("force", False)),
+            page_override=pending.get("page"),
+        )
 
     def _set_controls_enabled(self, enabled: bool):
         self.site_combo.setEnabled(enabled)
@@ -1070,11 +1218,15 @@ class SiteBrowserPage(QWidget):
     def _on_downloaded_only_toggled(self, checked: bool):
         self._auto_load_timer.stop()
         self._search_timer.stop()
+        self.scroll.verticalScrollBar().setValue(0)
+        self._pending_append_anchor_bottom = False
+        self._pending_catalog_request = None
+        self._last_catalog_signature = None
         if checked:
             self._ensure_library_snapshot()
             self._render_entries()
             return
-        self.refresh_catalog(reset=True)
+        self.refresh_catalog(reset=True, force=True)
 
     def _restore_scroll_position(self, old_value: int, anchor_to_bottom: bool):
         def restore():
@@ -1083,7 +1235,7 @@ class SiteBrowserPage(QWidget):
                 scrollbar.setValue(scrollbar.maximum())
             else:
                 scrollbar.setValue(min(old_value, scrollbar.maximum()))
-            self._request_visible_covers()
+            self._queue_visible_cover_request(force=True)
 
         QTimer.singleShot(0, restore)
 
@@ -1186,4 +1338,6 @@ class SiteBrowserPage(QWidget):
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
+
+
 

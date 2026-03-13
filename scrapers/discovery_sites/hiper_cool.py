@@ -1,4 +1,4 @@
-﻿import re
+import re
 from urllib.parse import quote_plus, urljoin
 
 import requests
@@ -29,6 +29,11 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         ),
         "Referer": BASE + "/",
     }
+    _CATALOG_ENTRY_SELECTORS = (
+        ".page-item-detail",
+        ".c-tabs-item__content",
+        ".item-summary",
+    )
 
     def get_display_name(self) -> str:
         return "HiperCool"
@@ -39,38 +44,39 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         logger.info("HiperCool discovery: fetching catalog page %d search=%r", page, search_query)
 
         last_error = ""
-        for url in self._candidate_urls(page, search_query):
-            session = requests.Session()
-            apply_site_cookies(session, self.site_name)
-            try:
-                response = session.get(url, headers=self._request_headers(), timeout=30)
-            except Exception as e:
-                logger.warning("HiperCool discovery: fetch failed for %s: %s", url, e)
-                last_error = str(e)
-                continue
-            finally:
+        session = requests.Session()
+        apply_site_cookies(session, self.site_name)
+        try:
+            for url in self._candidate_urls(page, search_query):
                 try:
-                    session.close()
-                except Exception:
-                    pass
+                    response = session.get(url, headers=self._request_headers(), timeout=30)
+                except Exception as e:
+                    logger.warning("HiperCool discovery: fetch failed for %s: %s", url, e)
+                    last_error = str(e)
+                    continue
 
-            if response.status_code != 200:
+                if response.status_code != 200:
+                    if self._looks_like_cloudflare_block(response.text, response.status_code):
+                        raise ScraperError("HiperCool blocked the catalog request with Cloudflare.")
+                    logger.warning(
+                        "HiperCool discovery: route %s returned %d",
+                        url,
+                        response.status_code,
+                    )
+                    last_error = f"HTTP {response.status_code}"
+                    continue
+
                 if self._looks_like_cloudflare_block(response.text, response.status_code):
                     raise ScraperError("HiperCool blocked the catalog request with Cloudflare.")
-                logger.warning(
-                    "HiperCool discovery: route %s returned %d",
-                    url,
-                    response.status_code,
-                )
-                last_error = f"HTTP {response.status_code}"
-                continue
 
-            if self._looks_like_cloudflare_block(response.text, response.status_code):
-                raise ScraperError("HiperCool blocked the catalog request with Cloudflare.")
-
-            result = self._catalog_page_from_html(page, response.text, source_url=url)
-            if result.entries or self._page_has_navigation(response.text, page):
-                return result
+                result = self._catalog_page_from_html(page, response.text, source_url=url)
+                if result.entries or self._page_has_navigation(response.text, page):
+                    return result
+        finally:
+            try:
+                session.close()
+            except Exception:
+                pass
 
         if search_query:
             raise ScraperError(f"Failed to load HiperCool search results for '{search_query}'")
@@ -112,8 +118,8 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         entries = []
         seen_urls = set()
 
-        for link in soup.select("a[href]"):
-            entry = self._entry_from_link(link, seen_urls)
+        for node in self._catalog_entry_nodes(soup):
+            entry = self._entry_from_node(node, seen_urls)
             if entry is not None:
                 entries.append(entry)
 
@@ -129,7 +135,25 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
             has_next_page=self._soup_has_next_page(soup, page),
         )
 
-    def _entry_from_link(self, link, seen_urls: set[str]) -> CatalogSeries | None:
+    def _catalog_entry_nodes(self, soup: BeautifulSoup) -> list:
+        nodes = []
+        seen_ids = set()
+        for selector in self._CATALOG_ENTRY_SELECTORS:
+            for node in soup.select(selector):
+                node_id = id(node)
+                if node_id in seen_ids:
+                    continue
+                seen_ids.add(node_id)
+                nodes.append(node)
+        if nodes:
+            return nodes
+        return list(soup.select("a[href*='/manga/']"))
+
+    def _entry_from_node(self, node, seen_urls: set[str]) -> CatalogSeries | None:
+        link = self._entry_link(node)
+        if link is None:
+            return None
+
         href = urljoin(self.BASE, str(link.get("href") or "").strip()).rstrip("/")
         if not href or "/manga/" not in href or "/capitulo-" in href.lower():
             return None
@@ -138,13 +162,12 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         if not slug or href in seen_urls:
             return None
 
-        title = self._extract_title(link, slug)
+        container = self._entry_container(node, link)
+        title = self._extract_title(container, link, slug)
         if not title:
             return None
 
-
         seen_urls.add(href)
-        container = self._entry_container(link)
         latest_chapter = self._extract_latest_chapter(container)
         total_chapters = self._extract_total_chapters(container)
         if total_chapters is None:
@@ -163,8 +186,24 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
             total_chapters=total_chapters,
         )
 
-    def _entry_container(self, link):
-        current = link
+    def _entry_link(self, node):
+        if getattr(node, "name", None) == "a" and node.get("href"):
+            return node
+        for selector in (
+            ".item-summary a[href]",
+            ".manga-title a[href]",
+            ".post-title a[href]",
+            "h3 a[href]",
+            "h5 a[href]",
+            "a[href]",
+        ):
+            link = node.select_one(selector)
+            if link is not None:
+                return link
+        return None
+
+    def _entry_container(self, node, link):
+        current = node
         for _ in range(6):
             if current is None:
                 break
@@ -181,20 +220,20 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
             ):
                 return current
             current = current.parent
-        return link.parent
+        return node if getattr(node, "get_text", None) is not None else link.parent
 
-    def _extract_title(self, link, slug: str) -> str:
-        for node in (
-            link.select_one(".item-summary a"),
-            link.select_one(".manga-title a"),
-            link.select_one(".post-title"),
-            link.select_one("h3"),
-            link.select_one("h5"),
+    def _extract_title(self, container, link, slug: str) -> str:
+        for candidate in (
+            getattr(container, "select_one", lambda *_: None)(".item-summary a"),
+            getattr(container, "select_one", lambda *_: None)(".manga-title a"),
+            getattr(container, "select_one", lambda *_: None)(".post-title"),
+            getattr(container, "select_one", lambda *_: None)("h3"),
+            getattr(container, "select_one", lambda *_: None)("h5"),
             link,
         ):
-            if node is None:
+            if candidate is None:
                 continue
-            text = " ".join(node.get_text(" ", strip=True).split()).strip()
+            text = " ".join(candidate.get_text(" ", strip=True).split()).strip()
             if text:
                 return text
 
