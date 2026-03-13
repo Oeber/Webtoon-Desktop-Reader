@@ -44,6 +44,13 @@ COMMANDS = [
         "requires_argument": True,
     },
     {
+        "name": "/search",
+        "template": "/search ",
+        "summary": "Search Discover with /search <scraper> <title>.",
+        "mode": "discover",
+        "requires_argument": True,
+    },
+    {
         "name": "/library",
         "template": "/library",
         "summary": "Go to the library page.",
@@ -249,6 +256,9 @@ class GlobalSearchDialog(QDialog):
         if mode == "read":
             self._show_title_results(command, remainder, action="read_title")
             return
+        if mode == "discover":
+            self._show_discovery_results(command, remainder)
+            return
         if mode == "help":
             self._show_help_results()
             return
@@ -354,6 +364,114 @@ class GlobalSearchDialog(QDialog):
 
         self.results.setCurrentRow(0)
 
+    def _show_discovery_results(self, command: dict, remainder: str):
+        scraper_query, title_query, provider_key = self._split_discovery_query(remainder)
+        scraper_matches = self.main_window.discovery.matching_provider_labels(scraper_query)
+
+        if not remainder.strip():
+            self._add_command_preview(command)
+            self._add_message_item("Type /search <scraper> <title> to search Discover.")
+            self._add_discovery_scraper_items(scraper_matches)
+            self.results.setCurrentRow(0)
+            return
+
+        if provider_key is None:
+            self._add_command_preview(command)
+            if scraper_matches:
+                self._add_message_item("Choose a scraper, then type a title.")
+                self._add_discovery_scraper_items(scraper_matches)
+            else:
+                self._add_message_item(f"No scrapers match '{scraper_query}'.")
+                providers = self.main_window.discovery.available_provider_labels()
+                if providers:
+                    self._add_message_item(f"Available scrapers: {', '.join(providers)}")
+            self.results.setCurrentRow(0)
+            return
+
+        if not title_query:
+            self._add_command_preview(command)
+            self._add_message_item(f"Type a title after '{scraper_query}'.")
+            self._add_discovery_scraper_items(scraper_matches)
+            self.results.setCurrentRow(0)
+            return
+
+        item = QListWidgetItem(f"Discover: {scraper_query} -> {title_query}")
+        item.setData(ITEM_ACTION_ROLE, "discovery_search")
+        item.setData(ITEM_WEBTOON_ROLE, {"query": title_query, "scraper": scraper_query})
+        item.setToolTip(f"Search Discover for '{title_query}' using '{scraper_query}'")
+        self.results.addItem(item)
+        self.results.setCurrentItem(item)
+
+    def _add_discovery_scraper_items(self, labels: list[str]):
+        for label in labels[:20]:
+            item = QListWidgetItem(f"Scraper: {label}")
+            item.setData(ITEM_ACTION_ROLE, "discovery_scraper_preview")
+            item.setData(ITEM_COMMAND_ROLE, self._discovery_scraper_replacement(label))
+            item.setToolTip(f"Use scraper '{label}'")
+            self.results.addItem(item)
+
+    def _split_discovery_query(self, text: str) -> tuple[str, str, str | None]:
+        query = " ".join(str(text or "").split()).strip()
+        if not query:
+            return "", "", None
+
+        parts = query.split(" ")
+        discovery_page = self.main_window.discovery
+
+        for end in range(len(parts), 0, -1):
+            scraper_candidate = " ".join(parts[:end]).strip()
+            provider_key = discovery_page.resolve_provider_key(scraper_candidate)
+            if provider_key is None:
+                continue
+            title_query = " ".join(parts[end:]).strip()
+            return scraper_candidate, title_query, provider_key
+
+        return query, "", None
+
+    def _discovery_scraper_replacement(self, scraper_label: str) -> str:
+        return f"/search {scraper_label} "
+
+    def _handle_discovery_scraper_tab_completion(self, command_name: str, remainder: str, backward: bool) -> bool:
+        scraper_query, title_query, _provider_key = self._split_discovery_query(remainder)
+        if title_query:
+            return False
+
+        session_prefix = f"{command_name}|discover"
+        current_text = self.input.text().strip()
+        existing_replacements = {
+            self._discovery_scraper_replacement(label).strip()
+            for label in self._tab_completion_matches
+        }
+        active_session = (
+            self._tab_completion_matches
+            and self._tab_completion_prefix == session_prefix
+            and current_text in existing_replacements
+        )
+
+        if active_session:
+            matches = list(self._tab_completion_matches)
+        else:
+            matches = self.main_window.discovery.matching_provider_labels(scraper_query)
+            if not matches:
+                return False
+            self._tab_completion_prefix = session_prefix
+            self._tab_completion_matches = matches
+            self._tab_completion_index = len(matches) - 1 if backward else 0
+
+        if active_session:
+            step = -1 if backward else 1
+            self._tab_completion_index = (self._tab_completion_index + step) % len(matches)
+
+        replacement = self._discovery_scraper_replacement(matches[self._tab_completion_index])
+        self._preserve_command_preview_matches = False
+        self._applying_tab_completion = True
+        try:
+            self.input.setText(replacement)
+            self.input.setCursorPosition(len(replacement))
+        finally:
+            self._applying_tab_completion = False
+        return True
+
     def _split_title_and_chapter_query(self, text: str) -> tuple[str, str | None]:
         query = (text or "").strip()
         if not query:
@@ -429,9 +547,15 @@ class GlobalSearchDialog(QDialog):
 
     def _handle_tab_completion(self, backward: bool) -> None:
         text = self.input.text()
-        command_name, has_space, _ = self._split_command_query(text)
+        command_name, has_space, remainder = self._split_command_query(text)
         if not command_name:
             return
+
+        command = COMMANDS_BY_NAME.get(command_name)
+        if has_space and command is not None and command["mode"] == "discover":
+            if self._handle_discovery_scraper_tab_completion(command_name, remainder, backward):
+                return
+
         if has_space:
             self._cycle_result_selection(backward=backward)
             return
@@ -532,11 +656,26 @@ class GlobalSearchDialog(QDialog):
             return False
 
         command = COMMANDS_BY_NAME.get(command_name)
-        if command is None or command["mode"] not in {"open", "read", "update"}:
+        if command is None:
             return False
 
         item = self.results.currentItem()
-        if item is None or item.data(ITEM_ACTION_ROLE) not in {"open_detail", "read_title", "update"}:
+        if item is None:
+            return False
+
+        if command["mode"] == "discover" and item.data(ITEM_ACTION_ROLE) == "discovery_scraper_preview":
+            replacement = item.data(ITEM_COMMAND_ROLE)
+            if not replacement:
+                return False
+            self.input.setText(str(replacement))
+            self.input.setFocus()
+            self.input.setCursorPosition(len(str(replacement)))
+            return True
+
+        if command["mode"] not in {"open", "read", "update"}:
+            return False
+
+        if item.data(ITEM_ACTION_ROLE) not in {"open_detail", "read_title", "update"}:
             return False
 
         webtoon = item.data(ITEM_WEBTOON_ROLE)
@@ -568,11 +707,27 @@ class GlobalSearchDialog(QDialog):
             self.input.setCursorPosition(len(command_text))
             return
 
+        if action == "discovery_scraper_preview":
+            command_text = item.data(ITEM_COMMAND_ROLE) or "/search "
+            self.input.setText(str(command_text))
+            self.input.setFocus()
+            self.input.setCursorPosition(len(str(command_text)))
+            return
+
         if action == "download":
             url = item.data(ITEM_WEBTOON_ROLE)
             logger.info("Global search command selected download for %s", url)
             error = self.main_window.downloader.start_download_from_url(url)
             if error is None:
+                self.close()
+            return
+
+        if action == "discovery_search":
+            payload = item.data(ITEM_WEBTOON_ROLE) or {}
+            query = str(payload.get("query", "")).strip()
+            scraper = str(payload.get("scraper", "")).strip()
+            logger.info("Global search command selected discovery query=%r scraper=%r", query, scraper)
+            if self.main_window.open_discovery_search(query=query, scraper=scraper):
                 self.close()
             return
 
