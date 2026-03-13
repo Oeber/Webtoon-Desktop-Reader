@@ -4,7 +4,7 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QObject, QPoint, QSize, Qt, Signal, QTimer
-from PySide6.QtGui import QFont, QFontMetrics, QImageReader, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
@@ -44,6 +44,8 @@ from scrapers.models import CatalogSeries
 
 logger = get_logger(__name__)
 DISCOVERY_CARD_SPACING = 16
+DISCOVERY_AUTO_SCROLL_CURSOR_SIZE = 32
+DISCOVERY_AUTO_SCROLL_LINE = "#fff0ec"
 
 DISCOVERY_COMBO_STYLE = """
     QComboBox {
@@ -416,6 +418,12 @@ class SiteBrowserPage(QWidget):
         self._auto_load_timer = QTimer(self)
         self._auto_load_timer.setSingleShot(True)
         self._auto_load_timer.timeout.connect(self._trigger_auto_load_more)
+        self._auto_scroll_direction = 0
+        self._auto_scroll_cursors = {
+            -1: self._build_auto_scroll_cursor(-1),
+            0: self._build_auto_scroll_cursor(0),
+            1: self._build_auto_scroll_cursor(1),
+        }
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -1060,6 +1068,47 @@ class SiteBrowserPage(QWidget):
 
         QTimer.singleShot(0, restore)
 
+    def _build_auto_scroll_cursor(self, direction: int) -> QCursor:
+        size = DISCOVERY_AUTO_SCROLL_CURSOR_SIZE
+        center = size // 2
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        painter.setPen(QPen(QColor(DISCOVERY_AUTO_SCROLL_LINE), 2))
+        painter.setBrush(QColor(DISCOVERY_AUTO_SCROLL_LINE))
+
+        def draw_arrow_up() -> None:
+            painter.drawLine(center, 5, center, 13)
+            painter.drawLine(center, 5, center - 4, 9)
+            painter.drawLine(center, 5, center + 4, 9)
+
+        def draw_arrow_down() -> None:
+            painter.drawLine(center, size - 6, center, size - 14)
+            painter.drawLine(center, size - 6, center - 4, size - 10)
+            painter.drawLine(center, size - 6, center + 4, size - 10)
+
+        if direction <= 0:
+            draw_arrow_up()
+        if direction >= 0:
+            draw_arrow_down()
+
+        painter.end()
+
+        return QCursor(pixmap, center, center)
+
+    def _set_auto_scroll_direction(self, direction: int) -> None:
+        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        if viewport is None or not self.auto_scroll:
+            return
+        normalized = -1 if direction < 0 else 1 if direction > 0 else 0
+        if normalized == self._auto_scroll_direction:
+            return
+        self._auto_scroll_direction = normalized
+        viewport.setCursor(self._auto_scroll_cursors[normalized])
+
     def _set_auto_scroll_enabled(self, enabled: bool, *, origin: QPoint | None = None):
         viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
         if viewport is None:
@@ -1069,10 +1118,12 @@ class SiteBrowserPage(QWidget):
             point = origin if origin is not None else QPoint()
             self.auto_scroll_origin = QPoint(point)
             self.current_mouse_pos = QPoint(point)
-            viewport.setCursor(Qt.SizeAllCursor)
+            self._auto_scroll_direction = 0
+            viewport.setCursor(self._auto_scroll_cursors[0])
             if not self.scroll_timer.isActive():
                 self.scroll_timer.start(16)
         else:
+            self._auto_scroll_direction = 0
             self.scroll_timer.stop()
             viewport.unsetCursor()
 
@@ -1093,6 +1144,7 @@ class SiteBrowserPage(QWidget):
 
                     if event_type == QEvent.MouseMove and self.auto_scroll:
                         self.current_mouse_pos = event_pos
+                        self._set_auto_scroll_direction(event_pos.y() - self.auto_scroll_origin.y())
                         return True
 
                     if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and self.auto_scroll:
@@ -1109,7 +1161,9 @@ class SiteBrowserPage(QWidget):
         dy = self.current_mouse_pos.y() - self.auto_scroll_origin.y()
         deadzone = 8
         if abs(dy) <= deadzone:
+            self._set_auto_scroll_direction(0)
             return
+        self._set_auto_scroll_direction(dy)
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))

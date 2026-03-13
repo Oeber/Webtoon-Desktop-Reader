@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
     QPushButton, QComboBox, QHBoxLayout, QDialog, QSlider, QMessageBox
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QImageReader
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QImageReader, QCursor
 from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QObject, QRect, QSize
 
 from gui.common.styles import (
@@ -45,6 +45,8 @@ PREVIEW_EAGER_COUNT = 4
 PREVIEW_BATCH_SIZE = 16
 PREVIEW_BATCH_MS = 24
 SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
+VIEWER_AUTO_SCROLL_CURSOR_SIZE = 32
+VIEWER_AUTO_SCROLL_LINE = "#fff0ec"
 logger = get_logger(__name__)
 
 
@@ -721,17 +723,26 @@ class ViewerPage(QWidget):
         self._resize_timer.setInterval(150)
         self._resize_timer.timeout.connect(self.rescale_images)
 
+        self.scroll.viewport().setMouseTracking(True)
         self.scroll.viewport().installEventFilter(self)
         self.scroll.setMouseTracking(True)
 
         self.container = QWidget()
+        self.container.setMouseTracking(True)
         self.container.installEventFilter(self)
         self.image_layout = QVBoxLayout(self.container)
         self.image_layout.setSpacing(0)
         self.image_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
 
+        self.preview.setMouseTracking(True)
         self.preview.installEventFilter(self)
+        self._auto_scroll_direction = 0
+        self._auto_scroll_cursors = {
+            -1: self._build_auto_scroll_cursor(-1),
+            0: self._build_auto_scroll_cursor(0),
+            1: self._build_auto_scroll_cursor(1),
+        }
 
         self.image_labels = []
         self._label_pool: list[QLabel] = []
@@ -1141,6 +1152,8 @@ class ViewerPage(QWidget):
             label = QLabel(self.container)
             label.setAlignment(Qt.AlignCenter)
             label.setMinimumHeight(400)
+            label.setMouseTracking(True)
+            label.installEventFilter(self)
         label.show()
         return label
 
@@ -1701,6 +1714,63 @@ class ViewerPage(QWidget):
         super().showEvent(event)
         self.setFocus()
 
+    def _build_auto_scroll_cursor(self, direction: int) -> QCursor:
+        size = VIEWER_AUTO_SCROLL_CURSOR_SIZE
+        center = size // 2
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.transparent)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(VIEWER_AUTO_SCROLL_LINE), 2))
+        painter.setBrush(QColor(VIEWER_AUTO_SCROLL_LINE))
+
+        def draw_arrow_up() -> None:
+            painter.drawLine(center, 5, center, 13)
+            painter.drawLine(center, 5, center - 4, 9)
+            painter.drawLine(center, 5, center + 4, 9)
+
+        def draw_arrow_down() -> None:
+            painter.drawLine(center, size - 6, center, size - 14)
+            painter.drawLine(center, size - 6, center - 4, size - 10)
+            painter.drawLine(center, size - 6, center + 4, size - 10)
+
+        if direction <= 0:
+            draw_arrow_up()
+        if direction >= 0:
+            draw_arrow_down()
+
+        painter.end()
+        return QCursor(pixmap, center, center)
+
+    def _set_auto_scroll_direction(self, direction: int) -> None:
+        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        if viewport is None or not self.auto_scroll:
+            return
+        normalized = -1 if direction < 0 else 1 if direction > 0 else 0
+        if normalized == self._auto_scroll_direction:
+            return
+        self._auto_scroll_direction = normalized
+        viewport.setCursor(self._auto_scroll_cursors[normalized])
+
+    def _set_auto_scroll_enabled(self, enabled: bool, *, origin: QPoint | None = None):
+        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        if viewport is None:
+            return
+        self.auto_scroll = enabled
+        if enabled:
+            point = origin if origin is not None else QPoint()
+            self.auto_scroll_origin = QPoint(point)
+            self.current_mouse_pos = QPoint(point)
+            self._auto_scroll_direction = 0
+            viewport.setCursor(self._auto_scroll_cursors[0])
+            if not self.scroll_timer.isActive():
+                self.scroll_timer.start(16)
+        else:
+            self._auto_scroll_direction = 0
+            self.scroll_timer.stop()
+            viewport.unsetCursor()
+
     def eventFilter(self, obj, event):
         container = getattr(self, "container", None)
         preview = getattr(self, "preview", None)
@@ -1712,62 +1782,38 @@ class ViewerPage(QWidget):
             if event.type() == QEvent.MouseButtonPress:
                 self.setFocus()
 
-            if viewport is not None and obj == viewport:
-                if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
-                    if self.auto_scroll:
-                        self.auto_scroll = False
-                        self.scroll_timer.stop()
-                        self.scroll.viewport().unsetCursor()
-                        self.scroll.viewport().update()
-                    else:
-                        self.auto_scroll = True
-                        self.auto_scroll_origin = event.pos()
-                        self.current_mouse_pos = event.pos()
-                        self.scroll.viewport().setCursor(Qt.SizeAllCursor)
-                        self.scroll_timer.start(16)
-                    self.setFocus()
-                    return True
+            if viewport is not None and isinstance(obj, QWidget):
+                handles_scroll_area_event = obj == viewport or obj == container or obj == preview or viewport.isAncestorOf(obj)
+                if handles_scroll_area_event:
+                    event_type = event.type()
 
-                if event.type() == QEvent.MouseMove and self.auto_scroll:
-                    self.current_mouse_pos = event.pos()
-                    self.scroll.viewport().update()
-                    return True
+                    if event_type in (QEvent.MouseButtonPress, QEvent.MouseMove):
+                        event_pos = event.pos() if obj == viewport else obj.mapTo(viewport, event.pos())
 
-                if (
-                    event.type() == QEvent.MouseButtonPress
-                    and event.button() == Qt.LeftButton
-                    and self.auto_scroll
-                ):
-                    self.auto_scroll = False
-                    self.scroll_timer.stop()
-                    self.scroll.viewport().unsetCursor()
-                    self.scroll.viewport().update()
-                    self.setFocus()
+                        if event_type == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                            self._set_auto_scroll_enabled(not self.auto_scroll, origin=event_pos)
+                            viewport.update()
+                            self.setFocus()
+                            return True
 
-                if event.type() == QEvent.Paint and self.auto_scroll:
-                    painter = QPainter(self.scroll.viewport())
-                    painter.setRenderHint(QPainter.Antialiasing)
-                    ox = self.auto_scroll_origin.x()
-                    oy = self.auto_scroll_origin.y()
-                    dy = self.current_mouse_pos.y() - oy
+                        if event_type == QEvent.MouseMove and self.auto_scroll:
+                            self.current_mouse_pos = event_pos
+                            self._set_auto_scroll_direction(event_pos.y() - self.auto_scroll_origin.y())
+                            viewport.update()
+                            return True
 
-                    DEADZONE = 8
-                    painter.setPen(QPen(QColor(255, 255, 255, 160), 1))
-                    painter.setBrush(Qt.NoBrush)
-                    painter.drawEllipse(QPoint(ox, oy), DEADZONE, DEADZONE)
+                        if (
+                            event_type == QEvent.MouseButtonPress
+                            and event.button() == Qt.LeftButton
+                            and self.auto_scroll
+                        ):
+                            self._set_auto_scroll_enabled(False)
+                            viewport.update()
+                            self.setFocus()
+                            return True
 
-                    if abs(dy) > DEADZONE:
-                        arrow_y = oy + (DEADZONE if dy > 0 else -DEADZONE)
-                        tip_y = oy + (DEADZONE + 6 if dy > 0 else -DEADZONE - 6)
-                        painter.setPen(QPen(QColor(255, 255, 255, 200), 2))
-                        painter.drawLine(ox, arrow_y, ox, tip_y)
-                        if dy > 0:
-                            painter.drawLine(ox, tip_y, ox - 4, tip_y - 5)
-                            painter.drawLine(ox, tip_y, ox + 4, tip_y - 5)
-                        else:
-                            painter.drawLine(ox, tip_y, ox - 4, tip_y + 5)
-                            painter.drawLine(ox, tip_y, ox + 4, tip_y + 5)
-                    return False
+                    if event_type in (QEvent.Leave, QEvent.Hide, QEvent.FocusOut) and self.auto_scroll:
+                        self._set_auto_scroll_enabled(False)
 
         return super().eventFilter(obj, event)
 
@@ -1775,7 +1821,9 @@ class ViewerPage(QWidget):
         dy = self.current_mouse_pos.y() - self.auto_scroll_origin.y()
         DEADZONE = 8
         if abs(dy) <= DEADZONE:
+            self._set_auto_scroll_direction(0)
             return
+        self._set_auto_scroll_direction(dy)
         speed = ((abs(dy) - DEADZONE) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
