@@ -273,6 +273,14 @@ class DiscoveryEntryWidget(QFrame):
         self._cover_applied = True
         return True
 
+    def cover_request_failed(self) -> None:
+        self._cover_requested = False
+        if not self._cover_applied:
+            self._apply_local_cover_fallback()
+
+    def needs_cover_request(self) -> bool:
+        return bool(self.entry.cover_url) and not self._cover_requested and not self._cover_applied
+
     def _apply_local_cover_fallback(self) -> bool:
         local_webtoon = self._local_info.get("webtoon") if isinstance(self._local_info, dict) else None
         local_path = getattr(local_webtoon, "thumbnail", "") or ""
@@ -997,6 +1005,8 @@ class SiteBrowserPage(QWidget):
             top_left = widget.mapTo(viewport, widget.rect().topLeft())
             widget_rect = widget.rect().translated(top_left)
             if widget_rect.intersects(viewport_rect):
+                if not widget.needs_cover_request():
+                    continue
                 distance = abs(widget_rect.center().y() - viewport_center_y)
                 visible_widgets.append((distance, widget))
         visible_widgets.sort(key=lambda item: item[0])
@@ -1008,6 +1018,7 @@ class SiteBrowserPage(QWidget):
             return
         if error:
             logger.warning("Discovery cover request failed for %s: %s", widget.entry.title, error)
+            widget.cover_request_failed()
             self._queue_visible_cover_request(force=True)
             return
         widget.apply_cover_data(data)
