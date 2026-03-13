@@ -10,9 +10,7 @@ This project is intended to be released as a packaged executable.
 
 ### Windows
 
-Launch the packaged `.exe` build and set your library folder from the Settings page the first time you open it.
-
-With the current build setup, Windows users do **not** need Python installed. The packaged `Webtoon Desktop Reader.exe` is built as a self-contained PyInstaller executable.
+Download the packaged build from releases and run it.
 
 ### Linux
 

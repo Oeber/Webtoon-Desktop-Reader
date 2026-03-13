@@ -22,3 +22,4 @@ teste/*
 !/scrapers/sites
 !/scrapers/sites/__init__.py
 !SCRAPPER GUIDE.MD
+!README.MD
