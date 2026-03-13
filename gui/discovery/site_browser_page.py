@@ -1,14 +1,15 @@
 import threading
 import urllib.request
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QObject, QPoint, QSize, Qt, Signal, QTimer
+from PySide6.QtGui import QFont, QFontMetrics, QImageReader, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -25,6 +26,7 @@ from gui.common.styles import (
     PAGE_TITLE_STYLE,
     NEW_CHIP_STYLE,
     SCROLL_AREA_STYLE,
+    SEARCH_INPUT_STYLE,
     SECTION_LABEL_STYLE,
     STATUS_LABEL_STYLE,
     TEXT_DIM_LABEL_STYLE,
@@ -36,6 +38,7 @@ from library.library_manager import scan_library
 from gui.settings.settings_page import load_library_path
 from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
+from scrapers.models import CatalogSeries
 
 logger = get_logger(__name__)
 DISCOVERY_CARD_SPACING = 16
@@ -78,6 +81,17 @@ DISCOVERY_FILTER_BUTTON_STYLE = BUTTON_STYLE + """
         background-color: #2a1716;
         border-color: #ff8a7a;
         color: #fff0ec;
+    }
+"""
+DISCOVERY_LOADING_LABEL_STYLE = """
+    QLabel {
+        color: #ffd7cf;
+        background: #1c1413;
+        border: 1px solid #4b302c;
+        border-radius: 10px;
+        padding: 10px 16px;
+        font-size: 12px;
+        font-weight: 600;
     }
 """
 
@@ -127,12 +141,12 @@ class DiscoveryCatalogLoader(QObject):
 
     loaded = Signal(int, str, int, bool, object, str)
 
-    def load(self, request_id: int, provider, page: int, reset: bool):
+    def load(self, request_id: int, provider, page: int, reset: bool, search_query: str = ""):
         provider_key = getattr(provider, "site_name", "") or ""
 
         def worker():
             try:
-                result = provider.get_catalog_page(page=page)
+                result = provider.get_catalog_page(page=page, search_query=search_query)
                 self.loaded.emit(request_id, provider_key, page, reset, result, "")
             except ScraperError as e:
                 self.loaded.emit(request_id, provider_key, page, reset, None, str(e))
@@ -220,9 +234,8 @@ class DiscoveryEntryWidget(QFrame):
     def apply_cover_data(self, data):
         if not data:
             return
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(data):
-            logger.warning("Discovery cover decode failed for %s", self.entry.title)
+        pixmap = self._decode_cover_pixmap(data)
+        if pixmap.isNull():
             return
         scaled = pixmap.scaled(
             self._card_width,
@@ -246,6 +259,36 @@ class DiscoveryEntryWidget(QFrame):
 
         self.thumb_label.setPixmap(rounded)
         self.thumb_label.setText("")
+
+    def _decode_cover_pixmap(self, data) -> QPixmap:
+        byte_array = QByteArray(data)
+        buffer = QBuffer()
+        buffer.setData(byte_array)
+        if not buffer.open(QIODevice.ReadOnly):
+            logger.warning("Discovery cover buffer open failed for %s", self.entry.title)
+            return QPixmap()
+
+        reader = QImageReader(buffer)
+        size = reader.size()
+        if size.isValid() and size.width() > 0 and size.height() > 0:
+            width_ratio = self._card_width / size.width()
+            height_ratio = self._card_height / size.height()
+            scale_ratio = max(width_ratio, height_ratio)
+            scaled_size = QSize(
+                max(1, int(size.width() * scale_ratio)),
+                max(1, int(size.height() * scale_ratio)),
+            )
+            reader.setScaledSize(scaled_size)
+
+        image = reader.read()
+        if image.isNull():
+            logger.warning(
+                "Discovery cover reader failed for %s: %s",
+                self.entry.title,
+                reader.errorString(),
+            )
+            return QPixmap()
+        return QPixmap.fromImage(image)
 
     def _format_chapter_count(self, count: int | None) -> str:
         if count is None or count <= 0:
@@ -280,6 +323,10 @@ class DiscoveryEntryWidget(QFrame):
 
 class SiteBrowserPage(QWidget):
 
+    AUTO_LOAD_MORE_THRESHOLD_PX = 120
+    AUTO_LOAD_MORE_TRIGGER_RATIO = 0.35
+    AUTO_LOAD_MORE_DELAY_MS = 40
+
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
@@ -295,11 +342,28 @@ class SiteBrowserPage(QWidget):
         self._catalog_loading = False
         self._library_titles = {}
         self._library_sources = {}
+        self._library_entries_by_site = {}
         self._library_snapshot_dirty = True
         self._library_snapshot_path = ""
         self._loaded_entries = []
         self._entry_widgets = []
+        self._empty_state_label = None
+        self._loading_more_label = None
         self._entry_keys = set()
+        self._search_text = ""
+        self._pending_append_anchor_bottom = False
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._apply_search)
+        self.auto_scroll = False
+        self.auto_scroll_origin = QPoint()
+        self.current_mouse_pos = QPoint()
+        self.scroll_timer = QTimer(self)
+        self.scroll_timer.timeout.connect(self.perform_auto_scroll)
+        self._auto_load_timer = QTimer(self)
+        self._auto_load_timer.setSingleShot(True)
+        self._auto_load_timer.timeout.connect(self._trigger_auto_load_more)
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -325,6 +389,14 @@ class SiteBrowserPage(QWidget):
         self.page_label.setStyleSheet(SECTION_LABEL_STYLE)
         controls.addWidget(self.page_label)
 
+        self.search_input = QLineEdit(self)
+        self.search_input.setPlaceholderText("Search series...")
+        self.search_input.setFixedHeight(36)
+        self.search_input.setMinimumWidth(220)
+        self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        controls.addWidget(self.search_input)
+
         self.downloaded_only_btn = QPushButton("Downloaded Only")
         self.downloaded_only_btn.setCheckable(True)
         self.downloaded_only_btn.setStyleSheet(DISCOVERY_FILTER_BUTTON_STYLE)
@@ -334,7 +406,7 @@ class SiteBrowserPage(QWidget):
         self.load_more_btn = QPushButton("Load More")
         self.load_more_btn.setStyleSheet(BUTTON_STYLE)
         self.load_more_btn.clicked.connect(self.load_more_catalog)
-        controls.addWidget(self.load_more_btn)
+        self.load_more_btn.hide()
 
         self.refresh_btn = QPushButton("Refresh")
         self.refresh_btn.setStyleSheet(BUTTON_STYLE)
@@ -360,6 +432,9 @@ class SiteBrowserPage(QWidget):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_scroll_position_changed)
+        self.scroll.verticalScrollBar().rangeChanged.connect(self._on_scroll_range_changed)
+        self.scroll.viewport().installEventFilter(self)
 
         self.content = QWidget()
         self.content.setStyleSheet(f"background: {BG};")
@@ -396,15 +471,18 @@ class SiteBrowserPage(QWidget):
             self._current_page = 1
 
         self._show_message("", is_error=False)
-        self.status_label.setText(
-            f"Loading {self._display_name(provider.site_name)} page {self._current_page}..."
-        )
+        search_query = self._remote_search_query()
+        loading_label = f"Loading {self._display_name(provider.site_name)} page {self._current_page}"
+        if search_query:
+            loading_label += f" for '{search_query}'"
+        self.status_label.setText(loading_label + "...")
         logger.info("Loading catalog page %d for %s", self._current_page, provider.site_name)
         self._ensure_library_snapshot()
         self._catalog_loading = True
         self._set_controls_enabled(False)
+        self._set_loading_more_visible(not reset and not self.downloaded_only_btn.isChecked() and not self._remote_search_query())
         self._catalog_request_id += 1
-        self._catalog_loader.load(self._catalog_request_id, provider, self._current_page, reset)
+        self._catalog_loader.load(self._catalog_request_id, provider, self._current_page, reset, self._remote_search_query())
 
     def _reload_scrapers(self, load_catalog: bool = True):
         current_key = self.site_combo.currentData()
@@ -448,7 +526,22 @@ class SiteBrowserPage(QWidget):
 
     def load_more_catalog(self):
         if self._catalog_loading or not self._has_next_page:
+            logger.info(
+                "Discovery load_more skipped loading=%s has_next=%s page=%d",
+                self._catalog_loading,
+                self._has_next_page,
+                self._current_page,
+            )
             return
+        scrollbar = self.scroll.verticalScrollBar()
+        self._pending_append_anchor_bottom = self._is_near_bottom(scrollbar)
+        logger.info(
+            "Discovery load_more triggered page=%d value=%d max=%d anchor_bottom=%s",
+            self._current_page + 1,
+            scrollbar.value(),
+            scrollbar.maximum(),
+            self._pending_append_anchor_bottom,
+        )
         self._current_page += 1
         self.refresh_catalog(reset=False)
 
@@ -456,31 +549,115 @@ class SiteBrowserPage(QWidget):
         self.page_label.setText(f"Page {self._current_page}")
         self.load_more_btn.setEnabled(self._has_next_page and not self._catalog_loading)
 
+    def _is_near_bottom(self, scrollbar, *, value: int | None = None, maximum: int | None = None) -> bool:
+        current_value = scrollbar.value() if value is None else value
+        current_maximum = scrollbar.maximum() if maximum is None else maximum
+        if current_maximum <= 0:
+            return False
+        threshold = max(24, self.AUTO_LOAD_MORE_THRESHOLD_PX + 24)
+        return current_value >= current_maximum - threshold
+
+    def _should_prefetch_more(self, scrollbar, *, value: int | None = None, maximum: int | None = None, force_fill: bool = False) -> bool:
+        current_value = scrollbar.value() if value is None else value
+        current_maximum = scrollbar.maximum() if maximum is None else maximum
+        if current_maximum <= 0:
+            return False
+        trigger_value = int(current_maximum * self.AUTO_LOAD_MORE_TRIGGER_RATIO)
+        return current_value >= trigger_value
+
     def _set_entries(self, entries):
         self._loaded_entries = list(entries or [])
         self._entry_keys = {self._entry_key(entry) for entry in self._loaded_entries}
         self._render_entries()
 
     def _render_entries(self):
+        scrollbar = self.scroll.verticalScrollBar()
+        old_value = scrollbar.value()
+        old_maximum = scrollbar.maximum()
+        anchor_to_bottom = self._pending_append_anchor_bottom or (old_maximum > 0 and self._is_near_bottom(scrollbar, value=old_value, maximum=old_maximum))
+
+        self._clear_rendered_entries()
+        visible_entries = self._visible_entries()
+        if not visible_entries:
+            self._show_empty_state()
+            self._restore_scroll_position(old_value, anchor_to_bottom)
+            self._pending_append_anchor_bottom = False
+            return
+
+        self._append_entry_widgets(visible_entries)
+        self._relayout_entries()
+        self._restore_scroll_position(old_value, anchor_to_bottom)
+        self._pending_append_anchor_bottom = False
+
+    def _append_entries(self, entries):
+        new_entries = []
+        for entry in entries:
+            entry_key = self._entry_key(entry)
+            if entry_key in self._entry_keys:
+                continue
+            self._entry_keys.add(entry_key)
+            self._loaded_entries.append(entry)
+            new_entries.append(entry)
+
+        if not new_entries:
+            return
+
+        if self.downloaded_only_btn.isChecked() or self._remote_search_query():
+            self._render_entries()
+            return
+
+        scrollbar = self.scroll.verticalScrollBar()
+        old_value = scrollbar.value()
+        old_maximum = scrollbar.maximum()
+        anchor_to_bottom = self._pending_append_anchor_bottom or (old_maximum > 0 and self._is_near_bottom(scrollbar, value=old_value, maximum=old_maximum))
+
+        if self._empty_state_label is not None:
+            self._empty_state_label.deleteLater()
+            self._empty_state_label = None
+
+        self._append_entry_widgets(new_entries)
+        self._relayout_entries()
+        self._restore_scroll_position(old_value, anchor_to_bottom)
+        self._pending_append_anchor_bottom = False
+
+    def _set_loading_more_visible(self, visible: bool):
+        if visible:
+            if self._loading_more_label is None:
+                label = QLabel("Loading more series...")
+                label.setAlignment(Qt.AlignCenter)
+                label.setStyleSheet(DISCOVERY_LOADING_LABEL_STYLE)
+                label.setMinimumHeight(44)
+                self._loading_more_label = label
+        elif self._loading_more_label is not None:
+            self._loading_more_label.deleteLater()
+            self._loading_more_label = None
+
+    def _clear_rendered_entries(self):
         while self.content_layout.count():
             item = self.content_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
         self._entry_widgets = []
+        self._empty_state_label = None
+        if self._loading_more_label is not None:
+            self._loading_more_label.deleteLater()
+            self._loading_more_label = None
 
-        visible_entries = self._visible_entries()
-        if not visible_entries:
-            empty = QLabel("No series found for this page.")
-            if self.downloaded_only_btn.isChecked():
-                empty.setText("No downloaded titles match the loaded discovery results.")
-            empty.setAlignment(Qt.AlignCenter)
-            empty.setMinimumHeight(120)
-            empty.setStyleSheet(EMPTY_STATE_LABEL_STYLE)
-            self.content_layout.addWidget(empty, 0, 0)
-            return
+    def _show_empty_state(self):
+        empty = QLabel("No series found for this page.")
+        if self._normalized_search_text():
+            empty.setText("No series match your search.")
+        elif self.downloaded_only_btn.isChecked():
+            empty.setText("No downloaded titles match the loaded discovery results.")
+        empty.setAlignment(Qt.AlignCenter)
+        empty.setMinimumHeight(120)
+        empty.setStyleSheet(EMPTY_STATE_LABEL_STYLE)
+        self.content_layout.addWidget(empty, 0, 0)
+        self._empty_state_label = empty
 
-        for entry in visible_entries:
+    def _append_entry_widgets(self, entries):
+        for entry in entries:
             local_info = self._local_info_for_entry(entry)
             self._entry_widgets.append(
                 DiscoveryEntryWidget(
@@ -490,16 +667,6 @@ class SiteBrowserPage(QWidget):
                     local_info=local_info,
                 )
             )
-        self._relayout_entries()
-
-    def _append_entries(self, entries):
-        for entry in entries:
-            entry_key = self._entry_key(entry)
-            if entry_key in self._entry_keys:
-                continue
-            self._entry_keys.add(entry_key)
-            self._loaded_entries.append(entry)
-        self._render_entries()
 
     def _start_download_for_entry(self, url: str):
         if not url:
@@ -527,14 +694,18 @@ class SiteBrowserPage(QWidget):
             logger.warning("Failed to refresh discovery library snapshot", exc_info=e)
             self._library_titles = {}
             self._library_sources = {}
+            self._library_entries_by_site = {}
             return
 
         title_snapshot = {}
         source_snapshot = {}
+        library_entries_by_site = {}
         for webtoon in webtoons:
             info = {
                 "name": webtoon.name,
+                "webtoon": webtoon,
                 "chapters": len(getattr(webtoon, "chapters", []) or []),
+                "source_url": self.main_window.settings_store.get_source_url(webtoon.name),
                 "source_title": self.main_window.settings_store.get_source_title(webtoon.name),
                 "source_site": self.main_window.settings_store.get_source_site(webtoon.name),
                 "source_series_id": self.main_window.settings_store.get_source_series_id(webtoon.name),
@@ -545,10 +716,24 @@ class SiteBrowserPage(QWidget):
                 title_snapshot.setdefault(self._normalize_title(source_title), info)
             source_site = info["source_site"]
             source_series_id = info["source_series_id"]
-            if source_site and source_series_id:
-                source_snapshot[(str(source_site).strip(), str(source_series_id).strip())] = info
+            source_url = info["source_url"]
+            normalized_site = str(source_site).strip()
+            normalized_series_id = str(source_series_id).strip()
+            if normalized_site and normalized_series_id:
+                source_snapshot[(normalized_site, normalized_series_id)] = info
+            if normalized_site and source_url:
+                library_entries_by_site.setdefault(normalized_site, []).append(
+                    CatalogSeries(
+                        site=normalized_site,
+                        series_id=normalized_series_id or webtoon.name,
+                        title=str(info["source_title"] or webtoon.name),
+                        url=str(source_url),
+                        total_chapters=info["chapters"],
+                    )
+                )
         self._library_titles = title_snapshot
         self._library_sources = source_snapshot
+        self._library_entries_by_site = library_entries_by_site
         self._library_snapshot_dirty = False
         self._library_snapshot_path = load_library_path()
 
@@ -574,8 +759,14 @@ class SiteBrowserPage(QWidget):
         return " ".join((title or "").casefold().split())
 
     def resizeEvent(self, event):
+        scrollbar = self.scroll.verticalScrollBar()
+        old_value = scrollbar.value()
+        old_maximum = scrollbar.maximum()
+        anchor_to_bottom = self._pending_append_anchor_bottom or (old_maximum > 0 and self._is_near_bottom(scrollbar, value=old_value, maximum=old_maximum))
         super().resizeEvent(event)
         self._relayout_entries()
+        self._restore_scroll_position(old_value, anchor_to_bottom)
+        self._pending_append_anchor_bottom = False
 
     def _relayout_entries(self):
         if not self._entry_widgets:
@@ -595,6 +786,12 @@ class SiteBrowserPage(QWidget):
             row = index // columns
             column = index % columns
             self.content_layout.addWidget(widget, row, column, Qt.AlignTop | Qt.AlignLeft)
+
+        if self._loading_more_label is not None:
+            loading_row = len(self._entry_widgets) // columns
+            if self._entry_widgets and len(self._entry_widgets) % columns != 0:
+                loading_row += 1
+            self.content_layout.addWidget(self._loading_more_label, loading_row, 0, 1, columns, Qt.AlignTop)
 
     def _on_cover_loaded(self, widget, data, error: str):
         if widget not in self._entry_widgets:
@@ -624,27 +821,82 @@ class SiteBrowserPage(QWidget):
             if reset:
                 self._set_entries([])
                 self._has_next_page = False
+            self._set_loading_more_visible(False)
             self._sync_paging()
             return
 
+        self._set_loading_more_visible(False)
         self._has_next_page = bool(getattr(page, "has_next_page", False))
+        logger.info(
+            "Discovery catalog loaded page=%d reset=%s entries=%d has_next=%s value=%d max=%d",
+            page_number,
+            reset,
+            len(getattr(page, "entries", []) or []),
+            self._has_next_page,
+            self.scroll.verticalScrollBar().value(),
+            self.scroll.verticalScrollBar().maximum(),
+        )
         entries = getattr(page, "entries", []) or []
         if reset:
             self._set_entries(entries)
         else:
             self._append_entries(entries)
+        visible_count = len(self._visible_entries())
         self.status_label.setText(
-            f"{len(self._entry_widgets)} series loaded from {self._display_name(provider_key)}"
+            f"{visible_count} series loaded from {self._display_name(provider_key)}"
         )
         self._sync_paging()
+        if not self.downloaded_only_btn.isChecked() and not self._remote_search_query():
+            self._schedule_auto_load_more(force_fill=True)
 
     def _set_controls_enabled(self, enabled: bool):
         self.site_combo.setEnabled(enabled)
         self.load_more_btn.setEnabled(enabled and self._has_next_page)
         self.refresh_btn.setEnabled(enabled)
 
+    def _on_scroll_position_changed(self, _value: int):
+        self._schedule_auto_load_more(force_fill=False)
+
+    def _on_scroll_range_changed(self, _minimum: int, _maximum: int):
+        self._schedule_auto_load_more(force_fill=True)
+
+    def _schedule_auto_load_more(self, *, force_fill: bool):
+        if self.downloaded_only_btn.isChecked() or self._remote_search_query() or self._catalog_loading or not self._has_next_page:
+            self._auto_load_timer.stop()
+            return
+        scrollbar = self.scroll.verticalScrollBar()
+        should_load = self._should_prefetch_more(scrollbar, force_fill=force_fill)
+        if should_load and not self._auto_load_timer.isActive():
+            logger.info(
+                "Discovery prefetch armed page=%d value=%d max=%d force_fill=%s delay_ms=%d",
+                self._current_page,
+                scrollbar.value(),
+                scrollbar.maximum(),
+                force_fill,
+                self.AUTO_LOAD_MORE_DELAY_MS,
+            )
+            self._auto_load_timer.start(self.AUTO_LOAD_MORE_DELAY_MS)
+
+    def _trigger_auto_load_more(self):
+        if self.downloaded_only_btn.isChecked() or self._remote_search_query() or self._catalog_loading or not self._has_next_page:
+            return
+        scrollbar = self.scroll.verticalScrollBar()
+        should_load = self._should_prefetch_more(scrollbar, force_fill=True)
+        logger.info(
+            "Discovery prefetch timer fired page=%d value=%d max=%d should_load=%s",
+            self._current_page,
+            scrollbar.value(),
+            scrollbar.maximum(),
+            should_load,
+        )
+        if should_load:
+            self.load_more_catalog()
+
     def _on_library_changed(self, _name: str):
         self.invalidate_library_snapshot()
+        if self.downloaded_only_btn.isChecked():
+            self._ensure_library_snapshot()
+            self._render_entries()
 
     def _local_info_for_entry(self, entry) -> dict | None:
         source_key = self._entry_source_key(entry)
@@ -665,9 +917,107 @@ class SiteBrowserPage(QWidget):
         return site, series_id
 
     def _visible_entries(self):
-        if not self.downloaded_only_btn.isChecked():
-            return list(self._loaded_entries)
-        return [entry for entry in self._loaded_entries if self._local_info_for_entry(entry)]
+        if self.downloaded_only_btn.isChecked():
+            entries = self._downloaded_only_entries()
+            if self._search_text:
+                entries = [entry for entry in entries if self._entry_matches_search(entry)]
+            return entries
+        return list(self._loaded_entries)
 
-    def _on_downloaded_only_toggled(self, _checked: bool):
-        self._render_entries()
+    def _downloaded_only_entries(self):
+        self._ensure_library_snapshot()
+        provider = self._current_provider()
+        provider_key = getattr(provider, "site_name", "") if provider is not None else ""
+        entries = list(self._library_entries_by_site.get(provider_key, []))
+        entries.sort(key=lambda entry: self._normalize_title(getattr(entry, "title", "")))
+        return entries
+
+    def _normalized_search_text(self) -> str:
+        return self._normalize_title(self._search_text)
+
+    def _remote_search_query(self) -> str:
+        if self.downloaded_only_btn.isChecked():
+            return ""
+        return " ".join(str(self._search_text or "").split()).strip()
+
+    def _entry_matches_search(self, entry) -> bool:
+        haystack = " ".join(
+            [
+                str(getattr(entry, "title", "") or ""),
+                str(getattr(entry, "author", "") or ""),
+                str(getattr(entry, "description", "") or ""),
+                str(getattr(entry, "latest_chapter", "") or ""),
+            ]
+        )
+        return self._normalized_search_text() in self._normalize_title(haystack)
+
+    def _on_search_text_changed(self, text: str):
+        self._search_text = text
+        if self.downloaded_only_btn.isChecked():
+            self._render_entries()
+            return
+        self._search_timer.start()
+
+    def _apply_search(self):
+        if self.downloaded_only_btn.isChecked():
+            self._render_entries()
+            return
+        self.refresh_catalog(reset=True)
+
+    def _on_downloaded_only_toggled(self, checked: bool):
+        self._auto_load_timer.stop()
+        self._search_timer.stop()
+        if checked:
+            self._ensure_library_snapshot()
+            self._render_entries()
+            return
+        self.refresh_catalog(reset=True)
+
+    def _restore_scroll_position(self, old_value: int, anchor_to_bottom: bool):
+        def restore():
+            scrollbar = self.scroll.verticalScrollBar()
+            if anchor_to_bottom:
+                scrollbar.setValue(scrollbar.maximum())
+            else:
+                scrollbar.setValue(min(old_value, scrollbar.maximum()))
+
+        QTimer.singleShot(0, restore)
+
+    def eventFilter(self, obj, event):
+        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        if obj == viewport:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                if self.auto_scroll:
+                    self.auto_scroll = False
+                    self.scroll_timer.stop()
+                    viewport.unsetCursor()
+                else:
+                    self.auto_scroll = True
+                    self.auto_scroll_origin = event.pos()
+                    self.current_mouse_pos = event.pos()
+                    viewport.setCursor(Qt.SizeAllCursor)
+                    self.scroll_timer.start(16)
+                viewport.update()
+                return True
+
+            if event.type() == QEvent.MouseMove and self.auto_scroll:
+                self.current_mouse_pos = event.pos()
+                return True
+
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton and self.auto_scroll:
+                self.auto_scroll = False
+                self.scroll_timer.stop()
+                viewport.unsetCursor()
+                viewport.update()
+                return True
+
+        return super().eventFilter(obj, event)
+
+    def perform_auto_scroll(self):
+        dy = self.current_mouse_pos.y() - self.auto_scroll_origin.y()
+        deadzone = 8
+        if abs(dy) <= deadzone:
+            return
+        speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(bar.value() + int(speed))

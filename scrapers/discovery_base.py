@@ -9,7 +9,7 @@ class BaseDiscoveryProvider(ABC):
     site_name: str = "unknown"
 
     @abstractmethod
-    def get_catalog_page(self, page: int = 1) -> CatalogPage:
+    def get_catalog_page(self, page: int = 1, search_query: str = "") -> CatalogPage:
         """
         Return one page of discoverable series for this site.
         """

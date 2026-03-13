@@ -39,21 +39,21 @@ class OmegaScansDiscoveryProvider(BaseDiscoveryProvider):
         "Origin": BASE,
     }
 
-    def get_catalog_page(self, page: int = 1) -> CatalogPage:
-        logger.info("OmegaScans discovery: fetching catalog page %d", page)
-        result = self._fetch_catalog_from_api(page)
-        if result is None:
+    def get_catalog_page(self, page: int = 1, search_query: str = "") -> CatalogPage:
+        logger.info("OmegaScans discovery: fetching catalog page %d search=%r", page, search_query)
+        result = self._fetch_catalog_from_api(page, search_query=search_query)
+        if result is None and not search_query.strip():
             result = self._fetch_catalog_from_html(page)
         if result is None:
             raise ScraperError(f"Failed to load OmegaScans catalog page {page}")
         return result
 
-    def _fetch_catalog_from_api(self, page: int) -> CatalogPage | None:
+    def _fetch_catalog_from_api(self, page: int, *, search_query: str = "") -> CatalogPage | None:
         params = {
             "page": max(1, int(page)),
-            "perPage": 20,
+            "perPage": 100,
             "series_type": "Comic",
-            "query_string": "",
+            "query_string": str(search_query or "").strip(),
             "orderBy": "created_at",
             "adult": "true",
             "order": "desc",
