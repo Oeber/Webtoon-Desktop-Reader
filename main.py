@@ -4,11 +4,14 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from core.app_logging import setup_logging, get_logger
 from core.app_paths import resource_path
+from core.profiler import create_session_profiler
 from gui.main_window import MainWindow
 from stores.db import prewarm_connection_async
 
 setup_logging()
 logger = get_logger(__name__)
+profiler, app_argv = create_session_profiler(sys.argv, logger)
+profiler.start()
 
 def _set_windows_app_id():
     if sys.platform != "win32":
@@ -22,7 +25,7 @@ def _set_windows_app_id():
 
 _set_windows_app_id()
 
-app = QApplication(sys.argv)
+app = QApplication(app_argv)
 logger.info("QApplication created")
 app.setApplicationName("Webtoon Desktop Reader")
 
@@ -37,6 +40,7 @@ else:
 window = MainWindow()
 if app_icon_path.exists():
     window.setWindowIcon(icon)
+app.aboutToQuit.connect(profiler.stop)
 app.aboutToQuit.connect(window.shutdown_background_tasks)
 window.show()
 prewarm_connection_async()

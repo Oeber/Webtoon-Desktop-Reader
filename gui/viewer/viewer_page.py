@@ -112,6 +112,7 @@ class ImageLoader(QObject):
         self._cancelled = False
         self._queued = set()
         self._preview_queued = set()
+        self._panel_break_cache: dict[str, list[float]] = {}
 
     def cancel(self):
         self._cancelled = True
@@ -144,7 +145,9 @@ class ImageLoader(QObject):
         if self._cancelled:
             return
         started = time.perf_counter()
-        pixmap = QPixmap(path)
+        reader = QImageReader(path)
+        image = reader.read()
+        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
         if pixmap.isNull():
             logger.warning("Viewer image load failed index=%d path=%s", index, path)
             return
@@ -168,12 +171,33 @@ class ImageLoader(QObject):
     def _preview_task(self, index: int, path: str, max_w: int):
         if self._cancelled:
             return
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
-            return
+        natural_w = 0
+        natural_h = 0
+        thumb = QPixmap()
+
+        reader = QImageReader(path)
+        size = reader.size()
+        if size.isValid():
+            natural_w = size.width()
+            natural_h = size.height()
+            if natural_w > max_w > 0 and natural_h > 0:
+                scaled_h = max(1, int(max_w * (natural_h / natural_w)))
+                reader.setScaledSize(QSize(max_w, scaled_h))
+
+            image = reader.read()
+            if not image.isNull():
+                thumb = QPixmap.fromImage(image)
+
+        if thumb.isNull():
+            pixmap = QPixmap(path)
+            if pixmap.isNull():
+                return
+            natural_w = pixmap.width()
+            natural_h = pixmap.height()
+            thumb = pixmap if natural_w <= max_w else pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
+
         if not self._cancelled:
-            thumb = pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
-            self.preview_ready.emit(index, thumb, pixmap.width(), pixmap.height())
+            self.preview_ready.emit(index, thumb, natural_w, natural_h)
 
     def build_panel_starts(self, generation: int, payload: list):
         self.panel_executor.submit(self._panel_task, generation, payload)
@@ -203,48 +227,70 @@ class ImageLoader(QObject):
                 cumulative += h
                 continue
 
-            scale = ih / h
+            break_fractions = self._panel_break_cache.get(path)
+            if break_fractions is None:
+                break_fractions = self._compute_panel_break_fractions(img, MIN_BLANK=MIN_BLANK, ROW_STEP=ROW_STEP)
+                self._panel_break_cache[path] = break_fractions
 
-            in_blank = self._is_blank_row(img, 0)
-            blank_run = 0
-
-            for doc_y in range(ROW_STEP, h, ROW_STEP):
-                src_y = min(ih - 1, int(doc_y * scale))
-                is_blank = self._is_blank_row(img, src_y)
-
-                if is_blank:
-                    blank_run += ROW_STEP
-                else:
-                    if in_blank and blank_run >= MIN_BLANK:
-                        starts.append(cumulative + doc_y)
-                    blank_run = 0
-
-                in_blank = is_blank
+            for fraction in break_fractions:
+                starts.append(cumulative + int(fraction * h))
 
             cumulative += h
 
         if not self._cancelled:
             self.panel_starts_ready.emit(generation, sorted(set(starts)))
 
+    def _compute_panel_break_fractions(self, image: QImage, MIN_BLANK: int, ROW_STEP: int) -> list[float]:
+        ih = image.height()
+        if ih <= 0:
+            return []
+
+        starts = []
+        in_blank = self._is_blank_row(image, 0)
+        blank_run = 0
+
+        for src_y in range(ROW_STEP, ih, ROW_STEP):
+            is_blank = self._is_blank_row(image, src_y)
+
+            if is_blank:
+                blank_run += ROW_STEP
+            else:
+                if in_blank and blank_run >= MIN_BLANK:
+                    starts.append(src_y / ih)
+                blank_run = 0
+
+            in_blank = is_blank
+
+        return starts
+
     def _is_blank_row(self, image: QImage, y: int, sample_step: int = 12) -> bool:
         w = image.width()
         if w <= 0:
             return True
 
-        lums = []
-        for x in range(0, w, sample_step):
-            c = image.pixelColor(x, y)
-            lum = 0.299 * c.redF() + 0.587 * c.greenF() + 0.114 * c.blueF()
-            lums.append(lum)
+        step = max(sample_step, w // 160)
+        total = 0
+        total_sq = 0
+        count = 0
 
-        if not lums:
+        for x in range(0, w, step):
+            rgb = image.pixel(x, y)
+            red = (rgb >> 16) & 0xFF
+            green = (rgb >> 8) & 0xFF
+            blue = rgb & 0xFF
+            lum = (299 * red + 587 * green + 114 * blue) // 255
+            total += lum
+            total_sq += lum * lum
+            count += 1
+
+        if count == 0:
             return True
 
-        avg = sum(lums) / len(lums)
-        variance = sum((l - avg) ** 2 for l in lums) / len(lums)
+        avg = total / count
+        variance = (total_sq / count) - (avg * avg)
 
-        is_extreme = avg < 0.12 or avg > 0.88
-        is_uniform = variance < 0.003
+        is_extreme = avg < 120 or avg > 880
+        is_uniform = variance < 3000
         return is_extreme and is_uniform
 
 
@@ -556,6 +602,11 @@ class ViewerPage(QWidget):
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(PREVIEW_BATCH_MS)
         self._preview_timer.timeout.connect(self._drain_preview_queue)
+
+        self._zoom_persist_timer = QTimer()
+        self._zoom_persist_timer.setSingleShot(True)
+        self._zoom_persist_timer.setInterval(250)
+        self._zoom_persist_timer.timeout.connect(self._persist_zoom_override_now)
 
         self._zoom = load_setting("viewer_zoom", 0.5)
         self.auto_skip_enabled = load_setting("viewer_auto_skip", True)
@@ -1098,6 +1149,7 @@ class ViewerPage(QWidget):
         self._batch_timer.stop()
         self._panel_warm_timer.stop()
         self._preview_timer.stop()
+        self._zoom_persist_timer.stop()
         self._hide_loading_overlay()
         self.loader.shutdown()
 
@@ -1266,18 +1318,25 @@ class ViewerPage(QWidget):
 
     def _zoom_out(self):
         self._set_zoom(self._zoom - 0.05)
-        self._persist_zoom_override()
+        self._schedule_zoom_override_persist()
 
     def _zoom_in(self):
         self._set_zoom(self._zoom + 0.05)
-        self._persist_zoom_override()
+        self._schedule_zoom_override_persist()
 
     def _on_zoom_slider(self, value: int):
         self._set_zoom(value / 100.0, update_slider=False)
-        self._persist_zoom_override()
+        self._schedule_zoom_override_persist()
 
-    def _persist_zoom_override(self):
-        """Save current zoom as a per-webtoon override. Called only on user interaction."""
+    def _schedule_zoom_override_persist(self):
+        if not self.webtoon:
+            return
+        self._zoom_override_active = True
+        self._zoom_reset_btn.setEnabled(True)
+        self._zoom_persist_timer.start()
+
+    def _persist_zoom_override_now(self):
+        """Save current zoom as a per-webtoon override after user interaction settles."""
         if not self.webtoon:
             return
         logger.info("Persisting viewer zoom override for %s to %.2f", self.webtoon.name, self._zoom)
@@ -1347,17 +1406,19 @@ class ViewerPage(QWidget):
         next_idx = self._next_chapter_index(self.current_chapter_index)
         if next_idx is not None:
             logger.info("Viewer moving to next chapter for %s", self.webtoon.name if self.webtoon else "<none>")
+            self._progress_save_timer.stop()
             self._save_progress()
             self._restore_image_index = None
-            self._load_chapter_no_prompt(next_idx)
+            self._load_chapter_with_prompt(next_idx)
 
     def prev_chapter(self):
         prev_idx = self._prev_chapter_index(self.current_chapter_index)
         if prev_idx is not None:
             logger.info("Viewer moving to previous chapter for %s", self.webtoon.name if self.webtoon else "<none>")
+            self._progress_save_timer.stop()
             self._save_progress()
             self._restore_image_index = None
-            self._load_chapter_no_prompt(prev_idx)
+            self._load_chapter_with_prompt(prev_idx)
 
     def _next_chapter_index(self, from_index: int) -> int | None:
         """Return the next chapter index, skipping specials if the toggle is on."""
@@ -1403,6 +1464,7 @@ class ViewerPage(QWidget):
     def _clear_zoom_override(self):
         if not self.webtoon:
             return
+        self._zoom_persist_timer.stop()
         logger.info("Clearing viewer zoom override for %s", self.webtoon.name)
         self.settings_store.clear_zoom_override(self.webtoon.name)
         self._zoom_override_active = False
@@ -1620,8 +1682,8 @@ class ViewerPage(QWidget):
                 self._progress_save_timer.stop()
                 self._save_progress()
                 self._restore_image_index = None
-                self._load_chapter_with_prompt(next_idx)
-                self.setFocus()
+                if self._load_chapter_with_prompt(next_idx):
+                    self.setFocus()
 
         elif key == Qt.Key_Left:
             prev_idx = self._prev_chapter_index(self.current_chapter_index)
@@ -1629,8 +1691,8 @@ class ViewerPage(QWidget):
                 self._progress_save_timer.stop()
                 self._save_progress()
                 self._restore_image_index = None
-                self._load_chapter_with_prompt(prev_idx)
-                self.setFocus()
+                if self._load_chapter_with_prompt(prev_idx):
+                    self.setFocus()
 
         else:
             super().keyPressEvent(event)

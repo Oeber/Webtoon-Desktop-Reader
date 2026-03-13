@@ -45,6 +45,9 @@ class DownloadJob:
         self.progress_current = 0
         self.progress_total = 0
         self.temp_dir = str(data_path("_download_temp", f"job-{uuid.uuid4().hex}"))
+        self.session_local = threading.local()
+        self.sessions: list[requests.Session] = []
+        self.sessions_lock = threading.Lock()
 
 
 class DownloadService(QObject):
@@ -214,6 +217,7 @@ class DownloadService(QObject):
             logger.error("Download failed for %s", url, exc_info=e)
             status = "Failed"
         finally:
+            self._close_job_sessions(job)
             shutil.rmtree(job.temp_dir, ignore_errors=True)
             with self._jobs_lock:
                 self._jobs.pop(job.initial_name, None)
@@ -247,9 +251,8 @@ class DownloadService(QObject):
     def _resolve_name(self, url: str) -> str:
         try:
             scraper = get_scraper(url)
-            series = scraper.get_series_info(
-                url if not scraper.is_chapter_url(url) else scraper.series_url_from_chapter_url(url)
-            )
+            series_url = url if not scraper.is_chapter_url(url) else scraper.series_url_from_chapter_url(url)
+            series = self._scraper_get_series_info(scraper, series_url)
             return sanitize_webtoon_name(series.title)
         except Exception:
             pass
@@ -279,7 +282,8 @@ class DownloadService(QObject):
             if job.cancel_requested:
                 raise DownloadCancelled()
             try:
-                with requests.get(url, headers=headers, stream=True, timeout=30) as response:
+                session = self._get_job_session(job)
+                with session.get(url, headers=headers, stream=True, timeout=30) as response:
                     response.raise_for_status()
                     with open(dest_path, "wb") as handle:
                         for chunk in response.iter_content(chunk_size=1024 * 64):
@@ -307,6 +311,37 @@ class DownloadService(QObject):
                     continue
 
         raise last_error
+
+    def _get_job_session(self, job: DownloadJob) -> requests.Session:
+        session = getattr(job.session_local, "session", None)
+        if session is not None:
+            return session
+
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=8)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        with job.sessions_lock:
+            job.sessions.append(session)
+
+        job.session_local.session = session
+        return session
+
+    def _close_job_sessions(self, job: DownloadJob):
+        with job.sessions_lock:
+            sessions = list(job.sessions)
+            job.sessions.clear()
+
+        for session in sessions:
+            try:
+                session.close()
+            except Exception as e:
+                logger.warning("Failed to close download session for %s", job.active_name or job.initial_name, exc_info=e)
+
+        thread_local = getattr(job, "session_local", None)
+        if thread_local is not None and hasattr(thread_local, "session"):
+            delattr(thread_local, "session")
 
     def _save_source_url(self, webtoon_name: str, source_url: str):
         if not webtoon_name or not source_url:
@@ -349,17 +384,18 @@ class DownloadService(QObject):
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         scraper = get_scraper(url)
+        scraper_session = self._get_job_session(job)
         headers = scraper.get_request_headers(url)
         url_type = "chapter" if scraper.is_chapter_url(url) else "series"
 
         if url_type == "chapter":
             series_url = scraper.series_url_from_chapter_url(url)
-            series = scraper.get_series_info(series_url)
+            series = self._scraper_get_series_info(scraper, series_url, session=scraper_session)
             chapter_list = [c for c in series.chapters if c.url.rstrip("/") == url.rstrip("/")]
             if not chapter_list:
                 raise ScraperError(f"Could not match chapter URL: {url}")
         else:
-            series = scraper.get_series_info(url)
+            series = self._scraper_get_series_info(scraper, url, session=scraper_session)
             chapter_list = series.chapters
 
         series_name = sanitize_webtoon_name(target_name or series.title) or "download"
@@ -401,7 +437,7 @@ class DownloadService(QObject):
                 continue
 
             try:
-                pages = scraper.get_chapter_pages(chapter.url)
+                pages = self._scraper_get_chapter_pages(scraper, chapter.url, session=scraper_session)
             except ScraperError as e:
                 if url_type == "series":
                     logger.warning(
@@ -682,3 +718,19 @@ class DownloadService(QObject):
                 found.add(int(match.group(1)))
 
         return found
+
+    def _scraper_get_series_info(self, scraper, url: str, session: requests.Session | None = None):
+        if session is not None:
+            try:
+                return scraper.get_series_info(url, session=session)
+            except TypeError:
+                pass
+        return scraper.get_series_info(url)
+
+    def _scraper_get_chapter_pages(self, scraper, chapter_url: str, session: requests.Session | None = None):
+        if session is not None:
+            try:
+                return scraper.get_chapter_pages(chapter_url, session=session)
+            except TypeError:
+                pass
+        return scraper.get_chapter_pages(chapter_url)
