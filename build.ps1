@@ -1,3 +1,9 @@
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Version
+)
+
 $ErrorActionPreference = "Stop"
 
 $projectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -15,6 +21,8 @@ $sourceScrapers = Join-Path $projectRoot "scrapers\sites"
 $outputDiscoveryScrapers = Join-Path $outputScraperRoot "discovery_sites"
 $sourceDiscoveryScrapers = Join-Path $projectRoot "scrapers\discovery_sites"
 $outputWebtoons = Join-Path $distRoot "webtoons"
+$archiveName = "Webtoon-Desktop-Reader-v$Version.zip"
+$archivePath = Join-Path $projectRoot $archiveName
 $requiredPythonMinor = "3.14"
 
 if (-not (Test-Path $venvPython)) {
@@ -40,6 +48,11 @@ Write-Host "Installing or upgrading PyInstaller..."
 if (Test-Path $buildRoot) {
     Write-Host "Removing previous build directory..."
     Remove-Item $buildRoot -Recurse -Force
+}
+
+if (Test-Path $distRoot) {
+    Write-Host "Removing previous dist directory..."
+    Remove-Item $distRoot -Recurse -Force
 }
 
 if (Test-Path $legacyOnedirRoot) {
@@ -79,10 +92,24 @@ Get-ChildItem $sourceDiscoveryScrapers -Filter *.py | Where-Object { $_.Name -ne
     Copy-Item $_.FullName (Join-Path $outputDiscoveryScrapers $_.Name) -Force
 }
 
+if (Test-Path $archivePath) {
+    Write-Host "Removing previous archive $archiveName..."
+    Remove-Item $archivePath -Force
+}
+
+Write-Host "Creating archive $archiveName..."
+Compress-Archive -Path (Join-Path $distRoot "*") -DestinationPath $archivePath -CompressionLevel Optimal
+
+if (-not (Test-Path $archivePath)) {
+    throw "Build archive was not created at $archivePath"
+}
+
 Write-Host ""
 Write-Host "Build complete."
 Write-Host "Run:"
 Write-Host "  .\dist\$exeName"
+Write-Host "Archive:"
+Write-Host "  .\$archiveName"
 Write-Host ""
 Write-Host "Editable scraper folders:"
 Write-Host "  .\dist\scrapers\sites"
