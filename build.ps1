@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateNotNullOrEmpty()]
-    [string]$Version
+    [string]$v
 )
 
 $ErrorActionPreference = "Stop"
@@ -21,7 +21,7 @@ $sourceScrapers = Join-Path $projectRoot "scrapers\sites"
 $outputDiscoveryScrapers = Join-Path $outputScraperRoot "discovery_sites"
 $sourceDiscoveryScrapers = Join-Path $projectRoot "scrapers\discovery_sites"
 $outputWebtoons = Join-Path $distRoot "webtoons"
-$archiveName = "Webtoon-Desktop-Reader-v$Version.zip"
+$archiveName = "Webtoon-Desktop-Reader-v$v.zip"
 $archivePath = Join-Path $projectRoot $archiveName
 $requiredPythonMinor = "3.14"
 
