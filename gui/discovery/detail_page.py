@@ -279,6 +279,9 @@ class DiscoveryDetailPage(QWidget):
         if request_id != self._request_id:
             return
         if error:
+            if self._looks_like_access_block(error) and self.main_window.open_site_authorization("hiper_cool", url=getattr(self.entry, "url", "") or "https://hiper.cool/"):
+                self._series_loader.load(self._request_id, self.entry)
+                return
             self.series = None
             self.status_label.setText(error)
             self.status_label.show()
@@ -488,6 +491,10 @@ class DiscoveryDetailPage(QWidget):
             self.status_label.setText(f"Download started for {selected_count} {noun}.")
         self.status_label.show()
         self.main_window.open_downloader()
+
+    def _looks_like_access_block(self, error: str) -> bool:
+        text = " ".join(str(error or "").casefold().split())
+        return "cloudflare" in text or "anti-bot" in text
 
     def _format_chapter_count(self, count: int | None) -> str:
         if not count:

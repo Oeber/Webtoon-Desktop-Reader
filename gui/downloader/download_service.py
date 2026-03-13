@@ -58,6 +58,7 @@ class DownloadService(QObject):
     download_started = Signal(str)
     download_finished = Signal(str, str)
     library_changed = Signal(str)
+    auth_required = Signal(str, str, object, object)
 
     def __init__(self, parent=None, history_kind: str = "download"):
         super().__init__(parent)
@@ -229,6 +230,19 @@ class DownloadService(QObject):
         except FileNotFoundError:
             logger.error("Download failed because required file/tool was missing")
             status = "Failed"
+        except ScraperError as e:
+            if self._is_expected_access_block(e):
+                logger.info("Download blocked for %s: %s", url, e)
+                site_name = ""
+                try:
+                    site_name = getattr(get_scraper(url), "site_name", "") or ""
+                except Exception:
+                    site_name = ""
+                if site_name:
+                    self.auth_required.emit(site_name, url, preferred_name, list(chapter_urls or []))
+            else:
+                logger.error("Download failed for %s: %s", url, e)
+            status = "Failed"
         except Exception as e:
             logger.error("Download failed for %s", url, exc_info=e)
             status = "Failed"
@@ -276,16 +290,25 @@ class DownloadService(QObject):
         try:
             headers = {"User-Agent": "Mozilla/5.0"}
             response = requests.get(url, headers=headers, timeout=10)
+            if self._looks_like_block_page(response):
+                raise ScraperError("Blocked by anti-bot challenge")
             soup = BeautifulSoup(response.text, "html.parser")
 
             og_title = soup.find("meta", property="og:title")
             if og_title and og_title.get("content"):
-                return sanitize_webtoon_name(og_title["content"].strip())
+                title = sanitize_webtoon_name(og_title["content"].strip())
+                if title and not self._looks_like_placeholder_name(title):
+                    return title
 
             if soup.title and soup.title.string:
-                return sanitize_webtoon_name(soup.title.string.strip())
+                title = sanitize_webtoon_name(soup.title.string.strip())
+                if title and not self._looks_like_placeholder_name(title):
+                    return title
         except Exception as e:
-            logger.warning("Name resolve fallback failed for %s", url, exc_info=e)
+            if self._is_expected_access_block(e):
+                logger.info("Name resolve blocked for %s: %s", url, e)
+            else:
+                logger.warning("Name resolve fallback failed for %s", url, exc_info=e)
 
         slug = url.rstrip("/").split("/")[-1]
         return sanitize_webtoon_name(slug) or "download"
@@ -766,6 +789,30 @@ class DownloadService(QObject):
                 found.add(int(match.group(1)))
 
         return found
+
+    def _looks_like_block_page(self, response) -> bool:
+        status_code = getattr(response, "status_code", 0)
+        if status_code == 403:
+            return True
+        text = str(getattr(response, "text", "") or "").casefold()
+        return "just a moment" in text and "cloudflare" in text
+
+    def _looks_like_placeholder_name(self, value: str) -> bool:
+        normalized = " ".join(str(value or "").casefold().split())
+        return normalized in {"just a moment...", "just a moment", "attention required!"}
+
+    def _is_expected_access_block(self, error: Exception) -> bool:
+        text = " ".join(str(error or "").casefold().split())
+        if not text:
+            return False
+        markers = (
+            "cloudflare",
+            "anti-bot",
+            "blocked the request",
+            "blocked the catalog request",
+            "blocked the chapter request",
+        )
+        return any(marker in text for marker in markers)
 
     def _scraper_get_series_info(self, scraper, url: str, session: requests.Session | None = None):
         if session is not None:

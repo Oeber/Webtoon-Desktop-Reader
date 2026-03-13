@@ -15,6 +15,7 @@ class DownloaderPage(DownloadHistoryPageBase):
     def __init__(self, main_window):
         super().__init__(main_window, "Downloader", "History", history_kind="download")
         self.history_store = get_download_history()
+        self._auth_retry_in_progress = False
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -51,6 +52,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.activity_list.setSpacing(8)
         self.history_layout.addWidget(self.activity_section)
 
+        self.service.auth_required.connect(self._on_auth_required)
         self.refresh_recent_activity()
         self._sync_controls()
 
@@ -62,6 +64,16 @@ class DownloaderPage(DownloadHistoryPageBase):
         url = self.url_input.text()
         logger.info("Manual download requested for url=%s", url.strip())
         self.start_download_from_url(url)
+
+    def _on_auth_required(self, site_name: str, url: str, preferred_name, chapter_urls):
+        if site_name != "hiper_cool" or self._auth_retry_in_progress:
+            return
+        self._auth_retry_in_progress = True
+        try:
+            if self.main_window.open_site_authorization(site_name, url=url):
+                self.start_download_from_url(url, preferred_name=preferred_name or None, chapter_urls=list(chapter_urls or []))
+        finally:
+            self._auth_retry_in_progress = False
 
     def start_download_from_url(
         self,

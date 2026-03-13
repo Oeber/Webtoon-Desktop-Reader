@@ -3,6 +3,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 
 hiddenimports = collect_submodules("scrapers.sites")
+hiddenimports += collect_submodules("scrapers.discovery_sites")
 datas = [
     ("imgs", "imgs"),
 ]

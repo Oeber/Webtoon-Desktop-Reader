@@ -21,7 +21,11 @@ class AppSettingsStore:
         ).fetchone()
         if row is None:
             return default
-        return self._coerce_value(row["value"], default)
+        try:
+            raw_value = row["value"]
+        except (TypeError, KeyError, IndexError):
+            raw_value = row[0] if row else default
+        return self._coerce_value(raw_value, default)
 
     def set(self, key: str, value):
         conn = get_connection()

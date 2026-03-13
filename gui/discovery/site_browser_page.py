@@ -359,6 +359,7 @@ class SiteBrowserPage(QWidget):
         self._auto_load_timer.setSingleShot(True)
         self._auto_load_timer.timeout.connect(self._trigger_auto_load_more)
         self._auto_scroll_direction = 0
+        self._auth_in_progress = False
         self._auto_scroll_cursors = {
             -1: self._build_auto_scroll_cursor(-1),
             0: self._build_auto_scroll_cursor(0),
@@ -516,11 +517,121 @@ class SiteBrowserPage(QWidget):
             self._set_entries([])
             self._sync_paging()
 
+    def apply_command_search(self, query: str = "", scraper: str = "") -> bool:
+        self._auto_load_timer.stop()
+        self._search_timer.stop()
+
+        normalized_query = " ".join(str(query or "").split()).strip()
+        provider_key = self.resolve_provider_key(scraper)
+        if scraper and not provider_key:
+            logger.info("Discovery command could not resolve provider %r", scraper)
+            return False
+
+        if self.site_combo.count() == 0:
+            self._reload_scrapers(load_catalog=False)
+            if self.site_combo.count() == 0:
+                return False
+
+        if provider_key:
+            index = self.site_combo.findData(provider_key)
+            if index >= 0 and index != self.site_combo.currentIndex():
+                self.site_combo.blockSignals(True)
+                self.site_combo.setCurrentIndex(index)
+                self.site_combo.blockSignals(False)
+
+        if self.downloaded_only_btn.isChecked():
+            self.downloaded_only_btn.blockSignals(True)
+            self.downloaded_only_btn.setChecked(False)
+            self.downloaded_only_btn.blockSignals(False)
+
+        if self.search_input.text() != normalized_query:
+            self.search_input.blockSignals(True)
+            self.search_input.setText(normalized_query)
+            self.search_input.blockSignals(False)
+        self._search_text = normalized_query
+        self.refresh_catalog(reset=True)
+        return True
+
+    def resolve_provider_key(self, text: str) -> str | None:
+        normalized = self._normalize_provider_text(text)
+        if not normalized:
+            return None
+
+        exact_matches = []
+        prefix_matches = []
+        contains_matches = []
+        for provider in self._providers_by_key.values():
+            provider_keys = self._provider_search_keys(provider)
+            if normalized in provider_keys:
+                exact_matches.append(provider.site_name)
+                continue
+            if any(key.startswith(normalized) for key in provider_keys):
+                prefix_matches.append(provider.site_name)
+                continue
+            if any(normalized in key for key in provider_keys):
+                contains_matches.append(provider.site_name)
+
+        for matches in (exact_matches, prefix_matches, contains_matches):
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
+    def available_provider_labels(self) -> list[str]:
+        providers = sorted(
+            self._providers_by_key.values(),
+            key=lambda provider: provider.get_display_name().casefold(),
+        )
+        return [provider.get_display_name() for provider in providers]
+
+    def matching_provider_labels(self, text: str = "") -> list[str]:
+        normalized = self._normalize_provider_text(text)
+        providers = sorted(
+            self._providers_by_key.values(),
+            key=lambda provider: provider.get_display_name().casefold(),
+        )
+        if not normalized:
+            return [provider.get_display_name() for provider in providers]
+
+        prefix_matches = []
+        contains_matches = []
+        for provider in providers:
+            provider_keys = self._provider_search_keys(provider)
+            label = provider.get_display_name()
+            if any(key.startswith(normalized) for key in provider_keys):
+                prefix_matches.append(label)
+            elif any(normalized in key for key in provider_keys):
+                contains_matches.append(label)
+        return prefix_matches or contains_matches
+
+    def _provider_search_keys(self, provider) -> set[str]:
+        names = {
+            getattr(provider, "site_name", "") or "",
+            provider.get_display_name(),
+        }
+        normalized = set()
+        for name in names:
+            key = self._normalize_provider_text(name)
+            if key:
+                normalized.add(key)
+        return normalized
+
+    def _normalize_provider_text(self, text: str) -> str:
+        return "".join(ch for ch in str(text or "").casefold() if ch.isalnum())
+
     def _current_provider(self):
         key = self.site_combo.currentData()
         if not key:
             return None
         return self._providers_by_key.get(key)
+
+    def _authorize_current_site(self):
+        if self._auth_in_progress:
+            return False
+        self._auth_in_progress = True
+        try:
+            return bool(self.main_window.open_site_authorization("hiper_cool", url="https://hiper.cool/"))
+        finally:
+            self._auth_in_progress = False
 
     def _on_site_changed(self, _index: int):
         if self._catalog_loading:
@@ -794,7 +905,13 @@ class SiteBrowserPage(QWidget):
             return
 
         if error:
-            logger.warning("Catalog loading failed for %s page %d: %s", provider_key, page_number, error)
+            if self._looks_like_expected_provider_block(error):
+                logger.info("Catalog access blocked for %s page %d: %s", provider_key, page_number, error)
+                if provider_key == "hiper_cool" and self._authorize_current_site():
+                    self.refresh_catalog(reset=True)
+                    return
+            else:
+                logger.warning("Catalog loading failed for %s page %d: %s", provider_key, page_number, error)
             self._show_message(error, is_error=True)
             if reset:
                 self._set_entries([])
@@ -894,6 +1011,10 @@ class SiteBrowserPage(QWidget):
         if provider is not None:
             return provider.get_display_name()
         return str(site_name or "Unknown")
+
+    def _looks_like_expected_provider_block(self, error: str) -> bool:
+        text = " ".join(str(error or "").casefold().split())
+        return "cloudflare" in text or "anti-bot" in text
 
     def _local_info_for_entry(self, entry) -> dict | None:
         provider = self._provider_for_entry(entry)

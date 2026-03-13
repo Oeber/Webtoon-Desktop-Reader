@@ -18,6 +18,7 @@ from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import SettingsPage
 from gui.discovery.site_browser_page import SiteBrowserPage
 from gui.discovery.detail_page import DiscoveryDetailPage
+from gui.common.site_auth_dialog import SiteAuthDialog
 from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
 from gui.downloader.download_widgets import SpinnerCircle
@@ -216,6 +217,10 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.discovery)
         self._set_sidebar_target("discovery")
 
+    def open_discovery_search(self, query: str = "", scraper: str = "") -> bool:
+        self.open_discovery()
+        return self.discovery.apply_command_search(query=query, scraper=scraper)
+
     def open_discovery_detail(self, entry):
         self._hide_chapter_loading_overlay()
         title = getattr(entry, "title", None) or None
@@ -223,6 +228,10 @@ class MainWindow(QMainWindow):
         self.discovery_detail.load_entry(entry)
         self.stack.setCurrentWidget(self.discovery_detail)
         self._set_sidebar_target("discovery")
+
+    def open_site_authorization(self, site_name: str, url: str = "") -> bool:
+        dialog = SiteAuthDialog(site_name, url=url, parent=self)
+        return bool(dialog.exec())
 
     def open_settings(self):
         self._hide_chapter_loading_overlay()
