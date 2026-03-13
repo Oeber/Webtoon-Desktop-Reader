@@ -247,6 +247,14 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentWidget(self.settings)
         self._set_sidebar_target("settings")
 
+    def reload_scraper_availability(self):
+        logger.info("Reloading scraper availability across the UI")
+        self.discovery._reload_scrapers(load_catalog=True)
+        if self.detail.webtoon is not None:
+            self.detail._sync_update_button()
+            self.detail._begin_remote_series_lookup()
+        self.updates.refresh_entries()
+
     def open_detail(self, webtoon, force: bool = False):
         """Show the detail / chapter-list page. Also refreshes progress badges."""
         if not force and time.monotonic() < self._suppress_detail_open_until:

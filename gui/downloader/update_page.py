@@ -12,6 +12,7 @@ from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path
 from library.library_manager import scan_library
 from core.update_utils import cooldown_remaining
+from scrapers.registry import is_scraper_enabled_for_url
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 
@@ -64,7 +65,7 @@ class UpdatePage(DownloadHistoryPageBase):
             if self.settings_store.get_completed(webtoon.name):
                 continue
             source_url = self.settings_store.get_source_url(webtoon.name)
-            if source_url:
+            if source_url and is_scraper_enabled_for_url(source_url):
                 candidates.append((webtoon, source_url, self.settings_store.get_last_update_at(webtoon.name)))
 
         self._candidates = candidates

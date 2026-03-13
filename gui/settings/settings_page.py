@@ -21,6 +21,9 @@ from PySide6.QtWidgets import (
 from stores.app_settings_store import get_instance as get_app_settings_store
 from core.app_logging import archived_log_paths, current_log_path, get_logger
 from core.app_paths import default_library_path
+from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
+from scrapers.registry import get_all_scrapers_including_disabled
+from scrapers.site_availability import is_site_enabled, save_disabled_sites
 from gui.common.styles import (
     BUTTON_STYLE,
     CHECKBOX_STYLE,
@@ -76,6 +79,7 @@ class SettingsPage(QWidget):
         self._last_log_path = None
         self._last_log_size = 0
         self._logs_loaded = False
+        self._source_checkboxes = {}
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -163,6 +167,25 @@ class SettingsPage(QWidget):
         library_layout.addWidget(self.show_downloads_section_checkbox)
 
         layout.addWidget(library_card)
+
+        sources_card, sources_layout = self._build_card()
+        sources_header = QHBoxLayout()
+        sources_header.setContentsMargins(0, 0, 0, 0)
+        sources_header.setSpacing(10)
+
+        sources_label = QLabel("Sources")
+        sources_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        sources_header.addWidget(sources_label)
+        sources_header.addStretch()
+        sources_layout.addLayout(sources_header)
+
+        sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover.")
+        sources_help.setWordWrap(True)
+        sources_help.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        sources_layout.addWidget(sources_help)
+        self._build_source_checkboxes(sources_layout)
+
+        layout.addWidget(sources_card)
 
         reader_card, reader_layout = self._build_card()
         reader_header = QHBoxLayout()
@@ -306,6 +329,7 @@ class SettingsPage(QWidget):
         save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
+        save_disabled_sites([])
 
         self.auto_skip_checkbox.blockSignals(True)
         self.auto_skip_checkbox.setChecked(True)
@@ -322,6 +346,8 @@ class SettingsPage(QWidget):
         self.show_downloads_section_checkbox.blockSignals(True)
         self.show_downloads_section_checkbox.setChecked(True)
         self.show_downloads_section_checkbox.blockSignals(False)
+
+        self._refresh_source_checkboxes()
 
         self.zoom_slider.blockSignals(True)
         self.zoom_slider.setValue(50)
@@ -350,6 +376,7 @@ class SettingsPage(QWidget):
                 viewer.rescale_images()
 
         self._save(DEFAULT_PATH)
+        self.main_window.reload_scraper_availability()
 
     def _on_auto_skip_changed(self, checked: bool):
         save_setting("viewer_auto_skip", checked)
@@ -403,6 +430,68 @@ class SettingsPage(QWidget):
         logger.info("Library Active Downloads section visibility changed: %s", checked)
         self.status_label.setText("Library settings saved.")
         self.main_window.library.load_library()
+
+    def _source_rows(self) -> list[dict]:
+        rows_by_site = {}
+
+        for scraper in get_all_scrapers_including_disabled():
+            site_name = getattr(scraper, "site_name", "") or ""
+            if not site_name:
+                continue
+            row = rows_by_site.setdefault(
+                site_name,
+                {"site_name": site_name, "label": site_name.replace("_", " ").title(), "download": False, "discover": False},
+            )
+            row["download"] = True
+
+        for provider in get_all_discovery_providers_including_disabled():
+            site_name = getattr(provider, "site_name", "") or ""
+            if not site_name:
+                continue
+            row = rows_by_site.setdefault(
+                site_name,
+                {"site_name": site_name, "label": provider.get_display_name(), "download": False, "discover": False},
+            )
+            row["label"] = provider.get_display_name() or row["label"]
+            row["discover"] = True
+
+        return sorted(rows_by_site.values(), key=lambda row: row["label"].casefold())
+
+    def _build_source_checkboxes(self, layout: QVBoxLayout):
+        for row in self._source_rows():
+            checkbox = QCheckBox(self._source_checkbox_label(row))
+            checkbox.setStyleSheet(CHECKBOX_STYLE)
+            checkbox.setChecked(is_site_enabled(row["site_name"]))
+            checkbox.toggled.connect(
+                lambda checked, site_name=row["site_name"]: self._on_source_toggled(site_name, checked)
+            )
+            self._source_checkboxes[row["site_name"]] = checkbox
+            layout.addWidget(checkbox)
+
+    def _source_checkbox_label(self, row: dict) -> str:
+        capabilities = []
+        if row.get("download"):
+            capabilities.append("Download")
+        if row.get("discover"):
+            capabilities.append("Discover")
+        suffix = f" ({', '.join(capabilities)})" if capabilities else ""
+        return f"{row['label']}{suffix}"
+
+    def _refresh_source_checkboxes(self):
+        for site_name, checkbox in self._source_checkboxes.items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(is_site_enabled(site_name))
+            checkbox.blockSignals(False)
+
+    def _on_source_toggled(self, site_name: str, checked: bool):
+        disabled_sites = {
+            name for name, checkbox in self._source_checkboxes.items()
+            if not (checked if name == site_name else checkbox.isChecked())
+        }
+        save_disabled_sites(disabled_sites)
+        logger.info("Scraper site availability changed for %s enabled=%s", site_name, checked)
+        self.status_label.setText("Source settings saved.")
+        self.main_window.reload_scraper_availability()
 
     def _on_tab_changed(self, index: int):
         if self.tabs.tabText(index) == "Logs":

@@ -48,7 +48,7 @@ from gui.downloader.download_widgets import SpinnerCircle
 from gui.downloader.helpers import sanitize_webtoon_name
 from core.update_utils import cooldown_remaining
 from scrapers.base import ScraperError
-from scrapers.registry import get_scraper
+from scrapers.registry import get_scraper, is_scraper_enabled_for_url
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 from gui.settings.settings_page import load_library_path
@@ -816,6 +816,10 @@ class DetailPage(QWidget):
             self._remote_status = ""
             self._sync_remote_chapter_state(rebuild_chapter_list=False)
             return
+        if not is_scraper_enabled_for_url(source_url):
+            self._remote_status = "Source site disabled in Settings."
+            self._sync_remote_chapter_state(rebuild_chapter_list=False)
+            return
 
         try:
             scraper = get_scraper(source_url)
@@ -1450,6 +1454,11 @@ class DetailPage(QWidget):
             return
         source_url = self.settings_store.get_source_url(self.webtoon.name)
         if not source_url:
+            self.update_btn.hide()
+            self.update_progress_label.hide()
+            self.update_progress_circle.hide()
+            return
+        if not is_scraper_enabled_for_url(source_url):
             self.update_btn.hide()
             self.update_progress_label.hide()
             self.update_progress_circle.hide()

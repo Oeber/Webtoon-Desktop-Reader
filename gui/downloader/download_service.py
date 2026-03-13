@@ -21,7 +21,7 @@ from gui.downloader.helpers import (
     sanitize_webtoon_name,
 )
 from library.library_manager import build_webtoon_from_folder, preferred_thumbnail_path
-from scrapers.base import ScraperError
+from scrapers.base import ScraperDisabledError, ScraperError
 from scrapers.registry import get_scraper
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
@@ -202,6 +202,8 @@ class DownloadService(QObject):
 
             try:
                 scraper = get_scraper(url)
+            except ScraperDisabledError:
+                raise
             except Exception as e:
                 logger.warning("Custom scraper resolution failed for %s", url, exc_info=e)
                 scraper = None

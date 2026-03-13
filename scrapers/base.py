@@ -9,6 +9,10 @@ class ScraperError(Exception):
     pass
 
 
+class ScraperDisabledError(ScraperError):
+    pass
+
+
 class BaseScraper(ABC):
 
     site_name: str = "unknown"
