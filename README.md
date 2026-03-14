@@ -1,6 +1,6 @@
 # IMPORTANT
 
-If you somehow got here idk how, this is just a fun side project it works, and dare i say its quite nice to use, but still, dont expect support, feel free to make bug reports but go in to it knowing that ill probably take time to fix things
+If you somehow got here idk how, this is just a fun side project. It works, and dare i say its quite nice to use, but still, dont expect support, feel free to make bug reports but go in to it knowing that ill probably take time to fix things
 
 # Webtoon Desktop Reader
 
