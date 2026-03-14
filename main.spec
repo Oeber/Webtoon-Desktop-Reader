@@ -1,8 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_submodules
 
 
 datas = [
     ("imgs", "imgs"),
+]
+
+hiddenimports = [
+    *collect_submodules("scrapers.sites"),
+    *collect_submodules("scrapers.discovery_sites"),
 ]
 
 a = Analysis(
@@ -10,7 +16,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
