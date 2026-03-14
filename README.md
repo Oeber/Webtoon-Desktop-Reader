@@ -1,3 +1,7 @@
+#IMPORTANT
+
+If you somehow got here idk how, this is just a fun side project it works, and dare i say its quite nice to use, but still, dont expect support, feel free to make bug reports but go in to it knowing that ill probably take time to fix things
+
 # Webtoon Desktop Reader
 
 Webtoon Desktop Reader is a Windows desktop app for collecting, reading, and updating webtoons from your own local library.
