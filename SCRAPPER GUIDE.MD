@@ -302,6 +302,67 @@ def get_request_headers(self, url: str) -> dict:
 
 This matters because some sites reject direct asset downloads unless the correct referer is present.
 
+## Cloudflare / Site Authorization
+
+If a download scraper is protected by Cloudflare or another anti-bot page, reuse the shared browser-captured session from `core/site_session.py`.
+
+Typical pattern:
+
+```python
+from core.site_session import apply_site_cookies, load_site_user_agent
+
+class ExampleScraper(BaseScraper):
+    site_name = "example_site"
+
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://example.org/",
+        "Origin": "https://example.org",
+    }
+
+    def _prepare_client(self, session=None):
+        if session is not None:
+            apply_site_cookies(session, self.site_name)
+            return session, False
+        session = requests.Session()
+        apply_site_cookies(session, self.site_name)
+        return session, True
+
+    def _request_headers(self, url: str) -> dict[str, str]:
+        headers = dict(self.HEADERS)
+        headers["User-Agent"] = load_site_user_agent(self.site_name, headers["User-Agent"])
+        return headers
+
+    def _is_cloudflare_block(self, response) -> bool:
+        if response.status_code == 403:
+            return True
+        text = str(getattr(response, "text", "") or "").casefold()
+        return "just a moment" in text and "cloudflare" in text
+
+    def _get(self, url: str, session=None) -> requests.Response:
+        client, should_close = self._prepare_client(session)
+        try:
+            response = client.get(url, headers=self._request_headers(url), timeout=20)
+        finally:
+            if should_close:
+                client.close()
+        if self._is_cloudflare_block(response):
+            raise ScraperError("ExampleSite blocked the request with Cloudflare.")
+        if response.status_code != 200:
+            raise ScraperError(f"Failed to load page: {url} ({response.status_code})")
+        return response
+```
+
+Why this matters:
+
+- the downloader reuses one shared session across the job
+- the shared UI can open authorization and retry when it sees a clear Cloudflare-style `ScraperError`
+- sites like HiperCool and ToonGod already follow this pattern
+
 ## Error Handling Rules
 
 Use `ScraperError` when the scraper cannot do its job.

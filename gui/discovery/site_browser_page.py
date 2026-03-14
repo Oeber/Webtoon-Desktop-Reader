@@ -708,9 +708,14 @@ class SiteBrowserPage(QWidget):
     def _authorize_current_site(self):
         if self._auth_in_progress:
             return False
+        provider = self._current_provider()
+        site_name = str(getattr(provider, "site_name", "") or "").strip()
+        if not site_name:
+            return False
+        url = str(getattr(provider, "site_base_url", "") or "").strip()
         self._auth_in_progress = True
         try:
-            return bool(self.main_window.open_site_authorization("hiper_cool", url="https://hiper.cool/"))
+            return bool(self.main_window.open_site_authorization(site_name, url=url))
         finally:
             self._auth_in_progress = False
 
@@ -1043,7 +1048,7 @@ class SiteBrowserPage(QWidget):
         if error:
             if self._looks_like_expected_provider_block(error):
                 logger.info("Catalog access blocked for %s page %d: %s", provider_key, page_number, error)
-                if provider_key == "hiper_cool" and self._authorize_current_site():
+                if self._authorize_current_site():
                     self.refresh_catalog(reset=True, force=True)
                     return
             else:

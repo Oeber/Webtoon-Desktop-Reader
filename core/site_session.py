@@ -1,4 +1,6 @@
 import json
+from functools import lru_cache
+from urllib.parse import urlparse
 
 import requests
 
@@ -7,61 +9,195 @@ from stores.app_settings_store import get_instance as get_app_settings
 
 SITE_SESSION_KEY_PREFIX = "site_session_cookies:"
 SITE_SESSION_UA_KEY_PREFIX = "site_session_user_agent:"
-SITE_DISPLAY_NAMES = {
-    "hiper_cool": "HiperCool",
-}
-SITE_HOSTS = {
-    "hiper_cool": "hiper.cool",
-}
-SITE_BASE_URLS = {
-    "hiper_cool": "https://hiper.cool/",
-}
-SITE_REQUIRED_COOKIE_NAMES = {
-    "hiper_cool": {"cf_clearance"},
-}
-SITE_SESSION_COOKIE_NAMES = {
-    "hiper_cool": {
-        "cf_clearance",
-        "PHPSESSID",
-        "wordpress_logged_in",
-        "wordpress_sec",
-        "wp-settings-1",
-        "wp-settings-time-1",
-    },
-}
+
+
+def _normalize_site_name(site_name: str) -> str:
+    return str(site_name or "").strip()
+
+
+def _normalize_host_values(values) -> tuple[str, ...]:
+    hosts = []
+    seen = set()
+    for value in values or ():
+        text = str(value or "").strip().casefold().lstrip(".")
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        hosts.append(text)
+    return tuple(hosts)
+
+
+def _normalize_name_values(values) -> tuple[str, ...]:
+    names = []
+    seen = set()
+    for value in values or ():
+        text = str(value or "").strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        names.append(text)
+    return tuple(names)
+
+
+def _merge_site_session_config(base: dict, extra: dict | None) -> dict:
+    if not extra:
+        return base
+    merged = dict(base)
+    if extra.get("display_name") and not merged["display_name"]:
+        merged["display_name"] = str(extra["display_name"]).strip()
+    if extra.get("base_url") and not merged["base_url"]:
+        merged["base_url"] = str(extra["base_url"]).strip()
+    merged["hosts"] = _normalize_host_values((*merged["hosts"], *(extra.get("hosts") or ())))
+    merged["required_cookie_names"] = _normalize_name_values(
+        (*merged["required_cookie_names"], *(extra.get("required_cookie_names") or ()))
+    )
+    merged["session_cookie_names"] = _normalize_name_values(
+        (*merged["session_cookie_names"], *(extra.get("session_cookie_names") or ()))
+    )
+    return merged
+
+
+def _default_site_session_config(site_name: str) -> dict:
+    normalized = _normalize_site_name(site_name)
+    return {
+        "site_name": normalized,
+        "display_name": "",
+        "hosts": (),
+        "base_url": "",
+        "required_cookie_names": (),
+        "session_cookie_names": (),
+    }
+
+
+def _extract_site_session_config(source) -> dict | None:
+    getter = getattr(source, "get_site_session_config", None)
+    if not callable(getter):
+        return None
+    try:
+        config = getter()
+    except Exception:
+        return None
+    if not isinstance(config, dict):
+        return None
+    return {
+        "display_name": str(config.get("display_name") or "").strip(),
+        "hosts": _normalize_host_values(config.get("hosts") or ()),
+        "base_url": str(config.get("base_url") or "").strip(),
+        "required_cookie_names": _normalize_name_values(config.get("required_cookie_names") or ()),
+        "session_cookie_names": _normalize_name_values(config.get("session_cookie_names") or ()),
+    }
+
+
+@lru_cache(maxsize=None)
+def _site_session_config(site_name: str) -> dict:
+    normalized = _normalize_site_name(site_name)
+    config = _default_site_session_config(normalized)
+    if not normalized:
+        return config
+
+    try:
+        from scrapers.registry import get_all_scrapers_including_disabled
+
+        for scraper in get_all_scrapers_including_disabled():
+            if _normalize_site_name(getattr(scraper, "site_name", "")) != normalized:
+                continue
+            config = _merge_site_session_config(config, _extract_site_session_config(scraper))
+    except Exception:
+        pass
+
+    try:
+        from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
+
+        for provider in get_all_discovery_providers_including_disabled():
+            if _normalize_site_name(getattr(provider, "site_name", "")) != normalized:
+                continue
+            config = _merge_site_session_config(config, _extract_site_session_config(provider))
+    except Exception:
+        pass
+
+    if not config["hosts"] and config["base_url"]:
+        host = urlparse(config["base_url"]).netloc.strip().casefold().lstrip(".")
+        if host:
+            config["hosts"] = (host,)
+
+    if config["required_cookie_names"]:
+        config["session_cookie_names"] = _normalize_name_values(
+            (*config["required_cookie_names"], *config["session_cookie_names"])
+        )
+
+    return config
 
 
 def site_session_key(site_name: str) -> str:
-    return f"{SITE_SESSION_KEY_PREFIX}{str(site_name or '').strip()}"
+    return f"{SITE_SESSION_KEY_PREFIX}{_normalize_site_name(site_name)}"
 
 
 def site_user_agent_key(site_name: str) -> str:
-    return f"{SITE_SESSION_UA_KEY_PREFIX}{str(site_name or '').strip()}"
+    return f"{SITE_SESSION_UA_KEY_PREFIX}{_normalize_site_name(site_name)}"
 
 
 def site_host(site_name: str) -> str:
-    return str(SITE_HOSTS.get(str(site_name or "").strip(), "")).strip()
+    hosts = _site_session_config(site_name)["hosts"]
+    return hosts[0] if hosts else ""
 
 
 def site_base_url(site_name: str) -> str:
-    return str(SITE_BASE_URLS.get(str(site_name or "").strip(), "")).strip()
+    return _site_session_config(site_name)["base_url"]
 
 
 def site_display_name(site_name: str) -> str:
-    key = str(site_name or "").strip()
-    if not key:
-        return "Site"
-    return str(SITE_DISPLAY_NAMES.get(key, key.replace("_", " ").title())).strip() or "Site"
+    return _site_session_config(site_name)["display_name"] or "Site"
 
 
 def site_required_cookie_names(site_name: str) -> set[str]:
-    return set(SITE_REQUIRED_COOKIE_NAMES.get(str(site_name or "").strip(), set()))
+    return set(_site_session_config(site_name)["required_cookie_names"])
 
 
 def site_session_cookie_names(site_name: str) -> set[str]:
     required = site_required_cookie_names(site_name)
-    session_names = set(SITE_SESSION_COOKIE_NAMES.get(str(site_name or "").strip(), set()))
+    session_names = set(_site_session_config(site_name)["session_cookie_names"])
     return required | session_names
+
+
+def site_name_for_host(host: str) -> str:
+    normalized_host = str(host or "").strip().casefold().lstrip(".")
+    if not normalized_host:
+        return ""
+
+    try:
+        from scrapers.registry import get_all_scrapers_including_disabled
+
+        for scraper in get_all_scrapers_including_disabled():
+            site_name = _normalize_site_name(getattr(scraper, "site_name", ""))
+            if not site_name:
+                continue
+            hosts = _site_session_config(site_name)["hosts"]
+            if any(normalized_host == candidate or normalized_host.endswith(f".{candidate}") for candidate in hosts):
+                return site_name
+    except Exception:
+        pass
+
+    try:
+        from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
+
+        for provider in get_all_discovery_providers_including_disabled():
+            site_name = _normalize_site_name(getattr(provider, "site_name", ""))
+            if not site_name:
+                continue
+            hosts = _site_session_config(site_name)["hosts"]
+            if any(normalized_host == candidate or normalized_host.endswith(f".{candidate}") for candidate in hosts):
+                return site_name
+    except Exception:
+        pass
+
+    return ""
+
+
+def site_name_for_url(url: str) -> str:
+    return site_name_for_host(urlparse(str(url or "")).netloc)
 
 
 def _filter_site_cookies(site_name: str, cookies: list[dict]) -> list[dict]:

@@ -14,6 +14,18 @@ logger = get_logger(__name__)
 
 class HiperCoolScraper(BaseScraper):
     site_name = "hiper_cool"
+    site_display_name = "HiperCool"
+    site_hosts = ("hiper.cool", "www.hiper.cool")
+    site_base_url = "https://hiper.cool/"
+    site_required_cookie_names = ("cf_clearance",)
+    site_session_cookie_names = (
+        "cf_clearance",
+        "PHPSESSID",
+        "wordpress_logged_in",
+        "wordpress_sec",
+        "wp-settings-1",
+        "wp-settings-time-1",
+    )
 
     BASE = "https://hiper.cool"
 

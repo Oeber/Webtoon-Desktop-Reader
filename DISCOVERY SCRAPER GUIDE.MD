@@ -322,6 +322,60 @@ Use this for:
 
 Providers should raise a clear `ScraperError` when the site still returns a challenge page so the shared discovery UI can trigger authorization and retry.
 
+Worked example:
+
+```python
+from core.site_session import apply_site_cookies, load_site_user_agent, site_cookie_header
+from scrapers.base import ScraperError
+
+class ExampleDiscoveryProvider(BaseDiscoveryProvider):
+    site_name = "example_site"
+    BASE = "https://example.org"
+    HEADERS = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Referer": BASE + "/",
+    }
+
+    def _request_headers(self) -> dict[str, str]:
+        headers = dict(self.HEADERS)
+        headers["User-Agent"] = load_site_user_agent(self.site_name, headers["User-Agent"])
+        cookie_header = site_cookie_header(self.site_name)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+        return headers
+
+    def _looks_like_cloudflare_block(self, html: str, status_code: int) -> bool:
+        if status_code == 403:
+            return True
+        text = (html or "").casefold()
+        return "just a moment" in text and "cloudflare" in text
+
+    def get_catalog_page(self, page: int = 1, search_query: str = "") -> CatalogPage:
+        session = requests.Session()
+        apply_site_cookies(session, self.site_name)
+        try:
+            response = session.get(
+                f"{self.BASE}/series/page/{page}/",
+                headers=self._request_headers(),
+                timeout=30,
+            )
+        finally:
+            session.close()
+
+        if self._looks_like_cloudflare_block(response.text, response.status_code):
+            raise ScraperError("ExampleSite blocked the catalog request with Cloudflare.")
+        if response.status_code != 200:
+            raise ScraperError(f"Failed to load catalog page {page}: HTTP {response.status_code}")
+
+        # parse the catalog page here
+```
+
+That exact error shape is important because the shared discovery UI already knows how to open the authorization window and retry.
+
 ### 7. Use correct cover headers
 
 If a cover host blocks direct requests unless the right headers are present, attach them to `CatalogSeries.cover_headers`.

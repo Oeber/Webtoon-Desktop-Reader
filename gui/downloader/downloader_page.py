@@ -66,7 +66,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.start_download_from_url(url)
 
     def _on_auth_required(self, site_name: str, url: str, preferred_name, chapter_urls):
-        if site_name != "hiper_cool" or self._auth_retry_in_progress:
+        if not site_name or self._auth_retry_in_progress:
             return
         self._auth_retry_in_progress = True
         try:

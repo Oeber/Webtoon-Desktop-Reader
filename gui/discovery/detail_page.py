@@ -279,7 +279,9 @@ class DiscoveryDetailPage(QWidget):
         if request_id != self._request_id:
             return
         if error:
-            if self._looks_like_access_block(error) and self.main_window.open_site_authorization("hiper_cool", url=getattr(self.entry, "url", "") or "https://hiper.cool/"):
+            site_name = str(getattr(self.entry, "site", "") or "").strip()
+            auth_url = getattr(self.entry, "url", "") or ""
+            if self._looks_like_access_block(error) and site_name and self.main_window.open_site_authorization(site_name, url=auth_url):
                 self._series_loader.load(self._request_id, self.entry)
                 return
             self.series = None

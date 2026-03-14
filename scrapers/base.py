@@ -16,6 +16,11 @@ class ScraperDisabledError(ScraperError):
 class BaseScraper(ABC):
 
     site_name: str = "unknown"
+    site_display_name: str = ""
+    site_hosts: tuple[str, ...] = ()
+    site_base_url: str = ""
+    site_required_cookie_names: tuple[str, ...] = ()
+    site_session_cookie_names: tuple[str, ...] = ()
 
     @classmethod
     @abstractmethod
@@ -74,3 +79,31 @@ class BaseScraper(ABC):
         if match:
             return int(match.group(1))
         return None
+
+    def get_site_session_config(self) -> dict:
+        display_name = str(
+            getattr(self, "site_display_name", "") or self.site_name.replace("_", " ").title()
+        ).strip()
+        hosts = tuple(
+            str(host).strip().casefold()
+            for host in getattr(self, "site_hosts", ()) or ()
+            if str(host).strip()
+        )
+        base_url = str(getattr(self, "site_base_url", "") or "").strip()
+        required_cookie_names = tuple(
+            str(name).strip()
+            for name in getattr(self, "site_required_cookie_names", ()) or ()
+            if str(name).strip()
+        )
+        session_cookie_names = tuple(
+            str(name).strip()
+            for name in getattr(self, "site_session_cookie_names", ()) or ()
+            if str(name).strip()
+        )
+        return {
+            "display_name": display_name,
+            "hosts": hosts,
+            "base_url": base_url,
+            "required_cookie_names": required_cookie_names,
+            "session_cookie_names": session_cookie_names,
+        }

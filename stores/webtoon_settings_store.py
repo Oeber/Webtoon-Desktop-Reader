@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from core.app_logging import get_logger
 from core.app_paths import data_path
-from core.site_session import load_site_user_agent, site_cookie_header
+from core.site_session import load_site_user_agent, site_base_url, site_cookie_header, site_name_for_url
 from stores.db import get_connection
 
 
@@ -77,13 +77,17 @@ def _download_url_image(url: str, dest: Path) -> bool:
 
 def _thumbnail_request_headers(url: str) -> dict[str, str]:
     headers = {"User-Agent": "Mozilla/5.0 (WebtoonReader/1.0)"}
-    host = urlparse(str(url or "")).netloc.casefold()
-    if host in {"hiper.cool", "www.hiper.cool"}:
-        headers["User-Agent"] = load_site_user_agent("hiper_cool", headers["User-Agent"])
-        headers["Referer"] = "https://hiper.cool/"
-        cookie_header = site_cookie_header("hiper_cool")
-        if cookie_header:
-            headers["Cookie"] = cookie_header
+    site_name = site_name_for_url(url)
+    if not site_name:
+        return headers
+
+    headers["User-Agent"] = load_site_user_agent(site_name, headers["User-Agent"])
+    referer = site_base_url(site_name)
+    if referer:
+        headers["Referer"] = referer
+    cookie_header = site_cookie_header(site_name)
+    if cookie_header:
+        headers["Cookie"] = cookie_header
     return headers
 
 class WebtoonSettingsStore:
