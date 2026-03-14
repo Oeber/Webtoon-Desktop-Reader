@@ -68,3 +68,12 @@ class BaseDiscoveryProvider(ABC):
         Return one page of discoverable series for this site.
         """
         raise ScraperError(f"{self.site_name} does not implement catalog browsing")
+
+    def fetch_cover(self, url: str, headers: dict[str, str]) -> bytes | None:
+        """
+        Optional. Override to handle cover fetches that require special HTTP
+        clients (e.g. curl_cffi for TLS fingerprint impersonation).
+        Return bytes on success, None to let the cover loader use its default
+        requests.Session.
+        """
+        return None

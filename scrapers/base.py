@@ -107,3 +107,6 @@ class BaseScraper(ABC):
             "required_cookie_names": required_cookie_names,
             "session_cookie_names": session_cookie_names,
         }
+    
+    def download_asset(self, url: str, dest_path: str) -> bool:
+        return False

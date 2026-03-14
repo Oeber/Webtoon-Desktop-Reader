@@ -153,11 +153,12 @@ class DiscoveryCatalogLoader(QObject):
 
 class DiscoveryEntryWidget(QFrame):
 
-    def __init__(self, entry, on_open_detail, cover_loader: DiscoveryCoverLoader, local_info: dict | None):
+    def __init__(self, entry, on_open_detail, cover_loader: DiscoveryCoverLoader, local_info: dict | None, provider=None):
         super().__init__()
         self.entry = entry
         self._on_open_detail = on_open_detail
         self._cover_loader = cover_loader
+        self._provider = provider
         self._local_info = local_info or {}
         self._card_width = CARD_WIDTH
         self._card_height = int(CARD_WIDTH * (CARD_HEIGHT / CARD_WIDTH))
@@ -231,7 +232,7 @@ class DiscoveryEntryWidget(QFrame):
             self._apply_local_cover_fallback()
             return
         self._cover_requested = True
-        self._cover_loader.load(self, self.entry.cover_url, self.entry.cover_headers or {})
+        self._cover_loader.load(self, self.entry.cover_url, self.entry.cover_headers or {}, self._provider)
 
     def apply_cover_data(self, data):
         if not data:
@@ -874,6 +875,7 @@ class SiteBrowserPage(QWidget):
                 on_open_detail=self._open_entry_detail,
                 cover_loader=self._cover_loader,
                 local_info=local_info,
+                provider=self._provider_for_entry(entry),
             )
             widget.setMouseTracking(True)
             widget.installEventFilter(self)

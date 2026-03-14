@@ -553,7 +553,12 @@ class DownloadService(QObject):
                         success_count += 1
                         continue
 
-                    future = executor.submit(self._download_file, job, page.image_url, dest_path, headers)
+                    # Before submitting to executor, check if scraper handles its own downloads
+                    if hasattr(scraper, 'download_asset') and callable(scraper.download_asset):
+                        future = executor.submit(scraper.download_asset, page.image_url, dest_path)
+                    else:
+                        future = executor.submit(self._download_file, job, page.image_url, dest_path, headers)
+                        
                     future_to_page[future] = page.image_url
 
                 for future in as_completed(future_to_page):

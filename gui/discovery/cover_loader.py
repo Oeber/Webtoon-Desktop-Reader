@@ -22,7 +22,7 @@ class DiscoveryCoverLoader(QObject):
         self._inflight: dict[tuple[str, tuple[tuple[str, str], ...]], list[object]] = {}
         self._cache: OrderedDict[tuple[str, tuple[tuple[str, str], ...]], tuple[bytes | None, str]] = OrderedDict()
 
-    def load(self, widget, url: str, headers: dict[str, str] | None):
+    def load(self, widget, url: str, headers: dict[str, str] | None, provider=None):
         request_headers = dict(headers or {})
         key = (url, tuple(sorted(request_headers.items())))
 
@@ -33,15 +33,13 @@ class DiscoveryCoverLoader(QObject):
                 data, error = cached
                 self.loaded.emit(widget, data, error)
                 return
-
             waiting_widgets = self._inflight.get(key)
             if waiting_widgets is not None:
                 waiting_widgets.append(widget)
                 return
-
             self._inflight[key] = [widget]
 
-        self._executor.submit(self._fetch_cover, key, request_headers)
+        self._executor.submit(self._fetch_cover, key, request_headers, provider)
 
     def _get_session(self) -> requests.Session:
         session = getattr(self._session_local, "session", None)
@@ -58,18 +56,21 @@ class DiscoveryCoverLoader(QObject):
         self._session_local.session = session
         return session
 
-    def _fetch_cover(self, key: tuple[str, tuple[tuple[str, str], ...]], headers: dict[str, str]) -> None:
+    def _fetch_cover(self, key, headers, provider=None):
         url = key[0]
         data = None
         error = ""
         try:
-            session = self._get_session()
-            response = session.get(url, headers=headers, timeout=20)
-            response.raise_for_status()
-            data = response.content
+            if provider is not None and callable(getattr(provider, "fetch_cover", None)):
+                data = provider.fetch_cover(url, headers)
+            if data is None:
+                session = self._get_session()
+                response = session.get(url, headers=headers, timeout=20)
+                response.raise_for_status()
+                data = response.content
         except Exception as e:
-            error = str(e)
-
+            error = str(e) 
+            
         with self._lock:
             waiting_widgets = self._inflight.pop(key, [])
             self._cache[key] = (data, error)
