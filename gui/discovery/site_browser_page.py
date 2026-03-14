@@ -1002,7 +1002,7 @@ class SiteBrowserPage(QWidget):
         visible_widgets = []
         viewport_center_y = viewport.rect().center().y()
         for widget in self._entry_widgets[start_index:end_index]:
-            top_left = widget.mapTo(viewport, widget.rect().topLeft())
+            top_left = viewport.mapFromGlobal(widget.mapToGlobal(widget.rect().topLeft()))
             widget_rect = widget.rect().translated(top_left)
             if widget_rect.intersects(viewport_rect):
                 if not widget.needs_cover_request():
@@ -1317,7 +1317,10 @@ class SiteBrowserPage(QWidget):
                 event_type = event.type()
 
                 if event_type in (QEvent.MouseButtonPress, QEvent.MouseMove):
-                    event_pos = event.pos() if obj == viewport else obj.mapTo(viewport, event.pos())
+                    if obj == viewport:
+                        event_pos = event.pos()
+                    else:
+                        event_pos = viewport.mapFromGlobal(obj.mapToGlobal(event.pos()))
 
                     if event_type == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
                         self._set_auto_scroll_enabled(not self.auto_scroll, origin=event_pos)
