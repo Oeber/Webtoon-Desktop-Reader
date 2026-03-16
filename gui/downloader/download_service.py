@@ -21,7 +21,7 @@ from gui.downloader.helpers import (
     sanitize_webtoon_name,
 )
 from library.library_manager import build_webtoon_from_folder, preferred_thumbnail_path
-from scrapers.base import ScraperDisabledError, ScraperError
+from scrapers.base import BaseScraper, ScraperDisabledError, ScraperError
 from scrapers.registry import get_scraper
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
@@ -353,6 +353,15 @@ class DownloadService(QObject):
 
         raise last_error
 
+    def _download_page_asset(self, scraper, job: DownloadJob, url: str, dest_path: str, headers: dict):
+        download_asset = getattr(type(scraper), "download_asset", None)
+        if callable(download_asset) and download_asset is not BaseScraper.download_asset:
+            ok = scraper.download_asset(url, dest_path)
+            if ok is False:
+                raise ScraperError(f"Asset download failed: {url}")
+            return
+        self._download_file(job, url, dest_path, headers)
+
     def _get_job_session(self, job: DownloadJob) -> requests.Session:
         session = getattr(job.session_local, "session", None)
         if session is not None:
@@ -553,12 +562,14 @@ class DownloadService(QObject):
                         success_count += 1
                         continue
 
-                    # Before submitting to executor, check if scraper handles its own downloads
-                    if hasattr(scraper, 'download_asset') and callable(scraper.download_asset):
-                        future = executor.submit(scraper.download_asset, page.image_url, dest_path)
-                    else:
-                        future = executor.submit(self._download_file, job, page.image_url, dest_path, headers)
-                        
+                    future = executor.submit(
+                        self._download_page_asset,
+                        scraper,
+                        job,
+                        page.image_url,
+                        dest_path,
+                        headers,
+                    )
                     future_to_page[future] = page.image_url
 
                 for future in as_completed(future_to_page):
