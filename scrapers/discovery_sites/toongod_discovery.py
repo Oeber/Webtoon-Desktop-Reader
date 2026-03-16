@@ -258,6 +258,10 @@ class ToonGodDiscoveryProvider(BaseDiscoveryProvider):
                 continue
             text = " ".join(candidate.get_text(" ", strip=True).split()).strip()
             if text:
+                text = re.sub(r"\s*[-|]\s*ToonGod.*$", "", text, flags=re.I)
+                text = re.sub(r"\s*Manhwa Free Chapters in English\s*$", "", text, flags=re.I)
+                text = text.strip()
+            if text:
                 return text
 
         return slug.replace("-", " ").replace("_", " ").title()

@@ -188,6 +188,7 @@ class ToonGodScraper(BaseScraper):
         if meta and meta.get("content"):
             title = str(meta["content"]).strip()
             title = re.sub(r"\s*[-|]\s*ToonGod.*$", "", title, flags=re.I)
+            title = re.sub(r"\s*Manhwa Free Chapters in English\s*$", "", title, flags=re.I)
             return title.strip()
 
         h1 = soup.find("h1")
@@ -198,6 +199,7 @@ class ToonGodScraper(BaseScraper):
         if title_tag:
             title = title_tag.get_text(" ", strip=True)
             title = re.sub(r"\s*[-|]\s*ToonGod.*$", "", title, flags=re.I)
+            title = re.sub(r"\s*Manhwa Free Chapters in English\s*$", "", title, flags=re.I)
             return title.strip()
 
         raise ScraperError("Could not determine series title")
@@ -271,6 +273,42 @@ class ToonGodScraper(BaseScraper):
 
         return None
 
+    _DESCRIPTION_NOISE_RE = re.compile(
+        r"(?:"
+        r"Read the latest\b"
+        r"|\bis always updated at ToonGod\b"
+        r"|\bAll Chapters Browse\b"
+        r"|\bA list of Manhwa\b"
+        r"|\bSimilar Manhwas\b"
+        r"|\bFind your favorite\b"
+        r"|\bThe new Manhwa will be\b"
+        r"|\bNow follow ToonGod\b"
+        r"|\bConnect with ToonGod\b"
+        r"|\bBrowse more than\b"
+        r"|\balso known as\b"
+        r"|\bThis on-going webtoon\b"
+        r"|\bThis series was written\b"
+        r"|\bWebtoon is about\b"
+        r")",
+        re.IGNORECASE,
+    )
+
+    def _clean_description(self, text: str) -> str | None:
+        text = " ".join(text.split()).strip()
+        # Strip leading "Summary of <Series Title>" prefix before the actual summary quote
+        text = re.sub(r'^Summary of (?:[A-Za-z0-9\u2019\'\s]{1,80}?Manhwa\s+)', "", text).strip()
+        # Cut at the sentence boundary before the first boilerplate phrase
+        m = self._DESCRIPTION_NOISE_RE.search(text)
+        if m and m.start() > 30:
+            # Walk back to the last sentence-ending punctuation before the match
+            preceding = text[:m.start()]
+            sentence_end = max(preceding.rfind("."), preceding.rfind("!"), preceding.rfind("?"))
+            if sentence_end > 30:
+                text = text[:sentence_end + 1].strip()
+            else:
+                text = preceding.strip().rstrip('.,;"-').strip()
+        return text or None
+
     def _extract_description(self, soup: BeautifulSoup) -> str | None:
         selectors = [
             ".summary__content",
@@ -284,13 +322,13 @@ class ToonGodScraper(BaseScraper):
             if node:
                 text = node.get_text(" ", strip=True)
                 if text:
-                    return text
+                    return self._clean_description(text)
 
         meta = soup.find("meta", attrs={"name": "description"})
         if meta and meta.get("content"):
             text = str(meta["content"]).strip()
             if text:
-                return text
+                return self._clean_description(text)
 
         return None
 
