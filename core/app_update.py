@@ -1,12 +1,17 @@
 ﻿from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 
-from core.app_paths import resource_path
+from core.app_paths import app_root, resource_path
 
 
 APP_NAME = "Webtoon Desktop Reader"
@@ -17,6 +22,7 @@ GITHUB_REPO_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
 GITHUB_RELEASES_URL = f"{GITHUB_REPO_URL}/releases"
 GITHUB_LATEST_RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases/latest"
 REQUEST_TIMEOUT_SECONDS = 15
+UPDATE_DOWNLOAD_CHUNK_SIZE = 1024 * 256
 
 _VERSION_RE = re.compile(r"\d+")
 
@@ -76,6 +82,16 @@ class UpdateCheckResult:
         if self.latest_release is None:
             return False
         return compare_versions(self.latest_release.version, self.current_version) > 0
+
+
+def is_self_update_supported() -> bool:
+    return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+
+
+def can_self_update(release: ReleaseInfo | None) -> bool:
+    if not is_self_update_supported() or release is None or release.asset is None:
+        return False
+    return release.asset.name.casefold().endswith(".zip")
 
 
 def fetch_latest_release(timeout: int = REQUEST_TIMEOUT_SECONDS) -> UpdateCheckResult:
@@ -147,6 +163,89 @@ def format_check_time(timestamp: int | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(timestamp)))
 
 
+def download_release_asset(
+    asset: ReleaseAsset,
+    progress_callback=None,
+    timeout: int = REQUEST_TIMEOUT_SECONDS,
+) -> Path:
+    target_dir = Path(tempfile.mkdtemp(prefix="webtoon-reader-update-"))
+    target_path = target_dir / asset.name
+    headers = {
+        "Accept": "application/octet-stream",
+        "User-Agent": f"{APP_NAME}/{APP_VERSION}",
+    }
+
+    try:
+        with requests.get(asset.download_url, headers=headers, timeout=timeout, stream=True) as response:
+            response.raise_for_status()
+            total = int(response.headers.get("Content-Length") or asset.size or 0)
+            written = 0
+            with target_path.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=UPDATE_DOWNLOAD_CHUNK_SIZE):
+                    if not chunk:
+                        continue
+                    handle.write(chunk)
+                    written += len(chunk)
+                    if callable(progress_callback):
+                        progress_callback(written, total)
+    except Exception:
+        try:
+            target_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        try:
+            target_dir.rmdir()
+        except OSError:
+            pass
+        raise
+
+    return target_path
+
+
+def launch_windows_update_installer(zip_path: str | Path) -> tuple[bool, str]:
+    if not is_self_update_supported():
+        return False, "Automatic app updates are only supported for packaged Windows builds."
+
+    zip_path = Path(zip_path).resolve()
+    if not zip_path.exists():
+        return False, "Downloaded update package was not found."
+
+    install_dir = app_root().resolve()
+    exe_path = Path(sys.executable).resolve()
+    script_path = zip_path.with_name("install-update.ps1")
+
+    script_path.write_text(_windows_update_script(), encoding="utf-8")
+
+    flags = 0
+    flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+
+    try:
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                str(script_path),
+                "-ZipPath",
+                str(zip_path),
+                "-InstallDir",
+                str(install_dir),
+                "-ExePath",
+                str(exe_path),
+                "-ParentPid",
+                str(os.getpid()),
+            ],
+            creationflags=flags,
+            close_fds=True,
+        )
+    except Exception as exc:
+        return False, str(exc)
+
+    return True, ""
+
+
 def _parse_release(payload: dict) -> ReleaseInfo | None:
     if not isinstance(payload, dict):
         return None
@@ -203,3 +302,59 @@ def _version_parts(raw: str) -> list[int]:
     if not text:
         return [0]
     return [int(part) for part in text.split(".")]
+
+
+def _windows_update_script() -> str:
+    return r"""
+param(
+    [Parameter(Mandatory = $true)][string]$ZipPath,
+    [Parameter(Mandatory = $true)][string]$InstallDir,
+    [Parameter(Mandatory = $true)][string]$ExePath,
+    [Parameter(Mandatory = $true)][int]$ParentPid
+)
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+
+$extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("webtoon-reader-update-" + [Guid]::NewGuid().ToString("N"))
+$errorPath = Join-Path $InstallDir "data\last_update_error.txt"
+
+try {
+    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+
+    for ($i = 0; $i -lt 240; $i++) {
+        if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
+            break
+        }
+        Start-Sleep -Milliseconds 500
+    }
+
+    Expand-Archive -LiteralPath $ZipPath -DestinationPath $extractDir -Force
+
+    Get-ChildItem -LiteralPath $extractDir -Force | ForEach-Object {
+        $destination = Join-Path $InstallDir $_.Name
+        if ($_.PSIsContainer) {
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
+            Get-ChildItem -LiteralPath $_.FullName -Force | ForEach-Object {
+                Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+            }
+        } else {
+            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
+        }
+    }
+
+    Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Milliseconds 700
+    Start-Process -FilePath $ExePath | Out-Null
+}
+catch {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $errorPath) | Out-Null
+    $_ | Out-String | Set-Content -Path $errorPath -Encoding utf8
+}
+finally {
+    Start-Sleep -Seconds 2
+    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
+}
+"""

@@ -23,10 +23,15 @@ from core.app_update import (
     APP_NAME,
     APP_VERSION,
     GITHUB_RELEASES_URL,
+    ReleaseAsset,
     UpdateCheckResult,
+    can_self_update,
+    download_release_asset,
     display_version,
     fetch_latest_release,
     format_check_time,
+    is_self_update_supported,
+    launch_windows_update_installer,
 )
 from stores.app_settings_store import get_instance as get_app_settings_store
 from core.app_logging import archived_log_paths, current_log_path, get_logger
@@ -95,6 +100,25 @@ class _AppUpdateWorker(QThread):
         self.result_ready.emit(fetch_latest_release())
 
 
+class _AppUpdateInstallWorker(QThread):
+    progress_changed = Signal(int, int)
+    result_ready = Signal(object)
+
+    def __init__(self, asset: ReleaseAsset):
+        super().__init__()
+        self._asset = asset
+
+    def run(self):
+        try:
+            path = download_release_asset(self._asset, progress_callback=self._emit_progress)
+            self.result_ready.emit((True, str(path), ""))
+        except Exception as exc:
+            self.result_ready.emit((False, "", str(exc)))
+
+    def _emit_progress(self, current: int, total: int):
+        self.progress_changed.emit(int(current), int(total))
+
+
 class SettingsPage(QWidget):
 
     def __init__(self, main_window):
@@ -106,6 +130,7 @@ class SettingsPage(QWidget):
         self._logs_loaded = False
         self._source_checkboxes = {}
         self._update_worker = None
+        self._update_install_worker = None
         self._latest_update_result = None
         self._latest_release_url = GITHUB_RELEASES_URL
         self._latest_asset_url = ""
@@ -234,7 +259,7 @@ class SettingsPage(QWidget):
         self.check_updates_btn.clicked.connect(self._check_for_app_updates)
         update_actions_row.addWidget(self.check_updates_btn)
 
-        self.download_update_btn = QPushButton("Download Latest")
+        self.download_update_btn = QPushButton("Update App")
         self.download_update_btn.setStyleSheet(BUTTON_STYLE)
         self.download_update_btn.setMinimumWidth(140)
         self.download_update_btn.setMinimumHeight(34)
@@ -728,6 +753,13 @@ class SettingsPage(QWidget):
             return
         self._start_update_check(mode="startup")
 
+    def _default_update_action_label(self) -> str:
+        release = self._latest_update_result.latest_release if self._latest_update_result else None
+        return "Update App" if can_self_update(release) else "Download Latest"
+
+    def _set_update_action_idle(self):
+        self.download_update_btn.setText(self._default_update_action_label())
+
     def _load_saved_update_state(self):
         last_version = load_setting(APP_UPDATE_LAST_VERSION_KEY, "")
         last_checked_at = load_setting(APP_UPDATE_LAST_CHECK_AT_KEY, 0)
@@ -738,6 +770,7 @@ class SettingsPage(QWidget):
 
         self._latest_release_url = last_url or GITHUB_RELEASES_URL
         self._latest_asset_url = asset_url or ""
+        self._set_update_action_idle()
         self.update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
 
         if last_status == "error" and last_error:
@@ -827,6 +860,7 @@ class SettingsPage(QWidget):
     def _apply_update_result(self, result: UpdateCheckResult):
         self._latest_release_url = GITHUB_RELEASES_URL
         self._latest_asset_url = ""
+        self._set_update_action_idle()
         self.update_meta_label.setText(f"Last checked: {format_check_time(result.checked_at)}")
 
         if result.error_message:
@@ -842,11 +876,12 @@ class SettingsPage(QWidget):
 
         self._latest_release_url = release.html_url or GITHUB_RELEASES_URL
         self._latest_asset_url = release.asset.download_url if release.asset else ""
+        self._set_update_action_idle()
 
         if result.is_update_available:
             asset_text = release.asset.name if release.asset else "latest release"
             self.update_status_label.setText(
-                f"Latest release: {display_version(release.version)} is available. Download: {asset_text}"
+                f"Latest release: {display_version(release.version)} is available. Package: {asset_text}"
             )
             self.download_update_btn.setEnabled(bool(self._latest_asset_url or self._latest_release_url))
             return
@@ -878,13 +913,93 @@ class SettingsPage(QWidget):
             QMessageBox.Open,
         )
         if result_code == QMessageBox.Open:
-            self._open_latest_release_download()
+            self._trigger_app_update()
 
     def _open_latest_release_download(self):
-        url = self._latest_asset_url or self._latest_release_url or GITHUB_RELEASES_URL
-        if not url:
+        self._trigger_app_update()
+
+    def _trigger_app_update(self):
+        release = self._latest_update_result.latest_release if self._latest_update_result else None
+        if release is None:
+            self._open_releases_page()
             return
-        QDesktopServices.openUrl(QUrl(url))
+
+        if not can_self_update(release):
+            url = self._latest_asset_url or self._latest_release_url or GITHUB_RELEASES_URL
+            if url:
+                QDesktopServices.openUrl(QUrl(url))
+            return
+
+        if self._update_install_worker is not None and self._update_install_worker.isRunning():
+            return
+
+        result = QMessageBox.question(
+            self,
+            "Install Update",
+            (
+                f"Install {display_version(release.version)} now?\n\n"
+                "The app will download the update, close itself, replace the installed files, and relaunch automatically."
+            ),
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Yes,
+        )
+        if result != QMessageBox.Yes:
+            return
+
+        self.check_updates_btn.setEnabled(False)
+        self.download_update_btn.setEnabled(False)
+        self.download_update_btn.setText("Downloading...")
+        self.update_status_label.setText(
+            f"Latest release: Downloading {display_version(release.version)} for automatic install..."
+        )
+
+        worker = _AppUpdateInstallWorker(release.asset)
+        worker.progress_changed.connect(self._on_update_install_progress)
+        worker.result_ready.connect(self._on_update_install_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda: setattr(self, "_update_install_worker", None))
+        self._update_install_worker = worker
+        worker.start()
+
+    @Slot(int, int)
+    def _on_update_install_progress(self, current: int, total: int):
+        if total > 0:
+            percent = int((max(0, current) / max(1, total)) * 100)
+            self.download_update_btn.setText(f"Downloading {percent}%")
+            return
+        self.download_update_btn.setText("Downloading...")
+
+    @Slot(object)
+    def _on_update_install_finished(self, payload: object):
+        ok = False
+        zip_path = ""
+        error = "Unknown update error."
+        if isinstance(payload, tuple) and len(payload) == 3:
+            ok = bool(payload[0])
+            zip_path = str(payload[1] or "")
+            error = str(payload[2] or error)
+
+        if not ok:
+            self.check_updates_btn.setEnabled(True)
+            self.download_update_btn.setEnabled(True)
+            self._set_update_action_idle()
+            self.update_status_label.setText(f"Latest release: Automatic update failed. {error}")
+            self.status_label.setText("Automatic app update failed.")
+            return
+
+        launched, launch_error = launch_windows_update_installer(zip_path)
+        if not launched:
+            self.check_updates_btn.setEnabled(True)
+            self.download_update_btn.setEnabled(True)
+            self._set_update_action_idle()
+            self.update_status_label.setText(f"Latest release: Could not launch installer. {launch_error}")
+            self.status_label.setText("Automatic app update could not start.")
+            return
+
+        self.download_update_btn.setText("Installing...")
+        self.update_status_label.setText("Latest release: Installing update and restarting...")
+        self.status_label.setText("Closing the app to install the update...")
+        self.main_window.close()
 
     def _open_releases_page(self):
         QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))
