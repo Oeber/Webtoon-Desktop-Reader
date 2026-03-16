@@ -954,21 +954,30 @@ class SettingsPage(QWidget):
             self._trigger_app_update()
 
     def _open_latest_release_download(self):
+        logger.info("App update action button clicked")
         self._trigger_app_update()
 
     def _trigger_app_update(self):
         release = self._latest_update_result.latest_release if self._latest_update_result else None
         if release is None:
+            logger.info("No release metadata available for self-update; opening releases page instead")
             self._open_releases_page()
             return
 
         if not can_self_update(release):
             url = self._latest_asset_url or self._latest_release_url or GITHUB_RELEASES_URL
+            logger.info(
+                "Self-update not available for release=%s asset=%s; opening external download url=%s",
+                release.version,
+                release.asset.name if release.asset else "",
+                url,
+            )
             if url:
                 QDesktopServices.openUrl(QUrl(url))
             return
 
         if self._update_install_worker is not None and self._update_install_worker.isRunning():
+            logger.info("Ignoring duplicate self-update request while download is already running")
             return
 
         result = QMessageBox.question(
@@ -982,7 +991,13 @@ class SettingsPage(QWidget):
             QMessageBox.Yes,
         )
         if result != QMessageBox.Yes:
+            logger.info("User cancelled self-update confirmation for release=%s", release.version)
             return
+        logger.info(
+            "User accepted self-update release=%s asset=%s",
+            release.version,
+            release.asset.name if release.asset else "",
+        )
 
         self.check_updates_btn.setEnabled(False)
         self.download_update_btn.setEnabled(False)
@@ -1007,6 +1022,13 @@ class SettingsPage(QWidget):
     def _on_update_install_progress(self, current: int, total: int):
         if total > 0:
             percent = int((max(0, current) / max(1, total)) * 100)
+            if percent in {0, 25, 50, 75, 100}:
+                logger.info(
+                    "Self-update download progress current=%s total=%s percent=%s",
+                    current,
+                    total,
+                    percent,
+                )
             self.update_progress_bar.setRange(0, 100)
             self.update_progress_bar.setValue(percent)
             self.update_progress_label.setText(
@@ -1029,6 +1051,7 @@ class SettingsPage(QWidget):
             error = str(payload[2] or error)
 
         if not ok:
+            logger.error("Self-update download worker failed: %s", error)
             self.check_updates_btn.setEnabled(True)
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
@@ -1039,6 +1062,7 @@ class SettingsPage(QWidget):
 
         launched, launch_error = launch_windows_update_installer(zip_path)
         if not launched:
+            logger.error("Self-update installer launch failed zip=%s error=%s", zip_path, launch_error)
             self.check_updates_btn.setEnabled(True)
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
@@ -1047,6 +1071,7 @@ class SettingsPage(QWidget):
             self.status_label.setText("Automatic app update could not start.")
             return
 
+        logger.info("Self-update installer launched successfully zip=%s", zip_path)
         self.update_progress_bar.setRange(0, 100)
         self.update_progress_bar.setValue(100)
         self.update_progress_label.setText("Download complete. Closing the app so the installer can replace files.")
@@ -1057,4 +1082,5 @@ class SettingsPage(QWidget):
         self.main_window.close()
 
     def _open_releases_page(self):
+        logger.info("Opening releases page url=%s", GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))

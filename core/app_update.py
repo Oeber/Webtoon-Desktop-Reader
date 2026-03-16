@@ -12,6 +12,7 @@ from pathlib import Path
 import requests
 
 from core.app_paths import app_root, resource_path
+from core.app_logging import get_logger
 
 
 APP_NAME = "Webtoon Desktop Reader"
@@ -25,6 +26,7 @@ REQUEST_TIMEOUT_SECONDS = 15
 UPDATE_DOWNLOAD_CHUNK_SIZE = 1024 * 256
 
 _VERSION_RE = re.compile(r"\d+")
+logger = get_logger(__name__)
 
 
 def _extract_version(raw) -> str:
@@ -100,6 +102,7 @@ def fetch_latest_release(timeout: int = REQUEST_TIMEOUT_SECONDS) -> UpdateCheckR
         "Accept": "application/vnd.github+json",
         "User-Agent": f"{APP_NAME}/{APP_VERSION}",
     }
+    logger.info("Checking latest GitHub release current_version=%s url=%s", APP_VERSION, GITHUB_LATEST_RELEASE_API_URL)
 
     try:
         response = requests.get(
@@ -110,12 +113,14 @@ def fetch_latest_release(timeout: int = REQUEST_TIMEOUT_SECONDS) -> UpdateCheckR
         response.raise_for_status()
         payload = response.json()
     except requests.RequestException as exc:
+        logger.warning("GitHub release check failed: %s", exc)
         return UpdateCheckResult(
             current_version=APP_VERSION,
             checked_at=checked_at,
             error_message=str(exc),
         )
     except ValueError:
+        logger.warning("GitHub release check returned invalid JSON")
         return UpdateCheckResult(
             current_version=APP_VERSION,
             checked_at=checked_at,
@@ -124,11 +129,20 @@ def fetch_latest_release(timeout: int = REQUEST_TIMEOUT_SECONDS) -> UpdateCheckR
 
     release = _parse_release(payload)
     if release is None:
+        logger.warning("GitHub release payload could not be parsed")
         return UpdateCheckResult(
             current_version=APP_VERSION,
             checked_at=checked_at,
             error_message="Could not read the latest release details from GitHub.",
         )
+
+    logger.info(
+        "Latest GitHub release parsed version=%s tag=%s asset=%s update_available=%s",
+        release.version,
+        release.tag_name,
+        release.asset.name if release.asset else "",
+        compare_versions(release.version, APP_VERSION) > 0,
+    )
 
     return UpdateCheckResult(
         current_version=APP_VERSION,
@@ -174,6 +188,13 @@ def download_release_asset(
         "Accept": "application/octet-stream",
         "User-Agent": f"{APP_NAME}/{APP_VERSION}",
     }
+    logger.info(
+        "Starting release asset download asset=%s size=%s url=%s target=%s",
+        asset.name,
+        asset.size,
+        asset.download_url,
+        target_path,
+    )
 
     try:
         with requests.get(asset.download_url, headers=headers, timeout=timeout, stream=True) as response:
@@ -188,15 +209,23 @@ def download_release_asset(
                     written += len(chunk)
                     if callable(progress_callback):
                         progress_callback(written, total)
+        logger.info(
+            "Finished release asset download asset=%s written=%s total=%s target=%s",
+            asset.name,
+            written,
+            total,
+            target_path,
+        )
     except Exception:
+        logger.exception("Release asset download failed asset=%s target=%s", asset.name, target_path)
         try:
             target_path.unlink(missing_ok=True)
         except OSError:
-            pass
+            logger.warning("Failed to remove partial update file %s", target_path, exc_info=True)
         try:
             target_dir.rmdir()
         except OSError:
-            pass
+            logger.warning("Failed to remove update temp directory %s", target_dir, exc_info=True)
         raise
 
     return target_path
@@ -204,15 +233,24 @@ def download_release_asset(
 
 def launch_windows_update_installer(zip_path: str | Path) -> tuple[bool, str]:
     if not is_self_update_supported():
+        logger.warning("Self-update launch requested but packaged Windows self-update is not supported")
         return False, "Automatic app updates are only supported for packaged Windows builds."
 
     zip_path = Path(zip_path).resolve()
     if not zip_path.exists():
+        logger.warning("Self-update launch requested but downloaded package was missing: %s", zip_path)
         return False, "Downloaded update package was not found."
 
     install_dir = app_root().resolve()
     exe_path = Path(sys.executable).resolve()
     script_path = zip_path.with_name("install-update.ps1")
+    logger.info(
+        "Preparing Windows self-update installer zip=%s install_dir=%s exe=%s script=%s",
+        zip_path,
+        install_dir,
+        exe_path,
+        script_path,
+    )
 
     script_path.write_text(_windows_update_script(), encoding="utf-8")
 
@@ -241,8 +279,10 @@ def launch_windows_update_installer(zip_path: str | Path) -> tuple[bool, str]:
             close_fds=True,
         )
     except Exception as exc:
+        logger.exception("Failed to launch Windows self-update installer script=%s", script_path)
         return False, str(exc)
 
+    logger.info("Launched Windows self-update installer script=%s", script_path)
     return True, ""
 
 
