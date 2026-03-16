@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
 import re
@@ -331,13 +331,17 @@ try {
 
     Expand-Archive -LiteralPath $ZipPath -DestinationPath $extractDir -Force
 
-    Get-ChildItem -LiteralPath $extractDir -Force | ForEach-Object {
+    $copyRoot = $extractDir
+    $topLevelEntries = @(Get-ChildItem -LiteralPath $extractDir -Force)
+    if ($topLevelEntries.Count -eq 1 -and $topLevelEntries[0].PSIsContainer) {
+        $copyRoot = $topLevelEntries[0].FullName
+    }
+
+    Get-ChildItem -LiteralPath $copyRoot -Force | ForEach-Object {
         $destination = Join-Path $InstallDir $_.Name
         if ($_.PSIsContainer) {
             New-Item -ItemType Directory -Force -Path $destination | Out-Null
-            Get-ChildItem -LiteralPath $_.FullName -Force | ForEach-Object {
-                Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
-            }
+            Copy-Item -LiteralPath (Join-Path $_.FullName "*") -Destination $destination -Recurse -Force
         } else {
             Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
         }

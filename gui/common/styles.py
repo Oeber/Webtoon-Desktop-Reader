@@ -514,6 +514,24 @@ DOWNLOAD_ENTRY_THUMB_STYLE = """
 DOWNLOAD_ENTRY_NAME_STYLE = "color: #fff0ec; font-size: 13px; background: transparent; border: none; font-weight: 600;"
 DOWNLOAD_ENTRY_SUB_LABEL_STYLE = "color: #b18b84; font-size: 11px; background: transparent; border: none;"
 TRANSPARENT_BORDERLESS_STYLE = "background: transparent; border: none;"
+APP_UPDATE_PROGRESS_STYLE = f"""
+    QProgressBar {{
+        background: #120f0f;
+        color: {TEXT_SOFT};
+        border: 1px solid {BORDER};
+        border-radius: 7px;
+        text-align: center;
+        min-height: 14px;
+    }}
+    QProgressBar::chunk {{
+        border-radius: 6px;
+        background: qlineargradient(
+            x1: 0, y1: 0, x2: 1, y2: 0,
+            stop: 0 {ACCENT},
+            stop: 1 {ACCENT_MUTED}
+        );
+    }}
+"""
 
 
 def status_text_style(color: str) -> str:

@@ -249,6 +249,20 @@ class SettingsPage(QWidget):
         self.update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
         updates_layout.addWidget(self.update_meta_label)
 
+        self.update_progress_label = QLabel("")
+        self.update_progress_label.setWordWrap(True)
+        self.update_progress_label.setStyleSheet(STATUS_LABEL_STYLE)
+        self.update_progress_label.hide()
+        updates_layout.addWidget(self.update_progress_label)
+
+        self.update_progress_bar = QProgressBar()
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(0)
+        self.update_progress_bar.setTextVisible(False)
+        self.update_progress_bar.setStyleSheet(APP_UPDATE_PROGRESS_STYLE)
+        self.update_progress_bar.hide()
+        updates_layout.addWidget(self.update_progress_bar)
+
         update_actions_row = QHBoxLayout()
         update_actions_row.setSpacing(8)
 
@@ -760,6 +774,28 @@ class SettingsPage(QWidget):
     def _set_update_action_idle(self):
         self.download_update_btn.setText(self._default_update_action_label())
 
+    def _set_update_progress_visible(self, visible: bool):
+        self.update_progress_bar.setVisible(visible)
+        self.update_progress_label.setVisible(visible)
+
+    def _reset_update_progress(self):
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(0)
+        self.update_progress_label.clear()
+        self._set_update_progress_visible(False)
+
+    def _format_bytes(self, size: int) -> str:
+        value = float(max(0, int(size)))
+        units = ["B", "KB", "MB", "GB"]
+        unit = units[0]
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                break
+            value /= 1024.0
+        if unit == "B":
+            return f"{int(value)} {unit}"
+        return f"{value:.1f} {unit}"
+
     def _load_saved_update_state(self):
         last_version = load_setting(APP_UPDATE_LAST_VERSION_KEY, "")
         last_checked_at = load_setting(APP_UPDATE_LAST_CHECK_AT_KEY, 0)
@@ -771,6 +807,7 @@ class SettingsPage(QWidget):
         self._latest_release_url = last_url or GITHUB_RELEASES_URL
         self._latest_asset_url = asset_url or ""
         self._set_update_action_idle()
+        self._reset_update_progress()
         self.update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
 
         if last_status == "error" and last_error:
@@ -861,6 +898,7 @@ class SettingsPage(QWidget):
         self._latest_release_url = GITHUB_RELEASES_URL
         self._latest_asset_url = ""
         self._set_update_action_idle()
+        self._reset_update_progress()
         self.update_meta_label.setText(f"Last checked: {format_check_time(result.checked_at)}")
 
         if result.error_message:
@@ -952,6 +990,10 @@ class SettingsPage(QWidget):
         self.update_status_label.setText(
             f"Latest release: Downloading {display_version(release.version)} for automatic install..."
         )
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(0)
+        self.update_progress_label.setText("Preparing download...")
+        self._set_update_progress_visible(True)
 
         worker = _AppUpdateInstallWorker(release.asset)
         worker.progress_changed.connect(self._on_update_install_progress)
@@ -965,8 +1007,15 @@ class SettingsPage(QWidget):
     def _on_update_install_progress(self, current: int, total: int):
         if total > 0:
             percent = int((max(0, current) / max(1, total)) * 100)
+            self.update_progress_bar.setRange(0, 100)
+            self.update_progress_bar.setValue(percent)
+            self.update_progress_label.setText(
+                f"Downloaded {self._format_bytes(current)} of {self._format_bytes(total)} ({percent}%)"
+            )
             self.download_update_btn.setText(f"Downloading {percent}%")
             return
+        self.update_progress_bar.setRange(0, 0)
+        self.update_progress_label.setText(f"Downloaded {self._format_bytes(current)}")
         self.download_update_btn.setText("Downloading...")
 
     @Slot(object)
@@ -983,6 +1032,7 @@ class SettingsPage(QWidget):
             self.check_updates_btn.setEnabled(True)
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
+            self._reset_update_progress()
             self.update_status_label.setText(f"Latest release: Automatic update failed. {error}")
             self.status_label.setText("Automatic app update failed.")
             return
@@ -992,10 +1042,15 @@ class SettingsPage(QWidget):
             self.check_updates_btn.setEnabled(True)
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
+            self._reset_update_progress()
             self.update_status_label.setText(f"Latest release: Could not launch installer. {launch_error}")
             self.status_label.setText("Automatic app update could not start.")
             return
 
+        self.update_progress_bar.setRange(0, 100)
+        self.update_progress_bar.setValue(100)
+        self.update_progress_label.setText("Download complete. Closing the app so the installer can replace files.")
+        self._set_update_progress_visible(True)
         self.download_update_btn.setText("Installing...")
         self.update_status_label.setText("Latest release: Installing update and restarting...")
         self.status_label.setText("Closing the app to install the update...")
