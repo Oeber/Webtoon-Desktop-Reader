@@ -249,7 +249,7 @@ class MainWindow(QMainWindow):
         self._set_sidebar_target("settings")
 
     def reload_scraper_availability(self):
-        logger.info("Reloading scraper availability across the UI")
+        logger.info("Reloading scrapers across the UI")
         self.discovery._reload_scrapers(load_catalog=True)
         if self.detail.webtoon is not None:
             self.detail._sync_update_button()
