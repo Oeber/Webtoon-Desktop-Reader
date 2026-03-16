@@ -229,17 +229,23 @@ class SettingsPage(QWidget):
 
         self.check_updates_btn = QPushButton("Check for Updates")
         self.check_updates_btn.setStyleSheet(BUTTON_STYLE)
+        self.check_updates_btn.setMinimumWidth(140)
+        self.check_updates_btn.setMinimumHeight(34)
         self.check_updates_btn.clicked.connect(self._check_for_app_updates)
         update_actions_row.addWidget(self.check_updates_btn)
 
         self.download_update_btn = QPushButton("Download Latest")
         self.download_update_btn.setStyleSheet(BUTTON_STYLE)
+        self.download_update_btn.setMinimumWidth(140)
+        self.download_update_btn.setMinimumHeight(34)
         self.download_update_btn.clicked.connect(self._open_latest_release_download)
         self.download_update_btn.setEnabled(False)
         update_actions_row.addWidget(self.download_update_btn)
 
         self.view_releases_btn = QPushButton("View Releases")
         self.view_releases_btn.setStyleSheet(BUTTON_STYLE)
+        self.view_releases_btn.setMinimumWidth(120)
+        self.view_releases_btn.setMinimumHeight(34)
         self.view_releases_btn.clicked.connect(self._open_releases_page)
         update_actions_row.addWidget(self.view_releases_btn)
 
