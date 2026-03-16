@@ -41,6 +41,7 @@ from scrapers.discovery_registry import get_all_discovery_providers_including_di
 from scrapers.registry import get_all_scrapers_including_disabled
 from scrapers.site_availability import is_site_enabled, save_disabled_sites
 from gui.common.styles import (
+    APP_UPDATE_PROGRESS_STYLE,
     BUTTON_STYLE,
     CHECKBOX_STYLE,
     INPUT_STYLE,
