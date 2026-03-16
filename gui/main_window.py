@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
 )
 
 from PySide6.QtGui import QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut, Qt
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, QTimer
 import time
 
 import qtawesome as qta
@@ -181,6 +181,7 @@ class MainWindow(QMainWindow):
         self._refresh_download_sidebar_indicator()
         self._refresh_sidebar_nav_state()
         self._apply_sidebar_button_layout()
+        QTimer.singleShot(1500, self.settings.schedule_startup_update_check)
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)

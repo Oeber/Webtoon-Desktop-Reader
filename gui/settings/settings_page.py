@@ -2,8 +2,8 @@ import html
 import os
 import re
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QTextCursor
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -16,8 +16,18 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
+    QMessageBox,
 )
 
+from core.app_update import (
+    APP_NAME,
+    APP_VERSION,
+    GITHUB_RELEASES_URL,
+    UpdateCheckResult,
+    display_version,
+    fetch_latest_release,
+    format_check_time,
+)
 from stores.app_settings_store import get_instance as get_app_settings_store
 from core.app_logging import archived_log_paths, current_log_path, get_logger
 from core.app_paths import default_library_path
@@ -49,6 +59,14 @@ DEFAULT_PATH = str(default_library_path())
 LIBRARY_USE_CATEGORIES_KEY = "library_use_categories"
 LIBRARY_SHOW_NEW_SECTION_KEY = "library_show_new_section"
 LIBRARY_SHOW_DOWNLOADS_SECTION_KEY = "library_show_downloads_section"
+APP_UPDATE_CHECK_ON_STARTUP_KEY = "app_update_check_on_startup"
+APP_UPDATE_LAST_CHECK_AT_KEY = "app_update_last_check_at"
+APP_UPDATE_LAST_VERSION_KEY = "app_update_last_version"
+APP_UPDATE_LAST_URL_KEY = "app_update_last_url"
+APP_UPDATE_LAST_ASSET_URL_KEY = "app_update_last_asset_url"
+APP_UPDATE_LAST_STATUS_KEY = "app_update_last_status"
+APP_UPDATE_LAST_ERROR_KEY = "app_update_last_error"
+APP_UPDATE_LAST_NOTIFIED_VERSION_KEY = "app_update_last_notified_version"
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
 _app_settings = get_app_settings_store()
@@ -70,6 +88,13 @@ def save_setting(key: str, value):
     _app_settings.set(key, value)
 
 
+class _AppUpdateWorker(QThread):
+    result_ready = Signal(object)
+
+    def run(self):
+        self.result_ready.emit(fetch_latest_release())
+
+
 class SettingsPage(QWidget):
 
     def __init__(self, main_window):
@@ -80,6 +105,11 @@ class SettingsPage(QWidget):
         self._last_log_size = 0
         self._logs_loaded = False
         self._source_checkboxes = {}
+        self._update_worker = None
+        self._latest_update_result = None
+        self._latest_release_url = GITHUB_RELEASES_URL
+        self._latest_asset_url = ""
+        self._pending_update_check_mode = "manual"
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -103,6 +133,7 @@ class SettingsPage(QWidget):
         self._log_refresh_timer = QTimer(self)
         self._log_refresh_timer.timeout.connect(self._refresh_logs_if_changed)
         self._log_refresh_timer.start(1500)
+        self._load_saved_update_state()
 
     def open_logs_tab(self):
         self.tabs.setCurrentWidget(self.logs_tab)
@@ -167,6 +198,61 @@ class SettingsPage(QWidget):
         library_layout.addWidget(self.show_downloads_section_checkbox)
 
         layout.addWidget(library_card)
+
+        updates_card, updates_layout = self._build_card()
+        updates_header = QHBoxLayout()
+        updates_header.setContentsMargins(0, 0, 0, 0)
+        updates_header.setSpacing(10)
+
+        updates_label = QLabel("App Updates")
+        updates_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        updates_header.addWidget(updates_label)
+        updates_header.addStretch()
+        updates_layout.addLayout(updates_header)
+
+        current_version_label = QLabel(f"Current version: {display_version(APP_VERSION)}")
+        current_version_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        updates_layout.addWidget(current_version_label)
+
+        self.update_status_label = QLabel("Latest release: Not checked yet.")
+        self.update_status_label.setWordWrap(True)
+        self.update_status_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        updates_layout.addWidget(self.update_status_label)
+
+        self.update_meta_label = QLabel("Last checked: Never")
+        self.update_meta_label.setWordWrap(True)
+        self.update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
+        updates_layout.addWidget(self.update_meta_label)
+
+        update_actions_row = QHBoxLayout()
+        update_actions_row.setSpacing(8)
+
+        self.check_updates_btn = QPushButton("Check for Updates")
+        self.check_updates_btn.setStyleSheet(BUTTON_STYLE)
+        self.check_updates_btn.clicked.connect(self._check_for_app_updates)
+        update_actions_row.addWidget(self.check_updates_btn)
+
+        self.download_update_btn = QPushButton("Download Latest")
+        self.download_update_btn.setStyleSheet(BUTTON_STYLE)
+        self.download_update_btn.clicked.connect(self._open_latest_release_download)
+        self.download_update_btn.setEnabled(False)
+        update_actions_row.addWidget(self.download_update_btn)
+
+        self.view_releases_btn = QPushButton("View Releases")
+        self.view_releases_btn.setStyleSheet(BUTTON_STYLE)
+        self.view_releases_btn.clicked.connect(self._open_releases_page)
+        update_actions_row.addWidget(self.view_releases_btn)
+
+        update_actions_row.addStretch()
+        updates_layout.addLayout(update_actions_row)
+
+        self.check_updates_on_startup_checkbox = QCheckBox("Check GitHub releases on startup")
+        self.check_updates_on_startup_checkbox.setChecked(load_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True))
+        self.check_updates_on_startup_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.check_updates_on_startup_checkbox.toggled.connect(self._on_check_updates_on_startup_changed)
+        updates_layout.addWidget(self.check_updates_on_startup_checkbox)
+
+        layout.addWidget(updates_card)
 
         sources_card, sources_layout = self._build_card()
         sources_header = QHBoxLayout()
@@ -329,6 +415,7 @@ class SettingsPage(QWidget):
         save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
+        save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True)
         save_disabled_sites([])
 
         self.auto_skip_checkbox.blockSignals(True)
@@ -346,6 +433,10 @@ class SettingsPage(QWidget):
         self.show_downloads_section_checkbox.blockSignals(True)
         self.show_downloads_section_checkbox.setChecked(True)
         self.show_downloads_section_checkbox.blockSignals(False)
+
+        self.check_updates_on_startup_checkbox.blockSignals(True)
+        self.check_updates_on_startup_checkbox.setChecked(True)
+        self.check_updates_on_startup_checkbox.blockSignals(False)
 
         self._refresh_source_checkboxes()
 
@@ -377,6 +468,7 @@ class SettingsPage(QWidget):
 
         self._save(DEFAULT_PATH)
         self.main_window.reload_scraper_availability()
+        self.status_label.setText("Settings reset to defaults.")
 
     def _on_auto_skip_changed(self, checked: bool):
         save_setting("viewer_auto_skip", checked)
@@ -430,6 +522,11 @@ class SettingsPage(QWidget):
         logger.info("Library Active Downloads section visibility changed: %s", checked)
         self.status_label.setText("Library settings saved.")
         self.main_window.library.load_library()
+
+    def _on_check_updates_on_startup_changed(self, checked: bool):
+        save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, checked)
+        logger.info("App update startup checks changed: %s", checked)
+        self.status_label.setText("Update settings saved.")
 
     def _source_rows(self) -> list[dict]:
         rows_by_site = {}
@@ -619,3 +716,169 @@ class SettingsPage(QWidget):
             "ERROR": "#ef4444",
             "CRITICAL": "#ff6b6b",
         }.get(level, "#d0d0d0")
+
+    def schedule_startup_update_check(self):
+        if not load_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True):
+            return
+        self._start_update_check(mode="startup")
+
+    def _load_saved_update_state(self):
+        last_version = load_setting(APP_UPDATE_LAST_VERSION_KEY, "")
+        last_checked_at = load_setting(APP_UPDATE_LAST_CHECK_AT_KEY, 0)
+        last_status = load_setting(APP_UPDATE_LAST_STATUS_KEY, "")
+        last_error = load_setting(APP_UPDATE_LAST_ERROR_KEY, "")
+        last_url = load_setting(APP_UPDATE_LAST_URL_KEY, "")
+        asset_url = load_setting(APP_UPDATE_LAST_ASSET_URL_KEY, "")
+
+        self._latest_release_url = last_url or GITHUB_RELEASES_URL
+        self._latest_asset_url = asset_url or ""
+        self.update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
+
+        if last_status == "error" and last_error:
+            self.update_status_label.setText(f"Latest release: Check failed. {last_error}")
+            self.download_update_btn.setEnabled(False)
+            return
+
+        if not last_version:
+            self.update_status_label.setText("Latest release: Not checked yet.")
+            self.download_update_btn.setEnabled(False)
+            return
+
+        if last_version == APP_VERSION:
+            self.update_status_label.setText(
+                f"Latest release: {display_version(last_version)}. You are up to date."
+            )
+            self.download_update_btn.setEnabled(False)
+            return
+
+        self.update_status_label.setText(
+            f"Latest release: {display_version(last_version)} is available."
+        )
+        self.download_update_btn.setEnabled(bool(self._latest_asset_url or self._latest_release_url))
+
+    def _check_for_app_updates(self):
+        self._start_update_check(mode="manual")
+
+    def _start_update_check(self, mode: str):
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+
+        self._pending_update_check_mode = mode
+        self.check_updates_btn.setEnabled(False)
+        self.download_update_btn.setEnabled(False)
+        self.update_status_label.setText("Latest release: Checking GitHub...")
+        self.update_meta_label.setText("Last checked: In progress...")
+
+        worker = _AppUpdateWorker(self)
+        worker.result_ready.connect(self._on_update_check_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.finished.connect(lambda: setattr(self, "_update_worker", None))
+        self._update_worker = worker
+        worker.start()
+
+    @Slot(object)
+    def _on_update_check_finished(self, result: object):
+        if not isinstance(result, UpdateCheckResult):
+            logger.warning("Received unexpected app update result: %r", result)
+            return
+
+        logger.info(
+            "App update check completed available=%s error=%s",
+            result.is_update_available,
+            bool(result.error_message),
+        )
+        self._latest_update_result = result
+        self.check_updates_btn.setEnabled(True)
+        self._save_update_result(result)
+        self._apply_update_result(result)
+
+        if self._pending_update_check_mode == "startup":
+            self._maybe_notify_startup_update(result)
+        elif result.error_message:
+            self.status_label.setText("Could not check for app updates.")
+        elif result.is_update_available:
+            self.status_label.setText("A newer app release is available.")
+        else:
+            self.status_label.setText("You are on the latest app release.")
+
+    def _save_update_result(self, result: UpdateCheckResult):
+        save_setting(APP_UPDATE_LAST_CHECK_AT_KEY, result.checked_at)
+        if result.error_message:
+            save_setting(APP_UPDATE_LAST_STATUS_KEY, "error")
+            save_setting(APP_UPDATE_LAST_ERROR_KEY, result.error_message)
+            return
+
+        release = result.latest_release
+        save_setting(APP_UPDATE_LAST_STATUS_KEY, "ok")
+        save_setting(APP_UPDATE_LAST_ERROR_KEY, "")
+        save_setting(APP_UPDATE_LAST_VERSION_KEY, release.version if release else "")
+        save_setting(APP_UPDATE_LAST_URL_KEY, release.html_url if release else GITHUB_RELEASES_URL)
+        save_setting(
+            APP_UPDATE_LAST_ASSET_URL_KEY,
+            release.asset.download_url if release and release.asset else "",
+        )
+
+    def _apply_update_result(self, result: UpdateCheckResult):
+        self._latest_release_url = GITHUB_RELEASES_URL
+        self._latest_asset_url = ""
+        self.update_meta_label.setText(f"Last checked: {format_check_time(result.checked_at)}")
+
+        if result.error_message:
+            self.update_status_label.setText(f"Latest release: Check failed. {result.error_message}")
+            self.download_update_btn.setEnabled(False)
+            return
+
+        release = result.latest_release
+        if release is None:
+            self.update_status_label.setText("Latest release: No release information returned.")
+            self.download_update_btn.setEnabled(False)
+            return
+
+        self._latest_release_url = release.html_url or GITHUB_RELEASES_URL
+        self._latest_asset_url = release.asset.download_url if release.asset else ""
+
+        if result.is_update_available:
+            asset_text = release.asset.name if release.asset else "latest release"
+            self.update_status_label.setText(
+                f"Latest release: {display_version(release.version)} is available. Download: {asset_text}"
+            )
+            self.download_update_btn.setEnabled(bool(self._latest_asset_url or self._latest_release_url))
+            return
+
+        self.update_status_label.setText(
+            f"Latest release: {display_version(release.version)}. You are up to date."
+        )
+        self.download_update_btn.setEnabled(False)
+
+    def _maybe_notify_startup_update(self, result: UpdateCheckResult):
+        if result.error_message or not result.is_update_available or result.latest_release is None:
+            return
+
+        release = result.latest_release
+        last_notified_version = load_setting(APP_UPDATE_LAST_NOTIFIED_VERSION_KEY, "")
+        if last_notified_version == release.version:
+            return
+
+        save_setting(APP_UPDATE_LAST_NOTIFIED_VERSION_KEY, release.version)
+        message = (
+            f"{APP_NAME} {display_version(release.version)} is available.\n\n"
+            f"You are on {display_version(APP_VERSION)}."
+        )
+        result_code = QMessageBox.information(
+            self,
+            "Update Available",
+            message,
+            QMessageBox.Open | QMessageBox.Close,
+            QMessageBox.Open,
+        )
+        if result_code == QMessageBox.Open:
+            self._open_latest_release_download()
+
+    def _open_latest_release_download(self):
+        url = self._latest_asset_url or self._latest_release_url or GITHUB_RELEASES_URL
+        if not url:
+            return
+        QDesktopServices.openUrl(QUrl(url))
+
+    def _open_releases_page(self):
+        QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))

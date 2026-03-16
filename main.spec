@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 datas = [
     ("imgs", "imgs"),
+    ("data/app_version.txt", "data"),
 ]
 
 hiddenimports = [

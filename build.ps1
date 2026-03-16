@@ -11,6 +11,7 @@ $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $distRoot = Join-Path $projectRoot "dist"
 $buildRoot = Join-Path $projectRoot "build"
 $specPath = Join-Path $projectRoot "main.spec"
+$appVersionPath = Join-Path $projectRoot "data\app_version.txt"
 $exeName = "Webtoon Desktop Reader.exe"
 $onefileExe = Join-Path $distRoot $exeName
 $legacyOnedirRoot = Join-Path $distRoot "main"
@@ -21,7 +22,16 @@ $sourceScrapers = Join-Path $projectRoot "scrapers\sites"
 $outputDiscoveryScrapers = Join-Path $outputScraperRoot "discovery_sites"
 $sourceDiscoveryScrapers = Join-Path $projectRoot "scrapers\discovery_sites"
 $outputWebtoons = Join-Path $distRoot "webtoons"
-$archiveName = "Webtoon-Desktop-Reader-v$v.zip"
+$version = $v.Trim()
+if ($version.StartsWith("v")) {
+    $version = $version.Substring(1)
+}
+
+if ($version -notmatch '^\d+(?:\.\d+)+$') {
+    throw "Version must look like 1.0.0 or 0.9.5. Received '$v'."
+}
+
+$archiveName = "Webtoon-Desktop-Reader-v$version.zip"
 $archivePath = Join-Path $projectRoot $archiveName
 $requiredPythonMinor = "3.14"
 
@@ -41,6 +51,10 @@ if ($venvVersion.Trim() -ne $requiredPythonMinor) {
 if (-not (Test-Path $specPath)) {
     throw "PyInstaller spec not found at $specPath"
 }
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appVersionPath) | Out-Null
+Set-Content -Path $appVersionPath -Value $version -Encoding utf8
+Write-Host "App version set to $version"
 
 Write-Host "Installing or upgrading PyInstaller..."
 & $venvPython -m pip install --upgrade pyinstaller

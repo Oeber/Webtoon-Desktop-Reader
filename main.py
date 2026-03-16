@@ -3,6 +3,7 @@ import ctypes
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 from core.app_logging import setup_logging, get_logger
+from core.app_update import APP_NAME, APP_VERSION
 from core.app_paths import resource_path
 from core.profiler import create_session_profiler
 from gui.main_window import MainWindow
@@ -27,7 +28,8 @@ _set_windows_app_id()
 
 app = QApplication(app_argv)
 logger.info("QApplication created")
-app.setApplicationName("Webtoon Desktop Reader")
+app.setApplicationName(APP_NAME)
+app.setApplicationVersion(APP_VERSION)
 
 app_icon_path = resource_path("imgs", "logo.png")
 if app_icon_path.exists():
