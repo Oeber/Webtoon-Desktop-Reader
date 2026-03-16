@@ -151,7 +151,7 @@ class DiscoveryDetailPage(QWidget):
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
 
-        self.download_all_btn = QPushButton("Download Whole Comic")
+        self.download_all_btn = QPushButton("Download All Chapters")
         self.download_all_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
         self.download_all_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.download_all_btn.clicked.connect(self._download_all)
