@@ -333,7 +333,7 @@ def launch_windows_update_installer(zip_path: str | Path) -> tuple[bool, str]:
 
     zip_path = Path(zip_path).resolve()
     if not zip_path.exists():
-        logger.warning("Self-update launch requested but downloaded package was missing: %s", zip_path)
+        logger.warning("Self-update launch requested but downloaded update package was missing: %s", zip_path)
         return False, "Downloaded update package was not found."
 
     install_dir = app_root().resolve()
@@ -443,20 +443,16 @@ def _pick_asset(assets: list[dict]) -> ReleaseAsset | None:
     if not parsed_assets:
         return None
 
-    def _score(item: ReleaseAsset) -> tuple[int, int]:
-        name = item.name.casefold()
-        if name.endswith("-portable.zip"):
-            return (0, len(name))
-        if name.endswith(".zip") and "installer" not in name:
-            return (1, len(name))
-        if name.endswith("-installer.zip"):
-            return (2, len(name))
-        if name.endswith(".exe"):
-            return (3, len(name))
-        return (4, len(name))
+    portable_assets = [
+        item
+        for item in parsed_assets
+        if item.name.casefold().endswith("-portable.zip")
+    ]
+    if not portable_assets:
+        return None
 
-    parsed_assets.sort(key=_score)
-    return parsed_assets[0]
+    portable_assets.sort(key=lambda item: len(item.name))
+    return portable_assets[0]
 
 
 def _version_parts(raw: str) -> list[int]:

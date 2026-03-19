@@ -77,7 +77,7 @@ def _wait_for_parent_exit(pid: int, install_dir: Path) -> None:
         if attempt and attempt % 20 == 0:
             _write_trace(install_dir, f"Still waiting for parent process {pid} to exit ({attempt} cycle(s))")
         time.sleep(WAIT_INTERVAL_SECONDS)
-    raise RuntimeError(f"Parent process {pid} did not exit before the installer timeout.")
+    raise RuntimeError(f"Parent process {pid} did not exit before the update timeout.")
 
 
 def _copy_file_with_retry(source: Path, destination: Path, install_dir: Path) -> None:

@@ -813,7 +813,7 @@ class SettingsPage(QWidget):
             return ""
         first_line = error.splitlines()[0].strip()
         if not first_line:
-            first_line = "Unknown installer error."
+            first_line = "Unknown update error."
         return (
             f"Previous automatic update failed: {first_line} "
             "See data/last_update_error.txt and data/last_update_trace.txt for details."
@@ -1100,19 +1100,19 @@ class SettingsPage(QWidget):
 
         launched, launch_error = launch_windows_update_installer(zip_path)
         if not launched:
-            logger.error("Self-update installer launch failed zip=%s error=%s", zip_path, launch_error)
+            logger.error("Self-update package launch failed zip=%s error=%s", zip_path, launch_error)
             self.check_updates_btn.setEnabled(True)
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
             self._reset_update_progress()
-            self.update_status_label.setText(f"Latest release: Could not launch installer. {launch_error}")
+            self.update_status_label.setText(f"Latest release: Could not launch update helper. {launch_error}")
             self.status_label.setText("Automatic app update could not start.")
             return
 
-        logger.info("Self-update installer launched successfully zip=%s", zip_path)
+        logger.info("Self-update package launch started successfully zip=%s", zip_path)
         self.update_progress_bar.setRange(0, 100)
         self.update_progress_bar.setValue(100)
-        self.update_progress_label.setText("Download complete. Closing the app so the installer can replace files.")
+        self.update_progress_label.setText("Download complete. Closing the app so the update helper can replace files.")
         self._set_update_progress_visible(True)
         self.download_update_btn.setText("Installing...")
         self.update_status_label.setText("Latest release: Installing update and restarting...")
