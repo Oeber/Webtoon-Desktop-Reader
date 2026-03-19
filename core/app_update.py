@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,8 +12,8 @@ from pathlib import Path
 
 import requests
 
-from core.app_paths import app_root, resource_path
 from core.app_logging import get_logger
+from core.app_paths import app_root, data_path, resource_path
 
 
 APP_NAME = "Webtoon Desktop Reader"
@@ -27,28 +28,6 @@ UPDATE_DOWNLOAD_CHUNK_SIZE = 1024 * 256
 
 _VERSION_RE = re.compile(r"\d+")
 logger = get_logger(__name__)
-
-
-def _extract_version(raw) -> str:
-    text = str(raw or "")
-    parts = _VERSION_RE.findall(text)
-    if not parts:
-        return ""
-    return ".".join(parts)
-
-
-def _load_app_version() -> str:
-    version_path = resource_path("data", "app_version.txt")
-    try:
-        raw = version_path.read_text(encoding="utf-8").strip()
-    except OSError:
-        return DEFAULT_APP_VERSION
-
-    cleaned = _extract_version(raw)
-    return cleaned or DEFAULT_APP_VERSION
-
-
-APP_VERSION = _load_app_version()
 
 
 @dataclass(slots=True)
@@ -86,8 +65,62 @@ class UpdateCheckResult:
         return compare_versions(self.latest_release.version, self.current_version) > 0
 
 
+def _extract_version(raw) -> str:
+    text = str(raw or "")
+    parts = _VERSION_RE.findall(text)
+    if not parts:
+        return ""
+    return ".".join(parts)
+
+
+def _load_app_version() -> str:
+    disk_path = data_path("app_version.txt")
+    try:
+        raw = disk_path.read_text(encoding="utf-8").strip()
+        cleaned = _extract_version(raw)
+        if cleaned:
+            return cleaned
+    except OSError:
+        pass
+
+    bundle_path = resource_path("data", "app_version.txt")
+    try:
+        raw = bundle_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return DEFAULT_APP_VERSION
+
+    cleaned = _extract_version(raw)
+    version = cleaned or DEFAULT_APP_VERSION
+
+    try:
+        disk_path.parent.mkdir(parents=True, exist_ok=True)
+        disk_path.write_text(version, encoding="utf-8")
+    except OSError:
+        pass
+
+    return version
+
+
+APP_VERSION = _load_app_version()
+
+
+def _updater_binary_name() -> str:
+    return "Webtoon Desktop Reader Updater.exe" if sys.platform == "win32" else "Webtoon Desktop Reader Updater"
+
+
+def _updater_binary_path() -> Path:
+    return app_root().joinpath(_updater_binary_name())
+
+
+def _temp_updater_binary_path() -> Path:
+    launch_dir = Path(tempfile.mkdtemp(prefix="webtoon-reader-updater-launch-"))
+    return launch_dir.joinpath(_updater_binary_name())
+
+
 def is_self_update_supported() -> bool:
-    return sys.platform == "win32" and bool(getattr(sys, "frozen", False))
+    if not bool(getattr(sys, "frozen", False)):
+        return False
+    return _updater_binary_path().exists()
 
 
 def can_self_update(release: ReleaseInfo | None) -> bool:
@@ -177,6 +210,53 @@ def format_check_time(timestamp: int | None) -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(timestamp)))
 
 
+def last_update_error_path() -> Path:
+    return app_root().joinpath("data", "last_update_error.txt")
+
+
+def last_update_trace_path() -> Path:
+    return app_root().joinpath("data", "last_update_trace.txt")
+
+
+def last_update_launch_path() -> Path:
+    return app_root().joinpath("data", "last_update_launch.txt")
+
+
+def _write_update_launch_marker(launcher_path: Path, zip_path: Path, install_dir: Path, exe_path: Path, launcher_source: str) -> None:
+    marker_path = last_update_launch_path()
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(
+        "\n".join(
+            [
+                f"time={format_check_time(int(time.time()))}",
+                f"pid={os.getpid()}",
+                f"launcher_source={launcher_source}",
+                f"launcher={launcher_path}",
+                f"zip={zip_path}",
+                f"install_dir={install_dir}",
+                f"exe={exe_path}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_last_update_error() -> str:
+    path = last_update_error_path()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def load_last_update_trace() -> str:
+    path = last_update_trace_path()
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
 def download_release_asset(
     asset: ReleaseAsset,
     progress_callback=None,
@@ -196,19 +276,34 @@ def download_release_asset(
         target_path,
     )
 
+    written = 0
+    total = int(asset.size or 0)
+
     try:
-        with requests.get(asset.download_url, headers=headers, timeout=timeout, stream=True) as response:
-            response.raise_for_status()
-            total = int(response.headers.get("Content-Length") or asset.size or 0)
-            written = 0
-            with target_path.open("wb") as handle:
-                for chunk in response.iter_content(chunk_size=UPDATE_DOWNLOAD_CHUNK_SIZE):
+        local_source = Path(asset.download_url)
+        if local_source.exists():
+            total = int(local_source.stat().st_size)
+            with local_source.open("rb") as source, target_path.open("wb") as handle:
+                while True:
+                    chunk = source.read(UPDATE_DOWNLOAD_CHUNK_SIZE)
                     if not chunk:
-                        continue
+                        break
                     handle.write(chunk)
                     written += len(chunk)
                     if callable(progress_callback):
                         progress_callback(written, total)
+        else:
+            with requests.get(asset.download_url, headers=headers, timeout=timeout, stream=True) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("Content-Length") or asset.size or 0)
+                with target_path.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=UPDATE_DOWNLOAD_CHUNK_SIZE):
+                        if not chunk:
+                            continue
+                        handle.write(chunk)
+                        written += len(chunk)
+                        if callable(progress_callback):
+                            progress_callback(written, total)
         logger.info(
             "Finished release asset download asset=%s written=%s total=%s target=%s",
             asset.name,
@@ -233,8 +328,8 @@ def download_release_asset(
 
 def launch_windows_update_installer(zip_path: str | Path) -> tuple[bool, str]:
     if not is_self_update_supported():
-        logger.warning("Self-update launch requested but packaged Windows self-update is not supported")
-        return False, "Automatic app updates are only supported for packaged Windows builds."
+        logger.warning("Self-update launch requested but packaged self-update helper is not available")
+        return False, "Automatic app updates are only supported for packaged builds that include the updater helper."
 
     zip_path = Path(zip_path).resolve()
     if not zip_path.exists():
@@ -243,46 +338,69 @@ def launch_windows_update_installer(zip_path: str | Path) -> tuple[bool, str]:
 
     install_dir = app_root().resolve()
     exe_path = Path(sys.executable).resolve()
-    script_path = zip_path.with_name("install-update.ps1")
+    updater_source = _updater_binary_path().resolve()
+    updater_copy = _temp_updater_binary_path().resolve()
+    error_path = last_update_error_path()
+    trace_path = last_update_trace_path()
+    launch_marker_path = last_update_launch_path()
     logger.info(
-        "Preparing Windows self-update installer zip=%s install_dir=%s exe=%s script=%s",
+        "Preparing packaged updater helper zip=%s install_dir=%s exe=%s helper=%s temp_helper=%s",
         zip_path,
         install_dir,
         exe_path,
-        script_path,
+        updater_source,
+        updater_copy,
     )
 
-    script_path.write_text(_windows_update_script(), encoding="utf-8")
+    try:
+        error_path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to clear previous update error file %s", error_path, exc_info=True)
+
+    try:
+        trace_path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to clear previous update trace file %s", trace_path, exc_info=True)
+
+    try:
+        launch_marker_path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to clear previous update launch marker %s", launch_marker_path, exc_info=True)
+
+    try:
+        updater_copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(updater_source, updater_copy)
+    except OSError as exc:
+        logger.exception("Failed to stage updater helper %s -> %s", updater_source, updater_copy)
+        return False, str(exc)
+
+    _write_update_launch_marker(updater_copy, zip_path, install_dir, exe_path, str(updater_source))
 
     flags = 0
+    flags |= getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
     flags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    flags |= getattr(subprocess, "DETACHED_PROCESS", 0)
 
     try:
         subprocess.Popen(
             [
-                "powershell.exe",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(script_path),
-                "-ZipPath",
+                str(updater_copy),
+                "--zip-path",
                 str(zip_path),
-                "-InstallDir",
+                "--install-dir",
                 str(install_dir),
-                "-ExePath",
+                "--exe-path",
                 str(exe_path),
-                "-ParentPid",
+                "--parent-pid",
                 str(os.getpid()),
             ],
             creationflags=flags,
             close_fds=True,
         )
     except Exception as exc:
-        logger.exception("Failed to launch Windows self-update installer script=%s", script_path)
+        logger.exception("Failed to launch updater helper staged at %s", updater_copy)
         return False, str(exc)
 
-    logger.info("Launched Windows self-update installer script=%s", script_path)
+    logger.info("Launched updater helper source=%s staged=%s marker=%s", updater_source, updater_copy, launch_marker_path)
     return True, ""
 
 
@@ -342,63 +460,3 @@ def _version_parts(raw: str) -> list[int]:
     if not text:
         return [0]
     return [int(part) for part in text.split(".")]
-
-
-def _windows_update_script() -> str:
-    return r"""
-param(
-    [Parameter(Mandatory = $true)][string]$ZipPath,
-    [Parameter(Mandatory = $true)][string]$InstallDir,
-    [Parameter(Mandatory = $true)][string]$ExePath,
-    [Parameter(Mandatory = $true)][int]$ParentPid
-)
-
-$ErrorActionPreference = "Stop"
-$ProgressPreference = "SilentlyContinue"
-
-$extractDir = Join-Path ([System.IO.Path]::GetTempPath()) ("webtoon-reader-update-" + [Guid]::NewGuid().ToString("N"))
-$errorPath = Join-Path $InstallDir "data\last_update_error.txt"
-
-try {
-    New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-
-    for ($i = 0; $i -lt 240; $i++) {
-        if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
-            break
-        }
-        Start-Sleep -Milliseconds 500
-    }
-
-    Expand-Archive -LiteralPath $ZipPath -DestinationPath $extractDir -Force
-
-    $copyRoot = $extractDir
-    $topLevelEntries = @(Get-ChildItem -LiteralPath $extractDir -Force)
-    if ($topLevelEntries.Count -eq 1 -and $topLevelEntries[0].PSIsContainer) {
-        $copyRoot = $topLevelEntries[0].FullName
-    }
-
-    Get-ChildItem -LiteralPath $copyRoot -Force | ForEach-Object {
-        $destination = Join-Path $InstallDir $_.Name
-        if ($_.PSIsContainer) {
-            New-Item -ItemType Directory -Force -Path $destination | Out-Null
-            Copy-Item -LiteralPath (Join-Path $_.FullName "*") -Destination $destination -Recurse -Force
-        } else {
-            Copy-Item -LiteralPath $_.FullName -Destination $destination -Force
-        }
-    }
-
-    Remove-Item -LiteralPath $errorPath -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 700
-    Start-Process -FilePath $ExePath | Out-Null
-}
-catch {
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $errorPath) | Out-Null
-    $_ | Out-String | Set-Content -Path $errorPath -Encoding utf8
-}
-finally {
-    Start-Sleep -Seconds 2
-    Remove-Item -LiteralPath $extractDir -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $ZipPath -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $PSCommandPath -Force -ErrorAction SilentlyContinue
-}
-"""

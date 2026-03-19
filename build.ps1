@@ -11,6 +11,9 @@ $venvPython = Join-Path $projectRoot ".venv\Scripts\python.exe"
 $distRoot = Join-Path $projectRoot "dist"
 $buildRoot = Join-Path $projectRoot "build"
 $specPath = Join-Path $projectRoot "main.spec"
+$updaterSpecPath = Join-Path $projectRoot "update_helper.spec"
+$updaterExeName = "Webtoon Desktop Reader Updater.exe"
+$updaterExePath = Join-Path $distRoot $updaterExeName
 $appVersionPath = Join-Path $projectRoot "data\app_version.txt"
 $exeName = "Webtoon Desktop Reader.exe"
 $onefileExe = Join-Path $distRoot $exeName
@@ -51,6 +54,10 @@ if ($venvVersion.Trim() -ne $requiredPythonMinor) {
 if (-not (Test-Path $specPath)) {
     throw "PyInstaller spec not found at $specPath"
 }
+if (-not (Test-Path $updaterSpecPath)) {
+    throw "PyInstaller spec not found at $updaterSpecPath"
+}
+
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appVersionPath) | Out-Null
 Set-Content -Path $appVersionPath -Value $version -Encoding utf8
@@ -78,9 +85,21 @@ if (Test-Path $onefileExe) {
     Write-Host "Removing previous onefile executable..."
     Remove-Item $onefileExe -Force
 }
+if (Test-Path $updaterExePath) {
+    Write-Host "Removing previous updater executable..."
+    Remove-Item $updaterExePath -Force
+}
+
 
 Write-Host "Building onefile executable..."
 & $venvPython -m PyInstaller --clean --noconfirm $specPath
+
+Write-Host "Building updater helper executable..."
+& $venvPython -m PyInstaller --clean --noconfirm $updaterSpecPath
+
+if (-not (Test-Path $updaterExePath)) {
+    throw "Build did not produce $updaterExePath"
+}
 
 if (-not (Test-Path $onefileExe)) {
     throw "Build did not produce $onefileExe"
@@ -105,6 +124,11 @@ Copy-Item (Join-Path $sourceDiscoveryScrapers "__init__.py") (Join-Path $outputD
 Get-ChildItem $sourceDiscoveryScrapers -Filter *.py | Where-Object { $_.Name -ne "__init__.py" } | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $outputDiscoveryScrapers $_.Name) -Force
 }
+
+Write-Host "Adding app_version.txt to archive..."
+$outputDataDir = Join-Path $distRoot "data"
+New-Item -ItemType Directory -Force -Path $outputDataDir | Out-Null
+Copy-Item $appVersionPath (Join-Path $outputDataDir "app_version.txt") -Force
 
 if (Test-Path $archivePath) {
     Write-Host "Removing previous archive $archiveName..."

@@ -33,6 +33,7 @@ from core.app_update import (
     format_check_time,
     is_self_update_supported,
     launch_windows_update_installer,
+    load_last_update_error,
 )
 from stores.app_settings_store import get_instance as get_app_settings_store
 from core.app_logging import archived_log_paths, current_log_path, get_logger
@@ -250,6 +251,12 @@ class SettingsPage(QWidget):
         self.update_meta_label.setWordWrap(True)
         self.update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
         updates_layout.addWidget(self.update_meta_label)
+
+        self.update_diagnostic_label = QLabel("")
+        self.update_diagnostic_label.setWordWrap(True)
+        self.update_diagnostic_label.setStyleSheet(STATUS_LABEL_STYLE)
+        self.update_diagnostic_label.hide()
+        updates_layout.addWidget(self.update_diagnostic_label)
 
         self.update_progress_label = QLabel("")
         self.update_progress_label.setWordWrap(True)
@@ -786,6 +793,22 @@ class SettingsPage(QWidget):
         self.update_progress_label.clear()
         self._set_update_progress_visible(False)
 
+    def _set_update_diagnostic(self, text: str):
+        self.update_diagnostic_label.setText(text)
+        self.update_diagnostic_label.setVisible(bool(text.strip()))
+
+    def _load_previous_update_diagnostic(self) -> str:
+        error = load_last_update_error()
+        if not error:
+            return ""
+        first_line = error.splitlines()[0].strip()
+        if not first_line:
+            first_line = "Unknown installer error."
+        return (
+            f"Previous automatic update failed: {first_line} "
+            "See data/last_update_error.txt and data/last_update_trace.txt for details."
+        )
+
     def _format_bytes(self, size: int) -> str:
         value = float(max(0, int(size)))
         units = ["B", "KB", "MB", "GB"]
@@ -810,6 +833,7 @@ class SettingsPage(QWidget):
         self._latest_asset_url = asset_url or ""
         self._set_update_action_idle()
         self._reset_update_progress()
+        self._set_update_diagnostic(self._load_previous_update_diagnostic())
         self.update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
 
         if last_status == "error" and last_error:
@@ -901,6 +925,7 @@ class SettingsPage(QWidget):
         self._latest_asset_url = ""
         self._set_update_action_idle()
         self._reset_update_progress()
+        self._set_update_diagnostic(self._load_previous_update_diagnostic())
         self.update_meta_label.setText(f"Last checked: {format_check_time(result.checked_at)}")
 
         if result.error_message:
@@ -1000,6 +1025,7 @@ class SettingsPage(QWidget):
             release.version,
             release.asset.name if release.asset else "",
         )
+        self._set_update_diagnostic("")
 
         self.check_updates_btn.setEnabled(False)
         self.download_update_btn.setEnabled(False)
