@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -123,6 +124,148 @@ class _AppUpdateInstallWorker(QThread):
         self.progress_changed.emit(int(current), int(total))
 
 
+class _StartupUpdateDialog(QDialog):
+    def __init__(self, release_version: str, current_version: str, can_install: bool, parent=None):
+        super().__init__(parent)
+        self._install_started = False
+        self._can_install = bool(can_install)
+
+        self.setWindowTitle("Update Available")
+        self.setModal(True)
+        self.setMinimumWidth(500)
+        self.setStyleSheet(
+            "QDialog { background: #100c0c; color: #ffe7e2; }"
+            "QWidget#updateDialogPanel { background: #171111; border: 1px solid #4b302c; border-radius: 18px; }"
+            f"QLabel {{ background: transparent; color: inherit; }}"
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(0)
+
+        panel = QWidget()
+        panel.setObjectName("updateDialogPanel")
+        panel.setStyleSheet(SURFACE_PANEL_STYLE)
+        layout.addWidget(panel)
+
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(24, 22, 24, 22)
+        panel_layout.setSpacing(14)
+
+        eyebrow = QLabel("APP UPDATE")
+        eyebrow.setStyleSheet(SECTION_LABEL_STYLE + " letter-spacing: 0.12em; font-weight: 700;")
+        panel_layout.addWidget(eyebrow)
+
+        title = QLabel(f"{display_version(release_version)} is ready to install")
+        title.setStyleSheet(PAGE_TITLE_STYLE + " font-size: 24px;")
+        title.setWordWrap(True)
+        panel_layout.addWidget(title)
+
+        version_row = QHBoxLayout()
+        version_row.setContentsMargins(0, 0, 0, 0)
+        version_row.setSpacing(8)
+
+        current_pill = QLabel(f"Current {display_version(current_version)}")
+        current_pill.setStyleSheet(PILL_LABEL_STYLE)
+        version_row.addWidget(current_pill)
+
+        latest_pill = QLabel(f"Latest {display_version(release_version)}")
+        latest_pill.setStyleSheet(PILL_LABEL_STYLE)
+        version_row.addWidget(latest_pill)
+        version_row.addStretch()
+        panel_layout.addLayout(version_row)
+
+        self.message_label = QLabel(
+            "The app will download the update, close itself, replace the installed files, and relaunch automatically."
+            if self._can_install
+            else "Automatic install is not available for this build. You can open the release page instead."
+        )
+        self.message_label.setWordWrap(True)
+        self.message_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent; font-size: 13px;")
+        panel_layout.addWidget(self.message_label)
+
+        self.progress_label = QLabel("")
+        self.progress_label.setWordWrap(True)
+        self.progress_label.setStyleSheet(STATUS_LABEL_STYLE)
+        self.progress_label.hide()
+        panel_layout.addWidget(self.progress_label)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setStyleSheet(APP_UPDATE_PROGRESS_STYLE)
+        self.progress_bar.hide()
+        panel_layout.addWidget(self.progress_bar)
+
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        actions.addStretch()
+
+        self.close_btn = QPushButton("Close")
+        self.close_btn.setStyleSheet(BUTTON_STYLE)
+        self.close_btn.clicked.connect(self.reject)
+        actions.addWidget(self.close_btn)
+
+        self.install_btn = QPushButton("Update App" if self._can_install else "View Releases")
+        self.install_btn.setStyleSheet(BUTTON_STYLE)
+        self.install_btn.setDefault(True)
+        actions.addWidget(self.install_btn)
+
+        panel_layout.addLayout(actions)
+
+    def begin_install(self):
+        self._install_started = True
+        self.install_btn.setEnabled(False)
+        self.close_btn.setEnabled(False)
+        self.message_label.setText("Downloading update for automatic install...")
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("Preparing download...")
+        self.progress_bar.show()
+        self.progress_label.show()
+
+    def set_progress(self, current: int, total: int, format_bytes):
+        self.progress_bar.show()
+        self.progress_label.show()
+        if total > 0:
+            percent = int((max(0, current) / max(1, total)) * 100)
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(percent)
+            self.progress_label.setText(
+                f"Downloaded {format_bytes(current)} of {format_bytes(total)} ({percent}%)"
+            )
+            self.install_btn.setText(f"Downloading {percent}%")
+            return
+
+        self.progress_bar.setRange(0, 0)
+        self.progress_label.setText(f"Downloaded {format_bytes(current)}")
+        self.install_btn.setText("Downloading...")
+
+    def install_failed(self, error: str):
+        self._install_started = False
+        self.message_label.setText(f"Automatic update failed.\n\n{error}")
+        self.progress_bar.hide()
+        self.progress_label.hide()
+        self.install_btn.setEnabled(True)
+        self.install_btn.setText("Update App" if self._can_install else "View Releases")
+        self.close_btn.setEnabled(True)
+
+    def install_launching(self):
+        self.progress_bar.show()
+        self.progress_label.show()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.progress_label.setText("Download complete. Closing the app so the update helper can replace files.")
+        self.message_label.setText("Installing update and restarting...")
+        self.install_btn.setText("Installing...")
+
+    def reject(self):
+        if self._install_started:
+            return
+        super().reject()
+
+
 class SettingsPage(QWidget):
 
     def __init__(self, main_window):
@@ -139,6 +282,7 @@ class SettingsPage(QWidget):
         self._latest_release_url = GITHUB_RELEASES_URL
         self._latest_asset_url = ""
         self._pending_update_check_mode = "manual"
+        self._startup_update_dialog = None
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -976,25 +1120,25 @@ class SettingsPage(QWidget):
             return
 
         save_setting(APP_UPDATE_LAST_NOTIFIED_VERSION_KEY, release.version)
-        message = (
-            f"{APP_NAME} {display_version(release.version)} is available.\n\n"
-            f"You are on {display_version(APP_VERSION)}."
-        )
-        result_code = QMessageBox.information(
+        dialog = _StartupUpdateDialog(
+            release.version,
+            APP_VERSION,
+            can_self_update(release),
             self,
-            "Update Available",
-            message,
-            QMessageBox.Open | QMessageBox.Close,
-            QMessageBox.Open,
         )
-        if result_code == QMessageBox.Open:
-            self._trigger_app_update()
+        dialog.install_btn.clicked.connect(lambda: self._trigger_app_update(confirm=False, startup_dialog=dialog))
+        dialog.finished.connect(self._clear_startup_update_dialog)
+        self._startup_update_dialog = dialog
+        dialog.exec()
 
     def _open_latest_release_download(self):
         logger.info("App update action button clicked")
         self._trigger_app_update()
 
-    def _trigger_app_update(self):
+    def _clear_startup_update_dialog(self, *_args):
+        self._startup_update_dialog = None
+
+    def _trigger_app_update(self, confirm: bool = True, startup_dialog: _StartupUpdateDialog | None = None):
         release = self._latest_update_result.latest_release if self._latest_update_result else None
         if release is None:
             logger.info("No release metadata available for self-update; opening releases page instead")
@@ -1011,25 +1155,28 @@ class SettingsPage(QWidget):
             )
             if url:
                 QDesktopServices.openUrl(QUrl(url))
+            if startup_dialog is not None:
+                startup_dialog.accept()
             return
 
         if self._update_install_worker is not None and self._update_install_worker.isRunning():
             logger.info("Ignoring duplicate self-update request while download is already running")
             return
 
-        result = QMessageBox.question(
-            self,
-            "Install Update",
-            (
-                f"Install {display_version(release.version)} now?\n\n"
-                "The app will download the update, close itself, replace the installed files, and relaunch automatically."
-            ),
-            QMessageBox.Yes | QMessageBox.Cancel,
-            QMessageBox.Yes,
-        )
-        if result != QMessageBox.Yes:
-            logger.info("User cancelled self-update confirmation for release=%s", release.version)
-            return
+        if confirm:
+            result = QMessageBox.question(
+                self,
+                "Install Update",
+                (
+                    f"Install {display_version(release.version)} now?\n\n"
+                    "The app will download the update, close itself, replace the installed files, and relaunch automatically."
+                ),
+                QMessageBox.Yes | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if result != QMessageBox.Yes:
+                logger.info("User cancelled self-update confirmation for release=%s", release.version)
+                return
         logger.info(
             "User accepted self-update release=%s asset=%s",
             release.version,
@@ -1047,6 +1194,8 @@ class SettingsPage(QWidget):
         self.update_progress_bar.setValue(0)
         self.update_progress_label.setText("Preparing download...")
         self._set_update_progress_visible(True)
+        if startup_dialog is not None:
+            startup_dialog.begin_install()
 
         worker = _AppUpdateInstallWorker(release.asset)
         worker.progress_changed.connect(self._on_update_install_progress)
@@ -1073,10 +1222,13 @@ class SettingsPage(QWidget):
                 f"Downloaded {self._format_bytes(current)} of {self._format_bytes(total)} ({percent}%)"
             )
             self.download_update_btn.setText(f"Downloading {percent}%")
-            return
-        self.update_progress_bar.setRange(0, 0)
-        self.update_progress_label.setText(f"Downloaded {self._format_bytes(current)}")
-        self.download_update_btn.setText("Downloading...")
+        else:
+            self.update_progress_bar.setRange(0, 0)
+            self.update_progress_label.setText(f"Downloaded {self._format_bytes(current)}")
+            self.download_update_btn.setText("Downloading...")
+
+        if self._startup_update_dialog is not None:
+            self._startup_update_dialog.set_progress(current, total, self._format_bytes)
 
     @Slot(object)
     def _on_update_install_finished(self, payload: object):
@@ -1096,6 +1248,8 @@ class SettingsPage(QWidget):
             self._reset_update_progress()
             self.update_status_label.setText(f"Latest release: Automatic update failed. {error}")
             self.status_label.setText("Automatic app update failed.")
+            if self._startup_update_dialog is not None:
+                self._startup_update_dialog.install_failed(error)
             return
 
         launched, launch_error = launch_windows_update_installer(zip_path)
@@ -1107,6 +1261,8 @@ class SettingsPage(QWidget):
             self._reset_update_progress()
             self.update_status_label.setText(f"Latest release: Could not launch update helper. {launch_error}")
             self.status_label.setText("Automatic app update could not start.")
+            if self._startup_update_dialog is not None:
+                self._startup_update_dialog.install_failed(launch_error)
             return
 
         logger.info("Self-update package launch started successfully zip=%s", zip_path)
@@ -1117,6 +1273,8 @@ class SettingsPage(QWidget):
         self.download_update_btn.setText("Installing...")
         self.update_status_label.setText("Latest release: Installing update and restarting...")
         self.status_label.setText("Closing the app to install the update...")
+        if self._startup_update_dialog is not None:
+            self._startup_update_dialog.install_launching()
         self.main_window.close()
 
     def _open_releases_page(self):

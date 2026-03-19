@@ -1042,6 +1042,8 @@ SettingsPage performs GitHub release checks on a background QThread worker so th
 SettingsPage also performs release asset downloads on a separate QThread worker when automatic app installation is supported.
 The page persists the last check timestamp, latest release metadata, last error, and last notified version in app_settings.
 When enabled, MainWindow schedules a startup app-update check and SettingsPage only shows the update prompt once per discovered release version.
+The startup update prompt is now a single custom in-app modal instead of a two-step QMessageBox flow.
+That startup modal shows the release and current version together, asks for the update decision directly, and reuses the same inline progress states as the Settings app-update panel while the package downloads and installation begins.
 For packaged Windows builds with a zip release asset, the update button now downloads the new package, shows live percentage and byte progress in the Settings UI, launches a detached PowerShell installer, closes the app, replaces the installed files in place, and relaunches the executable automatically.
 Automatic in-app updates now explicitly prefer the portable release zip naming used by build.ps1 and avoid installer-oriented zip assets during release asset selection.
 The detached Windows installer now also unwraps a single top-level folder inside the downloaded zip before copying files into the install directory, so release archives that expand into a versioned root folder still replace the installed executable and bundled files correctly.
