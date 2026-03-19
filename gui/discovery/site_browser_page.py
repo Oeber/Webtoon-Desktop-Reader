@@ -181,12 +181,9 @@ class DiscoveryEntryWidget(QFrame):
         self.title_label.setFixedWidth(max(80, self._card_width - 4))
         self.title_label.setToolTip(entry.title or "Untitled")
         self.title_label.setStyleSheet(DISCOVERY_CARD_TITLE_STYLE)
-        title_font = QFont("Segoe UI", 10)
-        title_font.setWeight(QFont.Medium)
-        self.title_label.setFont(title_font)
         layout.addWidget(self.title_label)
 
-        self.count_label = QLabel(self._format_chapter_count(self.entry.total_chapters), self)
+        self.count_label = QLabel(self._chapter_label_text(), self)
         self.count_label.setStyleSheet(DISCOVERY_CARD_COUNT_STYLE)
         self.count_label.setVisible(bool(self.count_label.text().strip()))
 
@@ -322,9 +319,16 @@ class DiscoveryEntryWidget(QFrame):
             return QPixmap()
         return QPixmap.fromImage(image)
 
+    def _chapter_label_text(self) -> str:
+        count_text = self._format_chapter_count(self.entry.total_chapters)
+        if count_text:
+            return count_text
+        latest = " ".join(str(getattr(self.entry, "latest_chapter", "") or "").split())
+        return latest
+
     def _format_chapter_count(self, count: int | None) -> str:
         if count is None or count <= 0:
-            return "Unknown chapters"
+            return ""
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"

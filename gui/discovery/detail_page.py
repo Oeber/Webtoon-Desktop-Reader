@@ -500,7 +500,7 @@ class DiscoveryDetailPage(QWidget):
 
     def _format_chapter_count(self, count: int | None) -> str:
         if not count:
-            return "Unknown chapter count"
+            return ""
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"

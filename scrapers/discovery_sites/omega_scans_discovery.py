@@ -103,12 +103,7 @@ class OmegaScansDiscoveryProvider(BaseDiscoveryProvider):
         cover = raw.get("thumbnail") or raw.get("cover") or raw.get("cover_url") or raw.get("poster")
         description = raw.get("description") or raw.get("summary") or raw.get("synopsis")
         author = raw.get("author") or raw.get("artists") or raw.get("writer")
-        meta = raw.get("meta") or {}
-        chapters_count = meta.get("chapters_count")
-        try:
-            total_chapters = int(chapters_count) if chapters_count is not None else None
-        except (TypeError, ValueError):
-            total_chapters = None
+        latest_chapter = self._latest_free_chapter_label(raw)
         return CatalogSeries(
             site=self.site_name,
             series_id=slug,
@@ -118,8 +113,10 @@ class OmegaScansDiscoveryProvider(BaseDiscoveryProvider):
             cover_headers=dict(self.HEADERS),
             author=self._compact_text(author),
             description=self._compact_text(description),
-            latest_chapter=None,
-            total_chapters=total_chapters,
+            latest_chapter=latest_chapter,
+            # Omega's catalog count includes premium chapters, so leave the
+            # card count unset and let the detail fetch show the free count.
+            total_chapters=None,
         )
 
     def _fetch_catalog_from_html(self, page: int) -> CatalogPage | None:
@@ -266,6 +263,21 @@ class OmegaScansDiscoveryProvider(BaseDiscoveryProvider):
                 return value
         return None
 
+    def _latest_free_chapter_label(self, raw: dict) -> str | None:
+        free_chapters = raw.get("free_chapters") or []
+        if not isinstance(free_chapters, list):
+            return None
+        for item in free_chapters:
+            if not isinstance(item, dict):
+                continue
+            label = str(item.get("chapter_name") or item.get("name") or "").strip()
+            if label:
+                return " ".join(label.split())
+            slug = str(item.get("chapter_slug") or item.get("slug") or "").strip()
+            if slug:
+                return slug.replace("-", " ").title()
+        return None
+
     def _extract_series_slug(self, url: str) -> str | None:
         url = url.rstrip("/")
         marker = "/series/"
@@ -294,3 +306,4 @@ class OmegaScansDiscoveryProvider(BaseDiscoveryProvider):
             value = ", ".join(str(item).strip() for item in value if str(item).strip())
         text = " ".join(str(value).split()).strip()
         return text or None
+

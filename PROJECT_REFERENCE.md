@@ -1545,6 +1545,8 @@ OK No-categories mode shows the main library as a flat grid without a replacemen
 OK Drag-and-drop reordering for system and custom library sections
 OK Batch comic bookmarking from the library page
 OK Discovery grid keeps a stable column count across append/refresh relayouts when the vertical scrollbar appears
+OK OmegaScans filters paid chapters out of discovery-detail chapter lists and custom scraper downloads so premium-only chapters are not shown or downloaded
+OK OmegaScans discovery cards use the latest free chapter label when the catalog's chapter total is unreliable because it includes premium chapters
 OK Library size slider handle tuned to a smaller circular knob with a dedicated track surface
 OK Library card overflow menu button now uses a centered ellipsis icon instead of text glyphs
 OK Collapsed sidebar navigation icons are centered inside the active highlight state

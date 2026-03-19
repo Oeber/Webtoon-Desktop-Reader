@@ -177,9 +177,13 @@ class OmegaScansScraper(BaseScraper):
             chapter_slug, chapter_name, chapter (number), price, ...
         """
         chapters_by_url: dict[str, ChapterInfo] = {}
+        filtered_paid = 0
 
         for ch in raw_chapters:
             if not isinstance(ch, dict):
+                continue
+            if self._is_paid_chapter(ch):
+                filtered_paid += 1
                 continue
 
             chapter_slug = (
@@ -205,17 +209,21 @@ class OmegaScansScraper(BaseScraper):
             if normalized_url in chapters_by_url:
                 continue
 
-            # Chapter number from explicit numeric field first, slug second
-            num_raw = ch.get("chapter") or ch.get("number") or ch.get("chapter_number") or ""
-            number = self._parse_chapter_number(str(num_raw)) if num_raw else self._extract_chapter_number_value(chapter_slug)
-
             title = (
                 ch.get("chapter_name")
                 or ch.get("name")
                 or ch.get("title")
                 or ""
             ).strip()
-            if not title:
+
+            # Chapter number from explicit numeric field first, then title text,
+            # then slug/url fallback.
+            num_raw = ch.get("chapter") or ch.get("number") or ch.get("chapter_number") or ""
+            number = self._chapter_number(title, normalized_url, chapter_slug, str(num_raw))
+
+            if number is not None:
+                title = self._chapter_title_from_number(number, title or self._chapter_title_from_slug(chapter_slug))
+            elif not title:
                 title = self._chapter_title_from_slug(chapter_slug)
 
             chapters_by_url[normalized_url] = ChapterInfo(
@@ -231,7 +239,35 @@ class OmegaScansScraper(BaseScraper):
             c.number if c.number is not None else float("inf"),
             c.url,
         ))
+        if filtered_paid:
+            logger.info("OmegaScans: filtered %d paid chapters for slug=%s", filtered_paid, slug)
         return chapters
+
+    def _is_paid_chapter(self, raw: dict) -> bool:
+        try:
+            price = float(raw.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price > 0:
+            return True
+
+        for key in ("unlock_price",):
+            try:
+                extra_price = float(raw.get(key) or 0)
+            except (TypeError, ValueError):
+                extra_price = 0.0
+            if extra_price > 0:
+                return True
+
+        for key in ("is_locked",):
+            if raw.get(key) is True:
+                return True
+
+        for key in ("is_free",):
+            if raw.get(key) is False:
+                return True
+
+        return False
 
     def _parse_chapter_number(self, value: str) -> float | None:
         """Parse a raw chapter number string like '83', '83.5', '83-5' into a float."""
@@ -240,6 +276,36 @@ class OmegaScansScraper(BaseScraper):
             return float(value)
         except ValueError:
             return None
+
+    def _chapter_number(self, title: str, url: str, chapter_slug: str = "", raw_number: str = "") -> float | None:
+        if raw_number:
+            parsed = self._parse_chapter_number(str(raw_number))
+            if parsed is not None:
+                return parsed
+
+        haystack = " ".join(part for part in (title, chapter_slug, url) if part).lower()
+        patterns = [
+            r"chapter[\s\-:]*([0-9]+(?:[.-][0-9]+)?)",
+            r"episode[\s\-:]*([0-9]+(?:[.-][0-9]+)?)",
+            r"/chapter[\-\/]([0-9]+(?:[.-][0-9]+)?)",
+            r"/episode[\-\/]([0-9]+(?:[.-][0-9]+)?)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, haystack, re.IGNORECASE)
+            if not match:
+                continue
+            parsed = self._parse_chapter_number(match.group(1))
+            if parsed is not None:
+                return parsed
+
+        return self._extract_chapter_number_value(chapter_slug or url)
+
+    def _chapter_title_from_number(self, chapter_number: float | None, fallback: str) -> str:
+        if chapter_number is None:
+            return fallback
+        if float(chapter_number).is_integer():
+            return f"Chapter {int(chapter_number)}"
+        return f"Chapter {format(chapter_number, 'g')}"
 
     # ------------------------------------------------------------------
     # Page image extraction (unchanged from original)
