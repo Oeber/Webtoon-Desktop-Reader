@@ -40,9 +40,8 @@ class DownloadHistoryPageBase(QWidget):
         self.setStyleSheet(PAGE_BG_STYLE)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
+        layout.setContentsMargins(32, 32, 32, 0)
         layout.setSpacing(20)
-        layout.setAlignment(Qt.AlignTop)
 
         title = QLabel(title_text)
         title.setStyleSheet(PAGE_TITLE_STYLE)
@@ -69,7 +68,7 @@ class DownloadHistoryPageBase(QWidget):
         self.history_layout.setAlignment(Qt.AlignTop)
 
         self.scroll.setWidget(self.history_container)
-        layout.addWidget(self.scroll)
+        layout.addWidget(self.scroll, 1)
 
     def set_error_text(self, text: str):
         self.error_label.setText(text)

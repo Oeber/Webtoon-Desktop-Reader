@@ -1153,11 +1153,17 @@ Bulk update screen for already-saved library entries that have source URLs.
 Responsibilities
 
 scan the current library for webtoons with source URLs
-build one UpdateEntry per eligible webtoon
-reuse the shared DownloadHistoryPageBase layout
+check each eligible source asynchronously against the matching scraper before showing it
+show only titles whose remote chapter list contains chapters not already present locally
+compare remote chapters against local folder names using the same chapter-name normalization used by the detail page instead of relying only on raw chapter totals
+render update candidates as library-style cards instead of history rows
+show per-title new-chapter counts on the cards
+support card-level selection plus a bottom batch bar for Update Selected and Clear actions
+reuse the shared DownloadHistoryPageBase service wiring while rebuilding the page shell so the bottom batch bar can span the full width
 enforce 30 second per-webtoon cooldowns
 refresh the list after successful updates
 show last update timestamps
+skip disabled or unsupported scraper matches without surfacing them as update-page errors
 keep the local webtoon name as preferred_name during updates so local renames do not create duplicate folders
 
 Update page refresh behaviour
@@ -1522,6 +1528,9 @@ OK Explicit downloader / viewer worker shutdown on app exit
 OK Source URL persistence even when closing mid-download
 OK Sidebar download progress indicator with aggregated counts
 OK Top-level cancel button on the manual downloader page
+OK Updates page shows only titles with confirmed remote updates
+OK Updates page uses library-style cards with new-chapter chips
+OK Updates page supports multi-select batch actions from a bottom bar
 OK Library card context-menu delete action
 OK Library cards show live manual download progress and can cancel active manual downloads
 OK Active Downloads placeholder cards appear inside the library instead of as detached windows

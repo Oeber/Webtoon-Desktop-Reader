@@ -1,44 +1,494 @@
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 
 from core.app_logging import get_logger
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import QLabel, QLineEdit
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
+import qtawesome as qta
 
-from gui.common.styles import EMPTY_STATE_LABEL_STYLE, SEARCH_INPUT_STYLE
-from gui.downloader.download_widgets import UpdateEntry as BaseUpdateEntry
+from core.update_utils import cooldown_remaining
+from gui.common.styles import (
+    ACCENT,
+    BATCH_BAR_STYLE,
+    BATCH_LABEL_STYLE,
+    BUTTON_STYLE,
+    CARD_ACTION_BUTTON_STYLE,
+    CARD_ACTION_BUTTON_DISABLED_STYLE,
+    CARD_INFO_LABEL_STYLE,
+    CARD_PROGRESS_OVERLAY_STYLE,
+    CARD_TITLE_LABEL_STYLE,
+    EMPTY_STATE_LABEL_STYLE,
+    NEW_CHIP_STYLE,
+    SEARCH_INPUT_STYLE,
+    STATUS_LABEL_STYLE,
+    TRANSPARENT_BORDERLESS_STYLE,
+    card_badge_button_style,
+    card_image_border_style,
+    status_text_style,
+)
+from gui.downloader.download_widgets import SpinnerCircle, format_last_updated
+from gui.downloader.helpers import sanitize_webtoon_name
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
 from gui.settings.settings_page import load_library_path
 from library.library_manager import scan_library
-from core.update_utils import cooldown_remaining
-from scrapers.registry import is_scraper_enabled_for_url
+from scrapers.base import ScraperDisabledError, ScraperError
+from scrapers.registry import get_scraper, is_scraper_enabled_for_url
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 
 logger = get_logger(__name__)
 
+DISABLED_CHECK_ERROR = "__disabled_scraper__"
+UNSUPPORTED_CHECK_ERROR = "__unsupported_scraper__"
+LIBRARY_CARD_WIDTH = 180
+LIBRARY_CARD_HEIGHT = 270
+LIBRARY_CARD_RADIUS = 12
+UPDATE_CARD_WIDTH = LIBRARY_CARD_WIDTH
+UPDATE_CARD_SPACING = 16
+UPDATE_STATUS_COLORS = {
+    "Ready": "#b18b84",
+    "Checking": "#b18b84",
+    "Downloading": ACCENT,
+    "Completed": "#4caf50",
+    "Failed": "#f44336",
+    "Cancelled": "#b18b84",
+}
 
-class UpdateEntry(BaseUpdateEntry):
+
+class UpdateAvailabilityLoader(QObject):
+
+    checked = Signal(int, object, object, str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._executor = ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="update-check",
+        )
+
+    def load(self, request_id: int, candidate: dict):
+        def worker():
+            try:
+                result = self._check_candidate(candidate)
+                self.checked.emit(request_id, candidate, result, "")
+            except ScraperDisabledError as e:
+                logger.info("Skipping disabled scraper update check for %s: %s", candidate.get("name"), e)
+                self.checked.emit(request_id, candidate, None, DISABLED_CHECK_ERROR)
+            except ValueError as e:
+                logger.info("Skipping unsupported scraper update check for %s: %s", candidate.get("name"), e)
+                self.checked.emit(request_id, candidate, None, UNSUPPORTED_CHECK_ERROR)
+            except ScraperError as e:
+                self.checked.emit(request_id, candidate, None, str(e))
+            except Exception as e:
+                logger.exception("Unexpected update check failure for %s", candidate.get("name"))
+                self.checked.emit(request_id, candidate, None, str(e))
+
+        self._executor.submit(worker)
+
+    def _check_candidate(self, candidate: dict) -> dict | None:
+        source_url = candidate.get("source_url") or ""
+        scraper = get_scraper(source_url)
+        series_url = source_url
+        if scraper.is_chapter_url(series_url):
+            series_url = scraper.series_url_from_chapter_url(series_url)
+        series = scraper.get_series_info(series_url)
+
+        local_chapters = set(candidate.get("chapter_names") or [])
+        new_remote = []
+        seen = set()
+        for chapter in getattr(series, "chapters", []) or []:
+            local_name = self._format_remote_chapter_dir_name(chapter)
+            if not local_name or local_name in local_chapters or local_name in seen:
+                continue
+            seen.add(local_name)
+            new_remote.append(local_name)
+
+        new_chapters = len(new_remote)
+        if new_chapters <= 0:
+            return None
+
+        return {
+            "name": candidate.get("name") or "",
+            "source_url": series_url,
+            "webtoon": candidate.get("webtoon"),
+            "last_update_at": candidate.get("last_update_at"),
+            "local_chapters": int(candidate.get("local_chapters", 0) or 0),
+            "remote_chapters": len(getattr(series, "chapters", []) or []),
+            "new_chapters": new_chapters,
+        }
+
+    def _format_remote_chapter_dir_name(self, chapter) -> str:
+        number = getattr(chapter, "number", None)
+        if number is not None:
+            try:
+                number_value = float(number)
+                if number_value.is_integer():
+                    return f"Chapter {int(number_value)}"
+                return f"Chapter {format(number_value, 'g')}"
+            except Exception:
+                pass
+        return sanitize_webtoon_name(getattr(chapter, "title", "") or "") or "Chapter"
+
+class UpdateCard(QFrame):
+
+    def __init__(
+        self,
+        *,
+        webtoon,
+        source_url: str,
+        last_update_at: int | None,
+        new_chapters: int,
+        remote_chapters: int,
+        on_update,
+    ):
+        super().__init__()
+        self.webtoon = webtoon
+        self.name = webtoon.name
+        self.source_url = source_url
+        self.last_update_at = last_update_at
+        self.new_chapters = max(0, int(new_chapters))
+        self.remote_chapters = max(0, int(remote_chapters))
+        self.local_chapters = len(getattr(webtoon, "chapters", []) or [])
+        self.on_update = on_update
+        self.on_select = None
+        self.thumbnail_path = ""
+        self.card_width = UPDATE_CARD_WIDTH
+        self.card_height = int(self.card_width * (LIBRARY_CARD_HEIGHT / LIBRARY_CARD_WIDTH))
+        self._selected = False
+        self._show_selection_controls = False
+
+        self.setFixedWidth(self.card_width + 16)
+        self.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        self.image_container = QWidget(self)
+        self.image_container.setFixedSize(self.card_width, self.card_height)
+        self.image_container.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+
+        self.thumb_label = QLabel("No Cover", self.image_container)
+        self.thumb_label.setFixedSize(self.card_width, self.card_height)
+        self.thumb_label.setAlignment(Qt.AlignCenter)
+        self._apply_border_style(hovered=False)
+
+        self.update_btn = QPushButton(self.image_container)
+        self.update_btn.setCursor(Qt.PointingHandCursor)
+        self.update_btn.setStyleSheet(CARD_ACTION_BUTTON_DISABLED_STYLE)
+        self.update_btn.setFixedSize(28, 28)
+        self.update_btn.move(6, 6)
+        self.update_btn.clicked.connect(lambda: self.on_update(self))
+        self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
+        self.update_btn.setIconSize(self._button_icon_size())
+
+        self.select_btn = QPushButton(self.image_container)
+        self.select_btn.setCheckable(True)
+        self.select_btn.setFixedSize(28, 28)
+        self.select_btn.move(6, self.card_height - 34)
+        self.select_btn.setCursor(Qt.PointingHandCursor)
+        self.select_btn.clicked.connect(self._toggle_selected_from_button)
+        self._apply_select_button_style()
+        self._refresh_select_button()
+        self._refresh_select_visibility()
+
+        self.progress_overlay = QWidget(self.image_container)
+        self.progress_overlay.setFixedSize(84, 84)
+        self.progress_overlay.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.progress_overlay.setStyleSheet(CARD_PROGRESS_OVERLAY_STYLE)
+        overlay_layout = QVBoxLayout(self.progress_overlay)
+        overlay_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.spinner = SpinnerCircle(self.progress_overlay)
+        overlay_layout.addWidget(self.spinner, alignment=Qt.AlignCenter)
+        self.progress_overlay.hide()
+        self._center_progress_overlay()
+
+        self.name_label = QLabel(self.name, self)
+        self.name_label.setFixedWidth(max(80, self.card_width - 42))
+        self.name_label.setWordWrap(False)
+        self.name_label.setMaximumHeight(18)
+        self.name_label.setToolTip(self.name)
+        self.name_label.setStyleSheet(CARD_TITLE_LABEL_STYLE)
+        font = QFont("Segoe UI", 10)
+        font.setWeight(QFont.Medium)
+        self.name_label.setFont(font)
+        self._apply_elided_title()
+
+        self.info_label = QLabel(self._summary_text(), self)
+        self.info_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
+        self.info_label.setVisible(bool(self.info_label.text().strip()))
+
+        self.meta_btn = QPushButton(self)
+        self.meta_btn.setFixedHeight(20)
+        self.meta_btn.setMinimumWidth(0)
+        self.meta_btn.setEnabled(False)
+        self.meta_btn.setStyleSheet(card_badge_button_style(False))
+        self.meta_btn.setText(self._meta_text())
+        self.meta_btn.setToolTip(format_last_updated(self.last_update_at))
+
+        self.new_chip = QLabel(self._count_label(), self)
+        self.new_chip.setAlignment(Qt.AlignCenter)
+        self.new_chip.setFixedHeight(14)
+        self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
+        self.new_chip.show()
+
+        latest_row = QHBoxLayout()
+        latest_row.setContentsMargins(0, 0, 0, 0)
+        latest_row.setSpacing(6)
+        latest_row.addWidget(self.meta_btn, 1)
+        latest_row.addWidget(self.new_chip, 0, Qt.AlignVCenter)
+
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet(status_text_style(UPDATE_STATUS_COLORS["Ready"]))
+        self.detail_label = QLabel("Ready to download new chapters")
+        self.detail_label.setWordWrap(True)
+        self.detail_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
+        self.status_label.hide()
+        self.detail_label.hide()
+
+        layout.addWidget(self.image_container)
+        layout.addWidget(self.name_label)
+        layout.addWidget(self.info_label)
+        layout.addLayout(latest_row)
+
+        if getattr(webtoon, "thumbnail", "") and os.path.exists(webtoon.thumbnail):
+            self.set_thumbnail(webtoon.thumbnail)
+
+        self.set_status("Ready")
 
     def cooldown_remaining(self) -> int:
         return cooldown_remaining(self.last_update_at)
+
+    def set_thumbnail(self, path: str):
+        self.thumbnail_path = path or ""
+        self._load_thumbnail(self.thumbnail_path)
+
+    def set_progress(self, current: int, total: int):
+        total = max(1, int(total))
+        current = max(0, min(int(current), total))
+        percent = int((current / total) * 100)
+        self.progress_overlay.show()
+        self.spinner.set_progress(percent)
+        self.status_label.setText("Downloading")
+        self.status_label.setStyleSheet(status_text_style(UPDATE_STATUS_COLORS["Downloading"]))
+        self.detail_label.setText(f"Downloading {current} / {total} chapters")
+
+    def set_status(self, status: str):
+        color = UPDATE_STATUS_COLORS.get(status, "#d7b1aa")
+        self.status_label.setText(status)
+        self.status_label.setStyleSheet(status_text_style(color))
+
+        if status == "Completed":
+            self.progress_overlay.hide()
+            self.spinner.set_complete(100)
+            self.detail_label.setText("Update finished")
+        elif status in ("Failed", "Cancelled"):
+            self.progress_overlay.hide()
+            self.spinner.set_failed()
+            self.detail_label.setText("Update did not complete")
+        elif status == "Downloading":
+            self.progress_overlay.show()
+            self.spinner.set_spinning()
+            self.detail_label.setText("Downloading new chapters")
+        else:
+            self.progress_overlay.hide()
+            self.spinner.set_idle()
+            self.detail_label.clear()
+            self.status_label.hide()
+            self.detail_label.hide()
+
+    def set_last_update_at(self, timestamp: int):
+        self.last_update_at = int(timestamp)
+        self.meta_btn.setText(self._meta_text())
+        self.meta_btn.setToolTip(format_last_updated(self.last_update_at))
+
+    def set_selected(self, selected: bool):
+        self._selected = bool(selected)
+        self.select_btn.blockSignals(True)
+        self.select_btn.setChecked(self._selected)
+        self.select_btn.blockSignals(False)
+        self._refresh_select_button()
+        self._refresh_select_visibility()
+        self._apply_border_style(hovered=self.underMouse())
+
+    def set_selection_controls_visible(self, visible: bool):
+        self._show_selection_controls = bool(visible)
+        self._refresh_select_visibility()
+
+    def _load_thumbnail(self, path: str):
+        pixmap = QPixmap(path)
+        if pixmap.isNull():
+            self.thumb_label.clear()
+            self.thumb_label.setText("No Cover")
+            return
+
+        pixmap = pixmap.scaled(
+            self.card_width,
+            self.card_height,
+            Qt.KeepAspectRatioByExpanding,
+            Qt.SmoothTransformation,
+        )
+        x = (pixmap.width() - self.card_width) // 2
+        y = (pixmap.height() - self.card_height) // 2
+        pixmap = pixmap.copy(x, y, self.card_width, self.card_height)
+
+        rounded = QPixmap(self.card_width, self.card_height)
+        rounded.fill(Qt.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.Antialiasing)
+        path_obj = QPainterPath()
+        path_obj.addRoundedRect(0, 0, self.card_width, self.card_height, LIBRARY_CARD_RADIUS, LIBRARY_CARD_RADIUS)
+        painter.setClipPath(path_obj)
+        painter.drawPixmap(0, 0, pixmap)
+        painter.end()
+
+        self.thumb_label.setPixmap(rounded)
+        self.thumb_label.setText("")
+
+    def _center_progress_overlay(self):
+        x = (self.card_width - self.progress_overlay.width()) // 2
+        y = (self.card_height - self.progress_overlay.height()) // 2
+        self.progress_overlay.move(x, y)
+
+    def _apply_border_style(self, hovered: bool):
+        if self._selected:
+            color = "#ff8a7a"
+        else:
+            color = "#666666" if hovered else "#2a2a2a"
+        self.thumb_label.setStyleSheet(card_image_border_style(color, LIBRARY_CARD_RADIUS))
+
+    def _apply_elided_title(self):
+        metrics = QFontMetrics(self.name_label.font())
+        width = max(0, self.name_label.contentsRect().width())
+        if width <= 0:
+            self.name_label.setText(self.name)
+            return
+        self.name_label.setText(metrics.elidedText(self.name, Qt.ElideRight, width))
+
+    def _count_label(self) -> str:
+        if self.new_chapters == 1:
+            return "1 New"
+        return f"{self.new_chapters} New"
+
+    def _summary_text(self) -> str:
+        return ""
+
+    def _meta_text(self) -> str:
+        if self.last_update_at is None:
+            return "Never updated"
+        return f"Updated {datetime.fromtimestamp(int(self.last_update_at)).strftime('%Y-%m-%d')}"
+
+    def _apply_select_button_style(self):
+        self.select_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
+            QPushButton:checked { background: rgba(255,138,122,0.95); }
+        """)
+
+    def _refresh_select_button(self):
+        if self._selected:
+            self.select_btn.setIcon(qta.icon("fa5s.check", color="#ffffff"))
+        else:
+            self.select_btn.setIcon(qta.icon("fa5s.circle", color="#ffffff"))
+        self.select_btn.setIconSize(self._button_icon_size())
+
+    def _button_icon_size(self):
+        from PySide6.QtCore import QSize
+        return QSize(12, 12)
+
+    def _refresh_select_visibility(self):
+        visible = self._selected or self._show_selection_controls or self.underMouse()
+        self.select_btn.setVisible(visible)
+
+    def _toggle_selected_from_button(self):
+        self._selected = self.select_btn.isChecked()
+        self._refresh_select_button()
+        self._refresh_select_visibility()
+        self._apply_border_style(hovered=self.underMouse())
+        if callable(self.on_select):
+            self.on_select(self.name, self._selected)
+
+    def enterEvent(self, event):
+        self._apply_border_style(hovered=True)
+        self._refresh_select_visibility()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._apply_border_style(hovered=False)
+        self._refresh_select_visibility()
+        super().leaveEvent(event)
 
 
 class UpdatePage(DownloadHistoryPageBase):
 
     def __init__(self, main_window):
-        super().__init__(main_window, "Updates", "Saved source URLs", history_kind="update")
+        super().__init__(main_window, "Updates", "Series with new chapters", history_kind="update")
         self.settings_store = get_webtoon_settings()
         self._candidates = []
+        self._available_updates = []
         self._pending_search = ""
+        self._empty_message = "Checking saved titles for updates..."
+        self._check_request_id = 0
+        self._pending_checks = 0
+        self._completed_checks = 0
+        self._check_errors = 0
+        self._cards_container = None
+        self._cards_layout = None
+        self._entry_widgets = []
+        self._selected_titles = set()
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search titles...")
+        self.search_input.setPlaceholderText("Search titles with updates...")
         self.search_input.setFixedHeight(36)
         self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
         self.search_input.textChanged.connect(self._schedule_filter)
         self.layout().insertWidget(3, self.search_input)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        self.status_label.setText("Checking saved titles for updates...")
+        self.layout().insertWidget(4, self.status_label)
+
+        self.batch_bar = QWidget(self)
+        self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
+        batch_layout = QHBoxLayout(self.batch_bar)
+        batch_layout.setContentsMargins(32, 10, 32, 10)
+        batch_layout.setSpacing(10)
+
+        self.batch_label = QLabel("")
+        self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
+        batch_layout.addWidget(self.batch_label)
+
+        self.update_selected_btn = QPushButton("Update Selected")
+        self.update_selected_btn.setStyleSheet(BUTTON_STYLE)
+        self.update_selected_btn.clicked.connect(self._update_selected)
+        batch_layout.addWidget(self.update_selected_btn)
+
+        self.clear_selection_btn = QPushButton("Clear")
+        self.clear_selection_btn.setStyleSheet(BUTTON_STYLE)
+        self.clear_selection_btn.clicked.connect(self._clear_selection)
+        batch_layout.addWidget(self.clear_selection_btn)
+        batch_layout.addStretch()
+
+        self.batch_bar.hide()
+        self.layout().addWidget(self.batch_bar)
+        self.scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.layout().setStretchFactor(self.scroll, 1)
+        self.layout().setStretchFactor(self.batch_bar, 0)
+        self._rebuild_page_shell()
 
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -47,15 +497,48 @@ class UpdatePage(DownloadHistoryPageBase):
         self._refresh_timer = QTimer(self)
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self.refresh_entries)
+
         self._cooldown_timer = QTimer(self)
         self._cooldown_timer.timeout.connect(self._sync_update_buttons)
         self._cooldown_timer.start(1000)
 
+        self._checker = UpdateAvailabilityLoader(self)
+        self._checker.checked.connect(self._on_candidate_checked)
+
         self.refresh_entries()
+
+    def _rebuild_page_shell(self):
+        root_layout = self.layout()
+        items = []
+        while root_layout.count():
+            item = root_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                items.append(widget)
+
+        content_widgets = [widget for widget in items if widget is not self.batch_bar]
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        content = QWidget(self)
+        content.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(32, 32, 32, 0)
+        content_layout.setSpacing(20)
+
+        for widget in content_widgets:
+            content_layout.addWidget(widget)
+
+        root_layout.addWidget(content, 1)
+        root_layout.addWidget(self.batch_bar, 0)
 
     def showEvent(self, event):
         super().showEvent(event)
         self.refresh_entries()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._relayout_cards()
 
     def refresh_entries(self):
         logger.info("Refreshing update entries")
@@ -65,14 +548,47 @@ class UpdatePage(DownloadHistoryPageBase):
             if self.settings_store.get_completed(webtoon.name):
                 continue
             source_url = self.settings_store.get_source_url(webtoon.name)
-            if source_url and is_scraper_enabled_for_url(source_url):
-                candidates.append((webtoon, source_url, self.settings_store.get_last_update_at(webtoon.name)))
+            if not source_url or not is_scraper_enabled_for_url(source_url):
+                continue
+            candidates.append(
+                {
+                    "name": webtoon.name,
+                    "webtoon": webtoon,
+                    "source_url": source_url,
+                    "last_update_at": self.settings_store.get_last_update_at(webtoon.name),
+                    "local_chapters": len(getattr(webtoon, "chapters", []) or []),
+                    "chapter_names": list(getattr(webtoon, "chapters", []) or []),
+                }
+            )
 
         self._candidates = candidates
+        self._available_updates = []
+        self._check_request_id += 1
+        self._pending_checks = len(candidates)
+        self._completed_checks = 0
+        self._check_errors = 0
+        self._empty_message = (
+            "Checking saved titles for updates..."
+            if candidates else
+            "No comics with a saved source URL yet."
+        )
+        self.set_error_text("")
         self._apply_filter()
+
+        if not candidates:
+            self.status_label.setText("No saved titles available for updates")
+            return
+
+        self.status_label.setText(f"Checking 0 / {len(candidates)} saved titles...")
+        current_request_id = self._check_request_id
+        for candidate in candidates:
+            self._checker.load(current_request_id, candidate)
 
     def _clear_history(self):
         self._entries_by_name.clear()
+        self._entry_widgets = []
+        self._cards_container = None
+        self._cards_layout = None
         while self.history_layout.count():
             item = self.history_layout.takeAt(0)
             widget = item.widget()
@@ -81,45 +597,61 @@ class UpdatePage(DownloadHistoryPageBase):
 
     def _apply_filter(self):
         self._clear_history()
+        self._prune_selection()
 
-        visible_candidates = self._filtered_candidates(self._pending_search)
-        if not visible_candidates:
-            empty = QLabel("No comics with a saved source URL yet.")
-            if self._pending_search.strip():
-                empty.setText("No update entries match your search.")
+        visible_updates = self._filtered_candidates(self._pending_search)
+        if not visible_updates:
+            empty = QLabel(self._current_empty_message())
             empty.setStyleSheet(EMPTY_STATE_LABEL_STYLE)
             empty.setAlignment(Qt.AlignCenter)
             self.history_layout.addWidget(empty)
+            self._sync_batch_actions()
             return
 
-        for webtoon, source_url, last_update_at in visible_candidates:
-            entry = UpdateEntry(webtoon.name, source_url, last_update_at, self._start_update)
-            self._register_entry(entry)
-            if webtoon.thumbnail and os.path.exists(webtoon.thumbnail):
-                entry.set_thumbnail(webtoon.thumbnail)
-            if self.service.has_active_download(webtoon.name):
-                entry.set_status("Downloading")
-            else:
-                entry.set_status("Ready")
-            self.history_layout.addWidget(entry)
+        self._cards_container = QWidget()
+        self._cards_container.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        self._cards_layout = QGridLayout(self._cards_container)
+        self._cards_layout.setContentsMargins(0, 0, 0, 0)
+        self._cards_layout.setHorizontalSpacing(UPDATE_CARD_SPACING)
+        self._cards_layout.setVerticalSpacing(UPDATE_CARD_SPACING)
+        self._cards_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.history_layout.addWidget(self._cards_container)
 
+        for update in visible_updates:
+            card = UpdateCard(
+                webtoon=update["webtoon"],
+                source_url=update["source_url"],
+                last_update_at=update["last_update_at"],
+                new_chapters=update["new_chapters"],
+                remote_chapters=update["remote_chapters"],
+                on_update=self._start_update,
+            )
+            card.on_select = self._on_card_selected
+            card.set_selected(card.name in self._selected_titles)
+            card.set_selection_controls_visible(bool(self._selected_titles))
+            self._register_entry(card)
+            if self.service.has_active_download(card.name):
+                card.set_status("Downloading")
+            self._entry_widgets.append(card)
+
+        self._relayout_cards()
         self._sync_update_buttons()
+        self._sync_batch_actions()
 
     def _filtered_candidates(self, text: str):
         query = text.strip()
         if not query:
-            return list(self._candidates)
+            return list(self._available_updates)
 
-        ranked = rank_webtoons([webtoon for webtoon, _, _ in self._candidates], query)
-        ranked_names = [webtoon.name for _, webtoon in ranked]
-        candidates_by_name = {
-            webtoon.name: (webtoon, source_url, last_update_at)
-            for webtoon, source_url, last_update_at in self._candidates
+        ranked = rank_webtoons([item["webtoon"] for item in self._available_updates], query)
+        updates_by_name = {
+            item["webtoon"].name: item
+            for item in self._available_updates
         }
         return [
-            candidates_by_name[name]
-            for name in ranked_names
-            if name in candidates_by_name
+            updates_by_name[webtoon.name]
+            for _, webtoon in ranked
+            if webtoon.name in updates_by_name
         ]
 
     def _schedule_filter(self, text: str):
@@ -127,7 +659,49 @@ class UpdatePage(DownloadHistoryPageBase):
         self._pending_search = text
         self._search_timer.start(150)
 
-    def _start_update(self, entry: UpdateEntry):
+    def _on_card_selected(self, webtoon_name: str, selected: bool):
+        if selected:
+            self._selected_titles.add(webtoon_name)
+        else:
+            self._selected_titles.discard(webtoon_name)
+        self._sync_batch_actions()
+
+    def _sync_batch_actions(self):
+        count = len(self._selected_titles)
+        self.batch_bar.setVisible(count > 0)
+        self.batch_label.setText(f"{count} selected")
+        self.update_selected_btn.setEnabled(count > 0)
+        self.clear_selection_btn.setEnabled(count > 0)
+        for card in self._entry_widgets:
+            card.set_selection_controls_visible(count > 0)
+
+    def _clear_selection(self):
+        self._selected_titles.clear()
+        for card in self._entry_widgets:
+            card.set_selected(False)
+            card.set_selection_controls_visible(False)
+        self._sync_batch_actions()
+
+    def _prune_selection(self):
+        valid_names = {item["webtoon"].name for item in self._available_updates}
+        self._selected_titles = {
+            name for name in self._selected_titles
+            if name in valid_names
+        }
+
+    def _update_selected(self):
+        selected = [
+            item["webtoon"].name
+            for item in self._available_updates
+            if item["webtoon"].name in self._selected_titles
+        ]
+        if not selected:
+            return
+        for name in selected:
+            self.start_update_for_webtoon(name)
+        self._sync_batch_actions()
+
+    def _start_update(self, entry: UpdateCard):
         if self.settings_store.get_completed(entry.name):
             logger.info("Update page blocked completed webtoon %s", entry.name)
             self.refresh_entries()
@@ -149,52 +723,59 @@ class UpdatePage(DownloadHistoryPageBase):
             return
 
         self.set_error_text("")
+        self._sync_update_buttons()
 
     def start_update_for_webtoon(self, webtoon_name: str) -> str | None:
         if not webtoon_name:
             return "Please choose a title to update."
 
-        self.refresh_entries()
-        entry = self._entry_for(webtoon_name)
-        if entry is None:
+        source_url = self.settings_store.get_source_url(webtoon_name)
+        if not source_url:
             error = f"No saved source URL found for '{webtoon_name}'."
             self.set_error_text(error)
             return error
 
-        if self.settings_store.get_completed(entry.name):
-            self.refresh_entries()
-            error = f"'{entry.name}' is marked completed."
+        if self.settings_store.get_completed(webtoon_name):
+            error = f"'{webtoon_name}' is marked completed."
             self.set_error_text(error)
             return error
 
-        if entry.cooldown_remaining() > 0:
+        remaining = cooldown_remaining(self.settings_store.get_last_update_at(webtoon_name))
+        if remaining > 0:
             self._sync_update_buttons()
-            error = f"'{entry.name}' is still on cooldown."
+            error = f"'{webtoon_name}' is still on cooldown."
             self.set_error_text(error)
             return error
 
-        logger.info("Starting update from external trigger for %s", entry.name)
+        logger.info("Starting update from external trigger for %s", webtoon_name)
         error = self.service.start_download(
-            entry.source_url,
+            source_url,
             load_library_path(),
-            preferred_name=entry.name,
+            preferred_name=webtoon_name,
         )
         self.set_error_text("" if error is None else error)
         self._sync_update_buttons()
         return error
 
     def _sync_update_buttons(self):
-        for index in range(self.history_layout.count()):
-            item = self.history_layout.itemAt(index)
-            widget = item.widget()
-            if isinstance(widget, UpdateEntry):
-                if self.service.has_active_download(widget.name):
-                    widget.update_btn.setEnabled(False)
-                    widget.update_btn.setText("Updating...")
+        for widget in self._entries_by_name.values():
+            if not isinstance(widget, UpdateCard):
+                continue
+            if self.service.has_active_download(widget.name):
+                widget.update_btn.setEnabled(False)
+                widget.update_btn.setToolTip("Updating...")
+                current, total = self.service.get_progress(widget.name)
+                if total > 0:
+                    widget.set_progress(current, total)
                 else:
-                    remaining = widget.cooldown_remaining()
-                    widget.update_btn.setEnabled(remaining == 0)
-                    widget.update_btn.setText(f"Wait {remaining}s" if remaining > 0 else "Update")
+                    widget.set_status("Downloading")
+                continue
+
+            remaining = widget.cooldown_remaining()
+            widget.update_btn.setEnabled(remaining == 0)
+            widget.update_btn.setToolTip(f"Wait {remaining}s" if remaining > 0 else "Update")
+            if widget.status_label.text() != "Ready":
+                widget.set_status("Ready")
 
     def _on_download_started(self, name: str):
         logger.info("Update-page download started for %s", name)
@@ -218,3 +799,75 @@ class UpdatePage(DownloadHistoryPageBase):
         if self.isVisible() and not self.service.is_busy():
             self._refresh_timer.stop()
             self._refresh_timer.start(0)
+
+    def _on_candidate_checked(self, request_id: int, candidate: dict, result: dict | None, error: str):
+        if request_id != self._check_request_id:
+            return
+
+        self._completed_checks += 1
+        if error in {DISABLED_CHECK_ERROR, UNSUPPORTED_CHECK_ERROR}:
+            pass
+        elif error:
+            self._check_errors += 1
+            logger.warning("Update check failed for %s: %s", candidate.get("name"), error)
+        elif result is not None:
+            self._available_updates.append(result)
+            self._available_updates.sort(key=lambda item: item["webtoon"].name.lower())
+            self._apply_filter()
+
+        if self._pending_checks > 0:
+            self.status_label.setText(
+                f"Checking {self._completed_checks} / {self._pending_checks} saved titles..."
+            )
+
+        if self._completed_checks >= self._pending_checks:
+            self._finish_check_cycle()
+
+    def _finish_check_cycle(self):
+        count = len(self._available_updates)
+        if count == 0:
+            self.status_label.setText("No updates found")
+        elif count == 1:
+            self.status_label.setText("1 title has updates")
+        else:
+            self.status_label.setText(f"{count} titles have updates")
+
+        if self._check_errors:
+            suffix = "title" if self._check_errors == 1 else "titles"
+            self.set_error_text(f"Could not check {self._check_errors} saved {suffix}.")
+        else:
+            self.set_error_text("")
+
+        self._empty_message = "No updates found right now."
+        self._apply_filter()
+
+    def _current_empty_message(self) -> str:
+        if self._pending_search.strip():
+            return "No update cards match your search."
+        if self._completed_checks < self._pending_checks:
+            return self._empty_message
+        return "No updates found right now."
+
+    def _relayout_cards(self):
+        if self._cards_layout is None or not self._entry_widgets:
+            return
+
+        while self._cards_layout.count():
+            item = self._cards_layout.takeAt(0)
+            widget = item.widget()
+            if widget is None:
+                continue
+
+        viewport_width = max(
+            1,
+            self.scroll.viewport().width()
+            - self.scroll.contentsMargins().left()
+            - self.scroll.contentsMargins().right(),
+        )
+        card_span = UPDATE_CARD_WIDTH + UPDATE_CARD_SPACING
+        columns = max(1, viewport_width // max(1, card_span))
+
+        for index, widget in enumerate(self._entry_widgets):
+            row = index // columns
+            column = index % columns
+            self._cards_layout.addWidget(widget, row, column, Qt.AlignTop | Qt.AlignLeft)
