@@ -7,7 +7,7 @@ from datetime import datetime
 import requests
 from core.app_logging import get_logger
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -23,6 +23,7 @@ import qtawesome as qta
 
 from core.update_utils import cooldown_remaining
 from gui.common.styles import (
+    action_button_checked_style,
     ACCENT,
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
@@ -41,6 +42,7 @@ from gui.common.styles import (
     card_image_border_style,
     status_text_style,
 )
+from gui.common.card_utils import card_toggle_icon, load_rounded_cover
 from gui.downloader.download_widgets import SpinnerCircle, format_last_updated
 from gui.downloader.helpers import sanitize_webtoon_name
 from gui.downloader.page_base import DownloadHistoryPageBase
@@ -465,34 +467,14 @@ class UpdateCard(QFrame):
         self._refresh_select_visibility()
 
     def _load_thumbnail(self, path: str):
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
-            self.thumb_label.clear()
-            self.thumb_label.setText("No Cover")
-            return
-
-        pixmap = pixmap.scaled(
+        load_rounded_cover(
+            self.thumb_label,
+            path,
             self.card_width,
             self.card_height,
-            Qt.KeepAspectRatioByExpanding,
-            Qt.SmoothTransformation,
+            LIBRARY_CARD_RADIUS,
+            fallback_text="No Cover",
         )
-        x = (pixmap.width() - self.card_width) // 2
-        y = (pixmap.height() - self.card_height) // 2
-        pixmap = pixmap.copy(x, y, self.card_width, self.card_height)
-
-        rounded = QPixmap(self.card_width, self.card_height)
-        rounded.fill(Qt.transparent)
-        painter = QPainter(rounded)
-        painter.setRenderHint(QPainter.Antialiasing)
-        path_obj = QPainterPath()
-        path_obj.addRoundedRect(0, 0, self.card_width, self.card_height, LIBRARY_CARD_RADIUS, LIBRARY_CARD_RADIUS)
-        painter.setClipPath(path_obj)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.end()
-
-        self.thumb_label.setPixmap(rounded)
-        self.thumb_label.setText("")
 
     def _center_progress_overlay(self):
         x = (self.card_width - self.progress_overlay.width()) // 2
@@ -528,16 +510,10 @@ class UpdateCard(QFrame):
         return f"Updated {datetime.fromtimestamp(int(self.last_update_at)).strftime('%Y-%m-%d')}"
 
     def _apply_select_button_style(self):
-        self.select_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
-            QPushButton:checked { background: rgba(255,138,122,0.95); }
-        """)
+        self.select_btn.setStyleSheet(action_button_checked_style("rgba(255,138,122,0.95)"))
 
     def _refresh_select_button(self):
-        if self._selected:
-            self.select_btn.setIcon(qta.icon("fa5s.check", color="#ffffff"))
-        else:
-            self.select_btn.setIcon(qta.icon("fa5s.circle", color="#ffffff"))
-        self.select_btn.setIconSize(self._button_icon_size())
+        card_toggle_icon(self.select_btn, self._selected, size=12)
 
     def _button_icon_size(self):
         from PySide6.QtCore import QSize

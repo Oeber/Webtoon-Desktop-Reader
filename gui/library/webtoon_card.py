@@ -1,13 +1,14 @@
 import json
 
 from PySide6.QtCore import QPoint, Qt, QSize, QMimeData
-from PySide6.QtGui import QAction, QDrag, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QAction, QDrag, QFont, QIcon
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 import qtawesome as qta
 import time
 
 from core.app_logging import get_logger
 from gui.common.styles import (
+    action_button_checked_style,
     CARD_ACTION_BUTTON_DISABLED_STYLE,
     CARD_ACTION_BUTTON_STYLE,
     CARD_CANCEL_BUTTON_STYLE,
@@ -21,6 +22,7 @@ from gui.common.styles import (
     card_badge_button_style,
     card_image_border_style,
 )
+from gui.common.card_utils import ElidedLabel, card_toggle_icon, load_rounded_cover, retain_hidden_size
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
 
@@ -30,36 +32,6 @@ CARD_HEIGHT = 270
 CARD_RADIUS = 12
 CARD_DRAG_DISTANCE = 5
 logger = get_logger(__name__)
-
-
-def _retain_hidden_size(widget: QWidget):
-    policy = widget.sizePolicy()
-    policy.setRetainSizeWhenHidden(True)
-    widget.setSizePolicy(policy)
-
-
-class ElidedLabel(QLabel):
-
-    def __init__(self, text: str = "", parent=None):
-        super().__init__(parent)
-        self._full_text = text
-        self.setText(text)
-
-    def setText(self, text: str):
-        self._full_text = text or ""
-        self._update_elided_text()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_elided_text()
-
-    def _update_elided_text(self):
-        metrics = QFontMetrics(self.font())
-        available_width = max(0, self.contentsRect().width())
-        if available_width <= 0:
-            super().setText(self._full_text)
-            return
-        super().setText(metrics.elidedText(self._full_text, Qt.ElideRight, available_width))
 
 
 class WebtoonCard(QWidget):
@@ -208,7 +180,7 @@ class WebtoonCard(QWidget):
 
         self.latest_btn = self._make_badge_btn(accent=False)
         self.lastread_btn = self._make_badge_btn(accent=True)
-        _retain_hidden_size(self.lastread_btn)
+        retain_hidden_size(self.lastread_btn)
 
         self.new_chip = QLabel("NEW", self)
         self.new_chip.setAlignment(Qt.AlignCenter)
@@ -301,32 +273,7 @@ class WebtoonCard(QWidget):
         return None
 
     def _load_thumbnail(self, path: str):
-        pixmap = QPixmap(path)
-        if pixmap.isNull():
-            self.image_label.clear()
-            return
-
-        pixmap = pixmap.scaled(
-            self.card_width,
-            self.card_height,
-            Qt.KeepAspectRatioByExpanding,
-            Qt.SmoothTransformation,
-        )
-        x = (pixmap.width() - self.card_width) // 2
-        y = (pixmap.height() - self.card_height) // 2
-        pixmap = pixmap.copy(x, y, self.card_width, self.card_height)
-
-        rounded = QPixmap(self.card_width, self.card_height)
-        rounded.fill(Qt.transparent)
-        painter = QPainter(rounded)
-        painter.setRenderHint(QPainter.Antialiasing)
-        path_obj = QPainterPath()
-        path_obj.addRoundedRect(0, 0, self.card_width, self.card_height, CARD_RADIUS, CARD_RADIUS)
-        painter.setClipPath(path_obj)
-        painter.drawPixmap(0, 0, pixmap)
-        painter.end()
-
-        self.image_label.setPixmap(rounded)
+        load_rounded_cover(self.image_label, path, self.card_width, self.card_height, CARD_RADIUS)
 
     def set_thumbnail(self, path: str):
         self._load_thumbnail(path)
@@ -738,21 +685,13 @@ class WebtoonCard(QWidget):
             self.on_cancel_download(self.webtoon.name)
 
     def _apply_select_button_style(self):
-        self.select_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
-            QPushButton:checked { background: rgba(255,138,122,0.95); }
-        """)
+        self.select_btn.setStyleSheet(action_button_checked_style("rgba(255,138,122,0.95)"))
 
     def _apply_bookmark_button_style(self):
-        self.bookmark_btn.setStyleSheet(CARD_ACTION_BUTTON_STYLE + """
-            QPushButton:checked { background: rgba(245,196,81,0.95); }
-        """)
+        self.bookmark_btn.setStyleSheet(action_button_checked_style("rgba(245,196,81,0.95)"))
 
     def _refresh_select_button(self):
-        if self._selected:
-            self.select_btn.setIcon(qta.icon("fa5s.check", color="#ffffff"))
-        else:
-            self.select_btn.setIcon(qta.icon("fa5s.circle", color="#ffffff"))
-        self.select_btn.setIconSize(QSize(12, 12))
+        card_toggle_icon(self.select_btn, self._selected)
 
     def _refresh_bookmark_button(self):
         self.bookmark_btn.blockSignals(True)

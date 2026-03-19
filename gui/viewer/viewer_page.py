@@ -13,6 +13,9 @@ from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QImageReader,
 from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QObject, QRect, QSize
 
 from gui.common.styles import (
+    LOADING_DETAIL_LABEL_STYLE,
+    LOADING_TITLE_LABEL_STYLE,
+    VIEWER_LOADING_OVERLAY_STYLE,
     VIEWER_RESUME_CONTINUE_BUTTON_STYLE,
     VIEWER_RESUME_DIALOG_STYLE,
     VIEWER_RESUME_RESTART_BUTTON_STYLE,
@@ -799,7 +802,7 @@ class ViewerPage(QWidget):
         self._did_immediate_first_paint = False
 
         self.loading_overlay = QWidget(self.scroll.viewport())
-        self.loading_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 150);")
+        self.loading_overlay.setStyleSheet(VIEWER_LOADING_OVERLAY_STYLE)
         self.loading_overlay.hide()
         overlay_layout = QVBoxLayout(self.loading_overlay)
         overlay_layout.setContentsMargins(24, 24, 24, 24)
@@ -810,10 +813,10 @@ class ViewerPage(QWidget):
         self.loading_spinner.set_spinning()
         self.loading_label = QLabel("Loading chapter...")
         self.loading_label.setAlignment(Qt.AlignCenter)
-        self.loading_label.setStyleSheet("color: #f2f2f2; font-size: 16px; font-weight: 600;")
+        self.loading_label.setStyleSheet(LOADING_TITLE_LABEL_STYLE)
         self.loading_detail_label = QLabel("")
         self.loading_detail_label.setAlignment(Qt.AlignCenter)
-        self.loading_detail_label.setStyleSheet("color: #bdbdbd; font-size: 12px;")
+        self.loading_detail_label.setStyleSheet(LOADING_DETAIL_LABEL_STYLE)
 
         overlay_layout.addWidget(self.loading_spinner, 0, Qt.AlignCenter)
         overlay_layout.addWidget(self.loading_label)

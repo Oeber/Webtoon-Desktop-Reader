@@ -25,25 +25,23 @@ from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QP
 
 from core.app_logging import get_logger
 from gui.common.styles import (
+    ACCENT_MUTED,
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
     BUTTON_STYLE,
     DELETE_BUTTON_STYLE,
-    ACCENT_MUTED,
-    BG,
-    BG_ALT,
-    BORDER,
+    DROP_INDICATOR_STYLE,
+    LIBRARY_CONTROLS_BAR_STYLE,
+    LIBRARY_SCALE_PANEL_STYLE,
+    LIBRARY_SCALE_VALUE_LABEL_STYLE,
     PAGE_BG_STYLE,
     SCROLL_AREA_STYLE,
     SEARCH_INPUT_STYLE,
-    SLIDER_STYLE,
-    SURFACE,
-    SURFACE_SOFT,
     SECTION_HEADER_BUTTON_STYLE,
     SECTION_MENU_BUTTON_STYLE,
     TRANSPARENT_BG_STYLE,
-    TEXT_DIM_LABEL_STYLE,
     TEXT_MUTED_LABEL_STYLE,
+    library_scale_slider_style,
     section_empty_state_style,
 )
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
@@ -168,7 +166,7 @@ class CategorySection(QFrame):
 
         self.drop_indicator = QFrame(self)
         self.drop_indicator.hide()
-        self.drop_indicator.setStyleSheet("background: rgba(255, 138, 122, 0.95); border-radius: 2px;")
+        self.drop_indicator.setStyleSheet(DROP_INDICATOR_STYLE)
 
         self._apply_drop_style()
         self.set_title(title, 0)
@@ -458,9 +456,7 @@ class LibraryPage(QWidget):
         root_layout.setSpacing(12)
 
         self.controls_bar = QWidget(self)
-        self.controls_bar.setStyleSheet(
-            f"background: {BG_ALT}; border-bottom: 1px solid {BORDER};"
-        )
+        self.controls_bar.setStyleSheet(LIBRARY_CONTROLS_BAR_STYLE)
         controls = QHBoxLayout(self.controls_bar)
         controls.setContentsMargins(PAGE_PADDING, 16, PAGE_PADDING, 14)
         controls.setSpacing(16)
@@ -472,9 +468,7 @@ class LibraryPage(QWidget):
         controls.addWidget(self.search, 1)
 
         scale_panel = QWidget(self.controls_bar)
-        scale_panel.setStyleSheet(
-            f"background: {BG_ALT}; border: none; border-radius: 12px;"
-        )
+        scale_panel.setStyleSheet(LIBRARY_SCALE_PANEL_STYLE)
         scale_layout = QVBoxLayout(scale_panel)
         scale_layout.setContentsMargins(12, 8, 12, 8)
         scale_layout.setSpacing(4)
@@ -492,34 +486,7 @@ class LibraryPage(QWidget):
         self.size_slider.setValue(self._card_scale)
         self.size_slider.setFixedWidth(160)
         self.size_slider.setToolTip("Smaller cards fit more items per row")
-        self.size_slider.setStyleSheet(f"""
-            QSlider {{
-                background: {SURFACE};
-                border: 1px solid {BORDER};
-                border-radius: 6px;
-                padding: 4px 6px;
-            }}
-            QSlider::groove:horizontal {{
-                height: 6px;
-                border-radius: 3px;
-                background: {SURFACE_SOFT};
-            }}
-            QSlider::sub-page:horizontal {{
-                border-radius: 3px;
-                background: {ACCENT_MUTED};
-            }}
-            QSlider::add-page:horizontal {{
-                border-radius: 3px;
-                background: {BG_ALT};
-            }}
-            QSlider::handle:horizontal {{
-                width: 12px;
-                margin: -3px 0;
-                border-radius: 6px;
-                border: 1px solid #ffe5de;
-                background: #ffd4cb;
-            }}
-        """)
+        self.size_slider.setStyleSheet(library_scale_slider_style())
         self.size_slider.valueChanged.connect(self._on_size_slider_changed)
         self.size_slider.sliderReleased.connect(self._apply_pending_card_scale)
         scale_row.addWidget(self.size_slider)
@@ -527,10 +494,7 @@ class LibraryPage(QWidget):
         self.size_value_label = QLabel(f"{self._card_scale}%", self)
         self.size_value_label.setAlignment(Qt.AlignCenter)
         self.size_value_label.setMinimumWidth(42)
-        self.size_value_label.setStyleSheet(
-            f"color: {ACCENT_MUTED}; font-size: 12px; font-weight: 700;"
-            f"background: {BG_ALT}; border: none; padding: 2px 0;"
-        )
+        self.size_value_label.setStyleSheet(LIBRARY_SCALE_VALUE_LABEL_STYLE)
         scale_row.addWidget(self.size_value_label, 0, Qt.AlignVCenter)
         scale_layout.addLayout(scale_row)
         controls.addWidget(scale_panel, 0, Qt.AlignVCenter)

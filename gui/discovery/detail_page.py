@@ -16,8 +16,16 @@ from PySide6.QtWidgets import (
 )
 
 from core.app_logging import get_logger
+from gui.common.chapter_selection import (
+    apply_select_icon,
+    refresh_selector_visibility,
+    selector_buttons,
+    set_selector_visibility,
+    sync_selector_checked_state,
+)
 from gui.common.chapter_utils import SPECIAL_CHAPTER_RE
 from gui.common.styles import (
+    sized_button_style,
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
     CHAPTER_LIST_WIDGET_STYLE,
@@ -40,8 +48,8 @@ from gui.common.styles import (
     chapter_name_style,
     detail_thumb_style,
 )
+from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.discovery.cover_loader import DiscoveryCoverLoader
-from gui.library.detail_page import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from scrapers.base import ScraperError
 from scrapers.models import CatalogSeries
 from scrapers.registry import get_scraper
@@ -186,20 +194,8 @@ class DiscoveryDetailPage(QWidget):
         self.selection_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.selection_label)
 
-        batch_primary_btn_style = PRIMARY_ACTION_BUTTON_STYLE + f"""
-            QPushButton {{
-                min-height: {BATCH_ACTION_BTN_H}px;
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-        """
-        batch_secondary_btn_style = SECONDARY_ACTION_BUTTON_STYLE + f"""
-            QPushButton {{
-                min-height: {BATCH_ACTION_BTN_H}px;
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-        """
+        batch_primary_btn_style = sized_button_style(PRIMARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
+        batch_secondary_btn_style = sized_button_style(SECONDARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
 
         self.select_all_btn = QPushButton("Select All")
         self.select_all_btn.setStyleSheet(batch_secondary_btn_style)
@@ -357,8 +353,8 @@ class DiscoveryDetailPage(QWidget):
         select_btn.setIconSize(QSize(14, 14))
         select_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         select_btn.setProperty("chapter_url", chapter.url)
-        self._apply_select_icon(select_btn, select_btn.isChecked())
-        self._set_chapter_select_visibility(row, select_btn, force=bool(self._selected_urls))
+        apply_select_icon(select_btn, select_btn.isChecked())
+        set_selector_visibility(row, select_btn, force=bool(self._selected_urls), hide_when_inactive=True)
         select_btn.clicked.connect(
             lambda checked, url=chapter.url, btn=select_btn: self._toggle_chapter(url, checked, btn)
         )
@@ -380,44 +376,22 @@ class DiscoveryDetailPage(QWidget):
         row.leaveEvent = lambda event, btn=select_btn, widget=row: self._on_chapter_row_hover(widget, btn, False, event)
         return row
 
-    def _apply_select_icon(self, button: QToolButton, is_selected: bool):
-        color = "#ff8a7a" if is_selected else "#9b7670"
-        icon_name = "fa5s.check-circle" if is_selected else "fa5s.circle"
-        button.setIcon(qta.icon(icon_name, color=color))
-
-    def _set_chapter_select_visibility(self, row: QWidget, button: QToolButton, force: bool = False):
-        show_selector = force or button.isChecked() or row.underMouse()
-        if show_selector:
-            self._apply_select_icon(button, button.isChecked())
-            button.setEnabled(True)
-            button.setCursor(Qt.PointingHandCursor)
-            button.show()
-            return
-        button.hide()
-
     def _on_chapter_row_hover(self, row: QWidget, button: QToolButton, hovered: bool, event):
-        self._set_chapter_select_visibility(row, button, force=bool(self._selected_urls) or hovered)
+        set_selector_visibility(
+            row,
+            button,
+            force=bool(self._selected_urls) or hovered,
+            hide_when_inactive=True,
+        )
         QWidget.enterEvent(row, event) if hovered else QWidget.leaveEvent(row, event)
 
-    def _chapter_select_buttons(self) -> list[QToolButton]:
-        buttons = []
-        for index in range(self.chapter_list_layout.count()):
-            widget = self.chapter_list_layout.itemAt(index).widget()
-            if widget is None:
-                continue
-            for button in widget.findChildren(QToolButton):
-                if button.property("chapter_url"):
-                    buttons.append(button)
-        return buttons
-
     def _refresh_visible_selectors(self):
-        for button in self._chapter_select_buttons():
-            row = button.parentWidget()
-            while row is not None and row.parentWidget() is not self.chapter_list_widget:
-                row = row.parentWidget()
-            if row is None:
-                continue
-            self._set_chapter_select_visibility(row, button, force=bool(self._selected_urls))
+        refresh_selector_visibility(
+            self.chapter_list_widget,
+            "chapter_url",
+            force=bool(self._selected_urls),
+            hide_when_inactive=True,
+        )
 
     def _toggle_chapter(self, url: str, checked: bool, button: QToolButton | None = None):
         if checked:
@@ -428,31 +402,31 @@ class DiscoveryDetailPage(QWidget):
             button.blockSignals(True)
             button.setChecked(checked)
             button.blockSignals(False)
-            self._apply_select_icon(button, checked)
+            apply_select_icon(button, checked)
         self._refresh_visible_selectors()
         self._sync_selection_state()
 
     def _select_all_visible(self):
         visible_urls = {chapter.url for chapter in self._visible_chapters()}
         self._selected_urls |= visible_urls
-        for button in self._chapter_select_buttons():
-            chapter_url = button.property("chapter_url")
-            if chapter_url in visible_urls:
-                button.blockSignals(True)
-                button.setChecked(True)
-                button.blockSignals(False)
-                self._apply_select_icon(button, True)
-        self._refresh_visible_selectors()
+        sync_selector_checked_state(
+            self.chapter_list_widget,
+            "chapter_url",
+            visible_urls | self._selected_urls,
+            force=True,
+            hide_when_inactive=True,
+        )
         self._sync_selection_state()
 
     def _clear_selection(self):
         self._selected_urls.clear()
-        for button in self._chapter_select_buttons():
-            button.blockSignals(True)
-            button.setChecked(False)
-            button.blockSignals(False)
-            self._apply_select_icon(button, False)
-        self._refresh_visible_selectors()
+        sync_selector_checked_state(
+            self.chapter_list_widget,
+            "chapter_url",
+            self._selected_urls,
+            force=False,
+            hide_when_inactive=True,
+        )
         self._sync_selection_state()
 
     def _sync_selection_state(self):

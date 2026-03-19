@@ -533,6 +533,124 @@ APP_UPDATE_PROGRESS_STYLE = f"""
     }}
 """
 
+STACK_BG_STYLE = PAGE_BG_STYLE
+MAIN_WINDOW_CHAPTER_OVERLAY_STYLE = "background-color: rgba(0, 0, 0, 140);"
+VIEWER_LOADING_OVERLAY_STYLE = "background-color: rgba(0, 0, 0, 150);"
+LOADING_TITLE_LABEL_STYLE = "color: #f2f2f2; font-size: 16px; font-weight: 600;"
+LOADING_DETAIL_LABEL_STYLE = "color: #bdbdbd; font-size: 12px;"
+SITE_AUTH_INFO_LABEL_STYLE = f"color: {TEXT}; font-size: 13px; background: transparent;"
+SITE_AUTH_TOKEN_LABEL_STYLE = f"color: {TEXT_MUTED}; font-size: 12px; background: transparent;"
+STARTUP_UPDATE_DIALOG_STYLE = (
+    "QDialog { background: #100c0c; color: #ffe7e2; }"
+    "QWidget#updateDialogPanel { background: #171111; border: 1px solid #4b302c; border-radius: 18px; }"
+    "QLabel { background: transparent; color: inherit; }"
+)
+SECTION_LABEL_EMPHASIS_STYLE = SECTION_LABEL_STYLE + " letter-spacing: 0.12em; font-weight: 700;"
+PAGE_TITLE_LARGE_STYLE = PAGE_TITLE_STYLE + " font-size: 24px;"
+TEXT_MUTED_BODY_STYLE = TEXT_MUTED_LABEL_STYLE + " background: transparent; font-size: 13px;"
+TEXT_MUTED_TRANSPARENT_STYLE = TEXT_MUTED_LABEL_STYLE + " background: transparent;"
+SECTION_LABEL_TRANSPARENT_STYLE = SECTION_LABEL_STYLE + " background: transparent;"
+TRANSPARENT_SCROLL_AREA_STYLE = (
+    "QScrollArea { background: transparent; border: none; }"
+    "QWidget { background: transparent; }"
+    + VERTICAL_SCROLLBAR_STYLE
+)
+DROP_INDICATOR_STYLE = "background: rgba(255, 138, 122, 0.95); border-radius: 2px;"
+LIBRARY_CONTROLS_BAR_STYLE = f"background: {BG_ALT}; border-bottom: 1px solid {BORDER};"
+LIBRARY_SCALE_PANEL_STYLE = f"background: {BG_ALT}; border: none; border-radius: 12px;"
+LIBRARY_SCALE_VALUE_LABEL_STYLE = (
+    f"color: {ACCENT_MUTED}; font-size: 12px; font-weight: 700;"
+    f"background: {BG_ALT}; border: none; padding: 2px 0;"
+)
+DISCOVERY_COMBO_STYLE = f"""
+    QComboBox {{
+        background: #181212;
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: {TEXT};
+        font-size: 13px;
+        min-width: 180px;
+    }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 24px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {SURFACE};
+        color: {TEXT};
+        border: 1px solid {BORDER};
+        selection-background-color: #2b1c1b;
+    }}
+"""
+DISCOVERY_CARD_TITLE_STYLE = f"""
+    QLabel {{
+        color: {TEXT};
+        font-size: 12px;
+        font-weight: 500;
+        background: transparent;
+        border: none;
+        padding: 0;
+    }}
+"""
+DISCOVERY_CARD_COUNT_STYLE = TEXT_DIM_LABEL_STYLE
+DISCOVERY_FILTER_BUTTON_STYLE = BUTTON_STYLE + f"""
+    QPushButton:checked {{
+        background-color: #2a1716;
+        border-color: {ACCENT};
+        color: {TEXT};
+    }}
+"""
+DISCOVERY_LOADING_LABEL_STYLE = f"""
+    QLabel {{
+        color: {TEXT_SOFT};
+        background: {SURFACE_ALT};
+        border: 1px solid {BORDER};
+        border-radius: 10px;
+        padding: 10px 16px;
+        font-size: 12px;
+        font-weight: 600;
+    }}
+"""
+THUMBNAIL_DIALOG_STYLE = f"""
+    QDialog {{
+        background: #120e0e;
+        color: {TEXT};
+    }}
+    QLabel {{
+        background: transparent;
+        border: none;
+    }}
+    QLineEdit {{
+        background: {SURFACE_ALT};
+        color: {TEXT};
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 8px 12px;
+        font-size: 13px;
+        selection-background-color: {ACCENT};
+    }}
+    QLineEdit:focus {{
+        border-color: {ACCENT};
+    }}
+"""
+THUMBNAIL_DIALOG_TITLE_STYLE = f"color: {TEXT}; font-size: 16px; font-weight: 700;"
+THUMBNAIL_PREVIEW_STYLE = f"""
+    QLabel {{
+        background: {SURFACE};
+        border: 1px solid {BORDER};
+        border-radius: 12px;
+        color: {TEXT_DIM};
+        font-size: 11px;
+    }}
+"""
+THUMBNAIL_DROPZONE_ICON_STYLE = f"color: {TEXT_DIM}; font-size: 32px; background: transparent; border: none;"
+THUMBNAIL_DROPZONE_ICON_HOVER_STYLE = f"color: {ACCENT}; font-size: 32px; background: transparent; border: none;"
+THUMBNAIL_DROPZONE_TITLE_STYLE = f"color: {TEXT}; font-size: 14px; font-weight: 600; background: transparent; border: none;"
+THUMBNAIL_DROPZONE_SUBTITLE_STYLE = f"color: {TEXT_DIM}; font-size: 11px; background: transparent; border: none;"
+THUMBNAIL_DIVIDER_LINE_STYLE = f"color: {BORDER};"
+THUMBNAIL_STATUS_IDLE_STYLE = f"color: {TEXT_DIM}; font-size: 11px;"
+
 
 def status_text_style(color: str) -> str:
     return f"color: {color}; font-size: 12px; background: transparent; border: none;"
@@ -650,3 +768,113 @@ def detail_thumb_style(radius: int) -> str:
 
 def chapter_name_style(color: str) -> str:
     return f"color: {color}; font-size: 14px; border: none;"
+
+
+def status_label_color_style(color: str) -> str:
+    return f"color: {color}; font-size: 11px;"
+
+
+def sidebar_button_style(expanded: bool) -> str:
+    extra_style = (
+        """
+            QPushButton {
+                padding: 8px 10px;
+                text-align: left;
+            }
+        """
+        if expanded else
+        """
+            QPushButton {
+                padding: 8px 0;
+                text-align: center;
+            }
+        """
+    )
+    return SIDEBAR_BUTTON_STYLE + extra_style
+
+
+def library_scale_slider_style() -> str:
+    return f"""
+        QSlider {{
+            background: {SURFACE};
+            border: 1px solid {BORDER};
+            border-radius: 6px;
+            padding: 4px 6px;
+        }}
+        QSlider::groove:horizontal {{
+            height: 6px;
+            border-radius: 3px;
+            background: {SURFACE_SOFT};
+        }}
+        QSlider::sub-page:horizontal {{
+            border-radius: 3px;
+            background: {ACCENT_MUTED};
+        }}
+        QSlider::add-page:horizontal {{
+            border-radius: 3px;
+            background: {BG_ALT};
+        }}
+        QSlider::handle:horizontal {{
+            width: 12px;
+            margin: -3px 0;
+            border-radius: 6px;
+            border: 1px solid #ffe5de;
+            background: #ffd4cb;
+        }}
+    """
+
+
+def thumbnail_dropzone_style(hovered: bool) -> str:
+    border = ACCENT if hovered else BORDER
+    background = "#241615" if hovered else SURFACE
+    return f"""
+        QFrame {{
+            background: {background};
+            border: 2px dashed {border};
+            border-radius: 12px;
+        }}
+    """
+
+
+def thumbnail_action_button_style(primary: bool = False) -> str:
+    if primary:
+        return f"""
+            QPushButton {{
+                background: {ACCENT};
+                color: #fff;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 0;
+                font-size: 13px;
+                font-weight: 600;
+            }}
+            QPushButton:hover {{ background: #d86f60; }}
+            QPushButton:disabled {{ background: #2a2a2a; color: {TEXT_DIM}; }}
+        """
+    return f"""
+        QPushButton {{
+            background: {SURFACE_ALT};
+            color: {TEXT};
+            border: 1px solid {BORDER};
+            border-radius: 6px;
+            padding: 8px 0;
+            font-size: 13px;
+        }}
+        QPushButton:hover {{ background: {BORDER}; }}
+    """
+
+
+def action_button_checked_style(color: str) -> str:
+    return CARD_ACTION_BUTTON_STYLE + f"""
+        QPushButton:checked {{ background: {color}; }}
+    """
+
+
+def sized_button_style(base_style: str, min_height: int, *, padding: str = "0 16px", font_size: int = 14) -> str:
+    return base_style + f"""
+        QPushButton {{
+            min-height: {min_height}px;
+            padding: {padding};
+            font-size: {font_size}px;
+        }}
+    """

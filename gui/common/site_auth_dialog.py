@@ -18,7 +18,13 @@ from core.site_session import (
     site_host,
     site_required_cookie_names,
 )
-from gui.common.styles import BUTTON_STYLE, PAGE_BG_STYLE, STATUS_LABEL_STYLE
+from gui.common.styles import (
+    BUTTON_STYLE,
+    PAGE_BG_STYLE,
+    SITE_AUTH_INFO_LABEL_STYLE,
+    SITE_AUTH_TOKEN_LABEL_STYLE,
+    STATUS_LABEL_STYLE,
+)
 
 logger = get_logger(__name__)
 
@@ -51,7 +57,7 @@ class SiteAuthDialog(QDialog):
             f"Open {self.site_label} below in a fresh browser session, complete any challenge or login, then click Save Session."
         )
         self.info_label.setWordWrap(True)
-        self.info_label.setStyleSheet("color: #fff0ec; font-size: 13px; background: transparent;")
+        self.info_label.setStyleSheet(SITE_AUTH_INFO_LABEL_STYLE)
         layout.addWidget(self.info_label)
 
         self.status_label = QLabel("Waiting for page load...")
@@ -60,7 +66,7 @@ class SiteAuthDialog(QDialog):
 
         self.token_label = QLabel("")
         self.token_label.setWordWrap(True)
-        self.token_label.setStyleSheet("color: #d8b7b0; font-size: 12px; background: transparent;")
+        self.token_label.setStyleSheet(SITE_AUTH_TOKEN_LABEL_STYLE)
         layout.addWidget(self.token_label)
 
         self.profile = QWebEngineProfile(self)

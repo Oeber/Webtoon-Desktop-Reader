@@ -13,8 +13,17 @@ from PySide6.QtCore import Qt, QPoint, QSize, QTimer, QObject, Signal
 
 import qtawesome as qta
 
+from gui.common.chapter_selection import (
+    apply_select_icon,
+    refresh_selector_visibility,
+    selector_buttons,
+    set_selector_visibility,
+    sync_selector_checked_state,
+)
 from gui.common.chapter_utils import SPECIAL_CHAPTER_RE, chapter_sort_key
+from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.common.styles import (
+    sized_button_style,
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
     CHAPTER_LIST_WIDGET_STYLE,
@@ -56,12 +65,6 @@ from gui.settings.settings_page import load_library_path
 logger = get_logger(__name__)
 
 
-THUMB_W = 140
-THUMB_H = 210
-RADIUS  = 12
-ACTION_BTN_H = 36
-ACTION_BTN_W = 168
-BATCH_ACTION_BTN_H = 42
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
@@ -361,20 +364,8 @@ class DetailPage(QWidget):
         self.chapter_batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.chapter_batch_label)
 
-        chapter_batch_btn_style = SECONDARY_ACTION_BUTTON_STYLE + f"""
-            QPushButton {{
-                min-height: {BATCH_ACTION_BTN_H}px;
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-        """
-        chapter_delete_btn_style = DELETE_BUTTON_STYLE + f"""
-            QPushButton {{
-                min-height: {BATCH_ACTION_BTN_H}px;
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-        """
+        chapter_batch_btn_style = sized_button_style(SECONDARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
+        chapter_delete_btn_style = sized_button_style(DELETE_BUTTON_STYLE, BATCH_ACTION_BTN_H)
         self.select_all_chapters_btn = QPushButton("Select All")
         self.select_all_chapters_btn.setStyleSheet(chapter_batch_btn_style)
         self.select_all_chapters_btn.clicked.connect(self._select_all_chapters)
@@ -574,8 +565,8 @@ class DetailPage(QWidget):
         select_btn.setIconSize(QSize(14, 14))
         select_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         select_btn.setProperty("chapter_name", chapter)
-        self._apply_select_icon(select_btn, select_btn.isChecked())
-        self._set_chapter_select_visibility(row, select_btn, force=self._chapter_selection_visible())
+        apply_select_icon(select_btn, select_btn.isChecked())
+        set_selector_visibility(row, select_btn, force=self._chapter_selection_visible())
         select_btn.clicked.connect(
             lambda checked, ch=chapter, btn=select_btn: self._toggle_chapter_selected(ch, btn, checked)
         )
@@ -661,8 +652,8 @@ class DetailPage(QWidget):
         select_btn.setIconSize(QSize(14, 14))
         select_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         select_btn.setProperty("remote_chapter_url", chapter_url)
-        self._apply_select_icon(select_btn, select_btn.isChecked())
-        self._set_remote_chapter_select_visibility(row, select_btn, force=self._remote_chapter_selection_visible())
+        apply_select_icon(select_btn, select_btn.isChecked())
+        set_selector_visibility(row, select_btn, force=self._remote_chapter_selection_visible())
         select_btn.clicked.connect(
             lambda checked, url=chapter_url, btn=select_btn: self._toggle_remote_chapter_selected(url, btn, checked)
         )
@@ -712,20 +703,8 @@ class DetailPage(QWidget):
         self._remote_selection_label.setStyleSheet(BATCH_LABEL_STYLE)
         layout.addWidget(self._remote_selection_label)
 
-        button_style = SECONDARY_ACTION_BUTTON_STYLE + f"""
-            QPushButton {{
-                min-height: {BATCH_ACTION_BTN_H}px;
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-        """
-        primary_button_style = PRIMARY_ACTION_BUTTON_STYLE + f"""
-            QPushButton {{
-                min-height: {BATCH_ACTION_BTN_H}px;
-                padding: 0 16px;
-                font-size: 14px;
-            }}
-        """
+        button_style = sized_button_style(SECONDARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
+        primary_button_style = sized_button_style(PRIMARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
 
         select_all_btn = QPushButton("Select All New")
         select_all_btn.setStyleSheet(button_style)
@@ -942,42 +921,23 @@ class DetailPage(QWidget):
         color = "#f5c451" if is_bookmarked else "#9b7670"
         button.setIcon(qta.icon("fa5s.star", color=color))
 
-    def _apply_select_icon(self, button: QToolButton, is_selected: bool):
-        color = "#ff8a7a" if is_selected else "#9b7670"
-        icon_name = "fa5s.check-circle" if is_selected else "fa5s.circle"
-        button.setIcon(qta.icon(icon_name, color=color))
-
-    def _set_chapter_select_visibility(self, row: QWidget, button: QToolButton, force: bool = False):
-        show_checkbox = force or button.isChecked() or row.underMouse()
-        if show_checkbox:
-            self._apply_select_icon(button, button.isChecked())
-            button.setEnabled(True)
-            button.setCursor(Qt.PointingHandCursor)
-        else:
-            button.setIcon(QIcon())
-            button.setEnabled(False)
-            button.setCursor(Qt.ArrowCursor)
-
     def _on_chapter_row_hover(self, row: QWidget, button: QToolButton, hovered: bool, event):
-        self._set_chapter_select_visibility(row, button, force=self._chapter_selection_visible() or hovered)
+        set_selector_visibility(row, button, force=self._chapter_selection_visible() or hovered)
         QWidget.enterEvent(row, event) if hovered else QWidget.leaveEvent(row, event)
 
     def _refresh_chapter_selection_visibility(self):
-        force = self._chapter_selection_visible()
-        for button in self.chapter_list_widget.findChildren(QToolButton):
-            if button.property("chapter_name") is None:
-                continue
-            row = button.parentWidget()
-            if row is None:
-                continue
-            self._set_chapter_select_visibility(row, button, force=force)
+        refresh_selector_visibility(
+            self.chapter_list_widget,
+            "chapter_name",
+            force=self._chapter_selection_visible(),
+        )
 
     def _toggle_chapter_selected(self, chapter: str, button: QToolButton, is_selected: bool):
         if is_selected:
             self.selected_chapters.add(chapter)
         else:
             self.selected_chapters.discard(chapter)
-        self._apply_select_icon(button, is_selected)
+        apply_select_icon(button, is_selected)
         self._sync_chapter_batch_actions()
         self._refresh_chapter_selection_visibility()
 
@@ -1027,35 +987,19 @@ class DetailPage(QWidget):
         self._build_chapter_list(progress)
         self._sync_chapter_batch_actions()
 
-    def _set_remote_chapter_select_visibility(self, row: QWidget, button: QToolButton, force: bool = False):
-        show_checkbox = force or button.isChecked() or row.underMouse()
-        if show_checkbox:
-            self._apply_select_icon(button, button.isChecked())
-            button.setEnabled(True)
-            button.setCursor(Qt.PointingHandCursor)
-        else:
-            button.setIcon(QIcon())
-            button.setEnabled(False)
-            button.setCursor(Qt.ArrowCursor)
-
     def _on_remote_chapter_row_hover(self, row: QWidget, button: QToolButton, hovered: bool, event):
-        self._set_remote_chapter_select_visibility(row, button, force=self._remote_chapter_selection_visible() or hovered)
+        set_selector_visibility(row, button, force=self._remote_chapter_selection_visible() or hovered)
         QWidget.enterEvent(row, event) if hovered else QWidget.leaveEvent(row, event)
 
     def _remote_chapter_select_buttons(self) -> list[QToolButton]:
-        buttons = []
-        for button in self.chapter_list_widget.findChildren(QToolButton):
-            if button.property("remote_chapter_url"):
-                buttons.append(button)
-        return buttons
+        return selector_buttons(self.chapter_list_widget, "remote_chapter_url")
 
     def _refresh_remote_chapter_selection_visibility(self):
-        force = self._remote_chapter_selection_visible()
-        for button in self._remote_chapter_select_buttons():
-            row = button.parentWidget()
-            if row is None:
-                continue
-            self._set_remote_chapter_select_visibility(row, button, force=force)
+        refresh_selector_visibility(
+            self.chapter_list_widget,
+            "remote_chapter_url",
+            force=self._remote_chapter_selection_visible(),
+        )
 
     def _toggle_remote_chapter_selected(self, url: str, button: QToolButton, is_selected: bool):
         if not url:
@@ -1067,7 +1011,7 @@ class DetailPage(QWidget):
         button.blockSignals(True)
         button.setChecked(is_selected)
         button.blockSignals(False)
-        self._apply_select_icon(button, is_selected)
+        apply_select_icon(button, is_selected)
         self._refresh_remote_chapter_selection_visibility()
         self._sync_remote_batch_actions()
 
@@ -1087,24 +1031,22 @@ class DetailPage(QWidget):
             if entry.get("url")
         ]
         self.selected_remote_chapter_urls = set(urls)
-        for button in self._remote_chapter_select_buttons():
-            chapter_url = button.property("remote_chapter_url")
-            checked = chapter_url in self.selected_remote_chapter_urls
-            button.blockSignals(True)
-            button.setChecked(checked)
-            button.blockSignals(False)
-            self._apply_select_icon(button, checked)
-        self._refresh_remote_chapter_selection_visibility()
+        sync_selector_checked_state(
+            self.chapter_list_widget,
+            "remote_chapter_url",
+            self.selected_remote_chapter_urls,
+            force=True,
+        )
         self._sync_remote_batch_actions()
 
     def _clear_remote_chapter_selection(self):
         self.selected_remote_chapter_urls.clear()
-        for button in self._remote_chapter_select_buttons():
-            button.blockSignals(True)
-            button.setChecked(False)
-            button.blockSignals(False)
-            self._apply_select_icon(button, False)
-        self._refresh_remote_chapter_selection_visibility()
+        sync_selector_checked_state(
+            self.chapter_list_widget,
+            "remote_chapter_url",
+            self.selected_remote_chapter_urls,
+            force=False,
+        )
         self._sync_remote_batch_actions()
 
     def _download_selected_remote_chapters(self):

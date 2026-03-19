@@ -19,6 +19,21 @@ import os
 from pathlib import Path
 
 from core.app_logging import get_logger
+from gui.common.styles import (
+    TEXT_DIM,
+    THUMBNAIL_DIALOG_STYLE,
+    THUMBNAIL_DIALOG_TITLE_STYLE,
+    THUMBNAIL_DIVIDER_LINE_STYLE,
+    THUMBNAIL_DROPZONE_ICON_HOVER_STYLE,
+    THUMBNAIL_DROPZONE_ICON_STYLE,
+    THUMBNAIL_DROPZONE_SUBTITLE_STYLE,
+    THUMBNAIL_DROPZONE_TITLE_STYLE,
+    THUMBNAIL_PREVIEW_STYLE,
+    THUMBNAIL_STATUS_IDLE_STYLE,
+    status_label_color_style,
+    thumbnail_action_button_style,
+    thumbnail_dropzone_style,
+)
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QLineEdit, QFrame, QSizePolicy,
@@ -52,15 +67,6 @@ class _UrlWorker(QThread):
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-ACCENT   = "#ff8a7a"
-ACCENT_D = "#d86f60"
-BG       = "#120e0e"
-SURFACE  = "#171111"
-SURFACE2 = "#1f1514"
-BORDER   = "#35211f"
-BORDER_H = "#4b302c"
-TEXT     = "#fff0ec"
-MUTED    = "#b18b84"
 SUCCESS  = "#22c55e"
 ERROR    = "#ef4444"
 
@@ -92,20 +98,6 @@ class _DropZone(QFrame):
     """Click-to-browse + drag-and-drop target."""
     file_dropped = Signal(str)
 
-    _IDLE_STYLE = f"""
-        QFrame {{
-            background: {SURFACE};
-            border: 2px dashed {BORDER_H};
-            border-radius: {RADIUS}px;
-        }}
-    """
-    _HOVER_STYLE = f"""
-        QFrame {{
-            background: #241615;
-            border: 2px dashed {ACCENT};
-            border-radius: {RADIUS}px;
-        }}
-    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -113,7 +105,7 @@ class _DropZone(QFrame):
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(180)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.setStyleSheet(self._IDLE_STYLE)
+        self.setStyleSheet(thumbnail_dropzone_style(False))
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignCenter)
@@ -121,33 +113,33 @@ class _DropZone(QFrame):
 
         self._icon = QLabel("⬆")
         self._icon.setAlignment(Qt.AlignCenter)
-        self._icon.setStyleSheet(f"color: {MUTED}; font-size: 32px; background: transparent; border: none;")
+        self._icon.setStyleSheet(THUMBNAIL_DROPZONE_ICON_STYLE)
         layout.addWidget(self._icon)
 
         self._main_lbl = QLabel("Drop image here")
         self._main_lbl.setAlignment(Qt.AlignCenter)
-        self._main_lbl.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 600; background: transparent; border: none;")
+        self._main_lbl.setStyleSheet(THUMBNAIL_DROPZONE_TITLE_STYLE)
         layout.addWidget(self._main_lbl)
 
         sub = QLabel("or click to browse  ·  jpg · png · webp")
         sub.setAlignment(Qt.AlignCenter)
-        sub.setStyleSheet(f"color: {MUTED}; font-size: 11px; background: transparent; border: none;")
+        sub.setStyleSheet(THUMBNAIL_DROPZONE_SUBTITLE_STYLE)
         layout.addWidget(sub)
 
     # drag
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData().hasUrls():
             e.acceptProposedAction()
-            self.setStyleSheet(self._HOVER_STYLE)
-            self._icon.setStyleSheet(f"color: {ACCENT}; font-size: 32px; background: transparent; border: none;")
+            self.setStyleSheet(thumbnail_dropzone_style(True))
+            self._icon.setStyleSheet(THUMBNAIL_DROPZONE_ICON_HOVER_STYLE)
 
     def dragLeaveEvent(self, e):
-        self.setStyleSheet(self._IDLE_STYLE)
-        self._icon.setStyleSheet(f"color: {MUTED}; font-size: 32px; background: transparent; border: none;")
+        self.setStyleSheet(thumbnail_dropzone_style(False))
+        self._icon.setStyleSheet(THUMBNAIL_DROPZONE_ICON_STYLE)
 
     def dropEvent(self, e: QDropEvent):
-        self.setStyleSheet(self._IDLE_STYLE)
-        self._icon.setStyleSheet(f"color: {MUTED}; font-size: 32px; background: transparent; border: none;")
+        self.setStyleSheet(thumbnail_dropzone_style(False))
+        self._icon.setStyleSheet(THUMBNAIL_DROPZONE_ICON_STYLE)
         urls = e.mimeData().urls()
         if urls:
             path = urls[0].toLocalFile()
@@ -185,17 +177,7 @@ class ThumbnailDialog(QDialog):
         self.setWindowTitle("Set Thumbnail")
         self.setModal(True)
         self.setFixedWidth(480)
-        self.setStyleSheet(f"""
-            QDialog     {{ background: {BG}; color: {TEXT}; }}
-            QLabel      {{ background: transparent; border: none; }}
-            QLineEdit   {{
-                background: {SURFACE2}; color: {TEXT};
-                border: 1px solid {BORDER}; border-radius: 6px;
-                padding: 8px 12px; font-size: 13px;
-                selection-background-color: {ACCENT};
-            }}
-            QLineEdit:focus {{ border-color: {ACCENT}; }}
-        """)
+        self.setStyleSheet(THUMBNAIL_DIALOG_STYLE)
 
         self._build_ui()
 
@@ -207,7 +189,7 @@ class ThumbnailDialog(QDialog):
         root.setSpacing(20)
 
         title = QLabel("Set Thumbnail")
-        title.setStyleSheet(f"color: {TEXT}; font-size: 16px; font-weight: 700;")
+        title.setStyleSheet(THUMBNAIL_DIALOG_TITLE_STYLE)
         root.addWidget(title)
 
         # body: preview + right panel
@@ -218,15 +200,7 @@ class ThumbnailDialog(QDialog):
         self._preview_label = QLabel()
         self._preview_label.setFixedSize(THUMB_W, THUMB_H)
         self._preview_label.setAlignment(Qt.AlignCenter)
-        self._preview_label.setStyleSheet(f"""
-            QLabel {{
-                background: {SURFACE};
-                border: 1px solid {BORDER};
-                border-radius: {RADIUS}px;
-                color: {MUTED};
-                font-size: 11px;
-            }}
-        """)
+        self._preview_label.setStyleSheet(THUMBNAIL_PREVIEW_STYLE)
         self._preview_label.setText("preview")
 
         # fade-in effect for preview
@@ -251,16 +225,16 @@ class ThumbnailDialog(QDialog):
         for _ in range(2):
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
-            line.setStyleSheet(f"color: {BORDER};")
+            line.setStyleSheet(THUMBNAIL_DIVIDER_LINE_STYLE)
             div_row.addWidget(line)
         or_lbl = QLabel("or paste URL")
-        or_lbl.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        or_lbl.setStyleSheet(THUMBNAIL_STATUS_IDLE_STYLE)
         or_lbl.setAlignment(Qt.AlignCenter)
         div_row.addWidget(or_lbl)
         for _ in range(2):
             line = QFrame()
             line.setFrameShape(QFrame.HLine)
-            line.setStyleSheet(f"color: {BORDER};")
+            line.setStyleSheet(THUMBNAIL_DIVIDER_LINE_STYLE)
             div_row.addWidget(line)
         right.addLayout(div_row)
 
@@ -274,21 +248,14 @@ class ThumbnailDialog(QDialog):
         fetch_btn = QPushButton("Fetch")
         fetch_btn.setFixedWidth(64)
         fetch_btn.setCursor(Qt.PointingHandCursor)
-        fetch_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {SURFACE2}; color: {TEXT};
-                border: 1px solid {BORDER}; border-radius: 6px;
-                padding: 8px 0; font-size: 12px; font-weight: 600;
-            }}
-            QPushButton:hover {{ background: {BORDER_H}; }}
-        """)
+        fetch_btn.setStyleSheet(thumbnail_action_button_style())
         fetch_btn.clicked.connect(self._handle_url)
         url_row.addWidget(fetch_btn)
         right.addLayout(url_row)
 
         # status label
         self._status = QLabel("")
-        self._status.setStyleSheet(f"color: {MUTED}; font-size: 11px;")
+        self._status.setStyleSheet(THUMBNAIL_STATUS_IDLE_STYLE)
         self._status.setWordWrap(True)
         right.addWidget(self._status)
 
@@ -302,14 +269,7 @@ class ThumbnailDialog(QDialog):
         cancel_btn = QPushButton("Cancel")
         cancel_btn.setFixedWidth(90)
         cancel_btn.setCursor(Qt.PointingHandCursor)
-        cancel_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {SURFACE2}; color: {TEXT};
-                border: 1px solid {BORDER}; border-radius: 6px;
-                padding: 8px 0; font-size: 13px;
-            }}
-            QPushButton:hover {{ background: {BORDER_H}; }}
-        """)
+        cancel_btn.setStyleSheet(thumbnail_action_button_style())
         cancel_btn.clicked.connect(self.reject)
         footer.addWidget(cancel_btn)
 
@@ -317,15 +277,7 @@ class ThumbnailDialog(QDialog):
         self._apply_btn.setFixedWidth(90)
         self._apply_btn.setCursor(Qt.PointingHandCursor)
         self._apply_btn.setEnabled(False)
-        self._apply_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {ACCENT}; color: #fff;
-                border: none; border-radius: 6px;
-                padding: 8px 0; font-size: 13px; font-weight: 600;
-            }}
-            QPushButton:hover  {{ background: {ACCENT_D}; }}
-            QPushButton:disabled {{ background: #2a2a2a; color: {MUTED}; }}
-        """)
+        self._apply_btn.setStyleSheet(thumbnail_action_button_style(primary=True))
         self._apply_btn.clicked.connect(self._apply)
         footer.addWidget(self._apply_btn)
         root.addLayout(footer)
@@ -339,7 +291,7 @@ class ThumbnailDialog(QDialog):
 
     def _handle_local_file(self, path: str):
         logger.info("Saving local thumbnail for %s from %s", self._name, path)
-        self._set_status("Saving…", MUTED)
+        self._set_status("Saving…", TEXT_DIM)
         saved = self._store.set(self._name, path)
         self.saved_path = saved
         self._show_preview(saved)
@@ -351,7 +303,7 @@ class ThumbnailDialog(QDialog):
         if not url:
             return
         logger.info("Downloading thumbnail for %s from %s", self._name, url)
-        self._set_status("Downloading…", MUTED)
+        self._set_status("Downloading…", TEXT_DIM)
         self._url_input.setEnabled(False)
         self._worker = _UrlWorker(self._store, self._name, url)
         self._worker.done.connect(self._on_url_done)
@@ -393,6 +345,6 @@ class ThumbnailDialog(QDialog):
         anim.start()
         self._anim = anim   # keep reference
 
-    def _set_status(self, msg: str, color: str = MUTED):
+    def _set_status(self, msg: str, color: str = TEXT_DIM):
         self._status.setText(msg)
-        self._status.setStyleSheet(f"color: {color}; font-size: 11px;")
+        self._status.setStyleSheet(status_label_color_style(color))

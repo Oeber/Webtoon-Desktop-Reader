@@ -10,7 +10,16 @@ import time
 import qtawesome as qta
 from core.app_logging import get_logger
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
-from gui.common.styles import ACCENT, BG, SIDEBAR_BUTTON_STYLE, SIDEBAR_STYLE
+from gui.common.styles import (
+    ACCENT,
+    LOADING_DETAIL_LABEL_STYLE,
+    LOADING_TITLE_LABEL_STYLE,
+    MAIN_WINDOW_CHAPTER_OVERLAY_STYLE,
+    SIDEBAR_BUTTON_STYLE,
+    SIDEBAR_STYLE,
+    STACK_BG_STYLE,
+    sidebar_button_style,
+)
 
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
@@ -39,7 +48,7 @@ class MainWindow(QMainWindow):
         self.settings_store = get_webtoon_settings()
 
         self.stack = QStackedWidget()
-        self.stack.setStyleSheet(f"background-color: {BG};")
+        self.stack.setStyleSheet(STACK_BG_STYLE)
 
         self.library  = LibraryPage(self)
         self.detail   = DetailPage(self)
@@ -56,7 +65,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.discovery_detail)
 
         root = QWidget()
-        root.setStyleSheet(f"background-color: {BG};")
+        root.setStyleSheet(STACK_BG_STYLE)
         layout = QHBoxLayout(root)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -146,7 +155,7 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
         self._chapter_loading_overlay = QWidget(self.stack)
-        self._chapter_loading_overlay.setStyleSheet("background-color: rgba(0, 0, 0, 140);")
+        self._chapter_loading_overlay.setStyleSheet(MAIN_WINDOW_CHAPTER_OVERLAY_STYLE)
         self._chapter_loading_overlay.hide()
         chapter_overlay_layout = QVBoxLayout(self._chapter_loading_overlay)
         chapter_overlay_layout.setContentsMargins(24, 24, 24, 24)
@@ -157,10 +166,10 @@ class MainWindow(QMainWindow):
         self._chapter_loading_spinner.set_spinning()
         self._chapter_loading_label = QLabel("Loading chapter...")
         self._chapter_loading_label.setAlignment(Qt.AlignCenter)
-        self._chapter_loading_label.setStyleSheet("color: #f2f2f2; font-size: 16px; font-weight: 600;")
+        self._chapter_loading_label.setStyleSheet(LOADING_TITLE_LABEL_STYLE)
         self._chapter_loading_detail_label = QLabel("")
         self._chapter_loading_detail_label.setAlignment(Qt.AlignCenter)
-        self._chapter_loading_detail_label.setStyleSheet("color: #bdbdbd; font-size: 12px;")
+        self._chapter_loading_detail_label.setStyleSheet(LOADING_DETAIL_LABEL_STYLE)
 
         chapter_overlay_layout.addWidget(self._chapter_loading_spinner, 0, Qt.AlignCenter)
         chapter_overlay_layout.addWidget(self._chapter_loading_label)
@@ -373,20 +382,7 @@ class MainWindow(QMainWindow):
         logger.info("Sidebar toggled, open=%s", self.sidebar_open)
 
     def _apply_sidebar_button_layout(self):
-        if self.sidebar_open:
-            extra_style = """
-                QPushButton {
-                    padding: 8px 10px;
-                    text-align: left;
-                }
-            """
-        else:
-            extra_style = """
-                QPushButton {
-                    padding: 8px 0;
-                    text-align: center;
-                }
-            """
+        button_style = sidebar_button_style(self.sidebar_open)
         for button in (
             self.toggle_btn,
             self.btn_library,
@@ -395,7 +391,7 @@ class MainWindow(QMainWindow):
             self.btn_updates,
             self.btn_settings,
         ):
-            button.setStyleSheet(SIDEBAR_BUTTON_STYLE + extra_style)
+            button.setStyleSheet(button_style)
 
     def _set_sidebar_target(self, target: str):
         self._sidebar_target = target

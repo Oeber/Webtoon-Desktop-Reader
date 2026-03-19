@@ -18,18 +18,21 @@ from PySide6.QtWidgets import (
 
 from core.app_logging import get_logger
 from gui.common.styles import (
-    BG,
     BUTTON_STYLE,
+    DISCOVERY_CARD_COUNT_STYLE,
+    DISCOVERY_CARD_TITLE_STYLE,
+    DISCOVERY_COMBO_STYLE,
+    DISCOVERY_FILTER_BUTTON_STYLE,
+    DISCOVERY_LOADING_LABEL_STYLE,
     EMPTY_STATE_LABEL_STYLE,
     ERROR_LABEL_STYLE,
+    NEW_CHIP_STYLE,
     PAGE_BG_STYLE,
     PAGE_TITLE_STYLE,
-    NEW_CHIP_STYLE,
     SCROLL_AREA_STYLE,
     SEARCH_INPUT_STYLE,
     SECTION_LABEL_STYLE,
     STATUS_LABEL_STYLE,
-    TEXT_DIM_LABEL_STYLE,
     TRANSPARENT_BG_STYLE,
     card_image_border_style,
 )
@@ -46,58 +49,6 @@ logger = get_logger(__name__)
 DISCOVERY_CARD_SPACING = 16
 DISCOVERY_AUTO_SCROLL_CURSOR_SIZE = 32
 DISCOVERY_AUTO_SCROLL_LINE = "#fff0ec"
-
-DISCOVERY_COMBO_STYLE = """
-    QComboBox {
-        background: #181212;
-        border: 1px solid #4b302c;
-        border-radius: 6px;
-        padding: 6px 10px;
-        color: #fff0ec;
-        font-size: 13px;
-        min-width: 180px;
-    }
-    QComboBox::drop-down {
-        border: none;
-        width: 24px;
-    }
-    QComboBox QAbstractItemView {
-        background: #171111;
-        color: #fff0ec;
-        border: 1px solid #4b302c;
-        selection-background-color: #2b1c1b;
-    }
-"""
-
-DISCOVERY_CARD_TITLE_STYLE = """
-    QLabel {
-        color: #fff0ec;
-        font-size: 12px;
-        font-weight: 500;
-        background: transparent;
-        border: none;
-        padding: 0;
-    }
-"""
-DISCOVERY_CARD_COUNT_STYLE = TEXT_DIM_LABEL_STYLE
-DISCOVERY_FILTER_BUTTON_STYLE = BUTTON_STYLE + """
-    QPushButton:checked {
-        background-color: #2a1716;
-        border-color: #ff8a7a;
-        color: #fff0ec;
-    }
-"""
-DISCOVERY_LOADING_LABEL_STYLE = """
-    QLabel {
-        color: #ffd7cf;
-        background: #1c1413;
-        border: 1px solid #4b302c;
-        border-radius: 10px;
-        padding: 10px 16px;
-        font-size: 12px;
-        font-weight: 600;
-    }
-"""
 
 
 class DiscoveryTitleLabel(QLabel):
@@ -494,7 +445,7 @@ class SiteBrowserPage(QWidget):
         self.content = QWidget()
         self.content.setMouseTracking(True)
         self.content.installEventFilter(self)
-        self.content.setStyleSheet(f"background: {BG};")
+        self.content.setStyleSheet(PAGE_BG_STYLE)
         self.content_layout = QGridLayout(self.content)
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setHorizontalSpacing(DISCOVERY_CARD_SPACING)

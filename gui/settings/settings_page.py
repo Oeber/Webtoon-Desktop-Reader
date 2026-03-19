@@ -51,15 +51,22 @@ from gui.common.styles import (
     LOG_META_STYLE,
     LOG_VIEW_STYLE,
     PAGE_BG_STYLE,
+    PAGE_TITLE_LARGE_STYLE,
     PAGE_TITLE_STYLE,
     PILL_LABEL_STYLE,
+    SECTION_LABEL_EMPHASIS_STYLE,
     SECTION_LABEL_STYLE,
+    SECTION_LABEL_TRANSPARENT_STYLE,
     SLIDER_STYLE,
+    STARTUP_UPDATE_DIALOG_STYLE,
     STATUS_LABEL_STYLE,
     SURFACE_PANEL_STYLE,
     TAB_STYLE,
+    TEXT_MUTED_BODY_STYLE,
     TEXT_MUTED_LABEL_STYLE,
-    VERTICAL_SCROLLBAR_STYLE,
+    TEXT_MUTED_TRANSPARENT_STYLE,
+    TRANSPARENT_BG_STYLE,
+    TRANSPARENT_SCROLL_AREA_STYLE,
 )
 
 
@@ -133,11 +140,7 @@ class _StartupUpdateDialog(QDialog):
         self.setWindowTitle("Update Available")
         self.setModal(True)
         self.setMinimumWidth(500)
-        self.setStyleSheet(
-            "QDialog { background: #100c0c; color: #ffe7e2; }"
-            "QWidget#updateDialogPanel { background: #171111; border: 1px solid #4b302c; border-radius: 18px; }"
-            f"QLabel {{ background: transparent; color: inherit; }}"
-        )
+        self.setStyleSheet(STARTUP_UPDATE_DIALOG_STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
@@ -153,11 +156,11 @@ class _StartupUpdateDialog(QDialog):
         panel_layout.setSpacing(14)
 
         eyebrow = QLabel("APP UPDATE")
-        eyebrow.setStyleSheet(SECTION_LABEL_STYLE + " letter-spacing: 0.12em; font-weight: 700;")
+        eyebrow.setStyleSheet(SECTION_LABEL_EMPHASIS_STYLE)
         panel_layout.addWidget(eyebrow)
 
         title = QLabel(f"{display_version(release_version)} is ready to install")
-        title.setStyleSheet(PAGE_TITLE_STYLE + " font-size: 24px;")
+        title.setStyleSheet(PAGE_TITLE_LARGE_STYLE)
         title.setWordWrap(True)
         panel_layout.addWidget(title)
 
@@ -181,7 +184,7 @@ class _StartupUpdateDialog(QDialog):
             else "Automatic install is not available for this build. You can open the release page instead."
         )
         self.message_label.setWordWrap(True)
-        self.message_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent; font-size: 13px;")
+        self.message_label.setStyleSheet(TEXT_MUTED_BODY_STYLE)
         panel_layout.addWidget(self.message_label)
 
         self.progress_label = QLabel("")
@@ -317,7 +320,7 @@ class SettingsPage(QWidget):
 
     def _build_general_tab(self) -> QWidget:
         page = QWidget()
-        page.setStyleSheet("background: transparent;")
+        page.setStyleSheet(TRANSPARENT_BG_STYLE)
 
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -330,7 +333,7 @@ class SettingsPage(QWidget):
         header_row.setSpacing(10)
 
         folder_label = QLabel("Library")
-        folder_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        folder_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         header_row.addWidget(folder_label)
         header_row.addStretch()
         library_layout.addLayout(header_row)
@@ -378,18 +381,18 @@ class SettingsPage(QWidget):
         updates_header.setSpacing(10)
 
         updates_label = QLabel("App Updates")
-        updates_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        updates_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         updates_header.addWidget(updates_label)
         updates_header.addStretch()
         updates_layout.addLayout(updates_header)
 
         current_version_label = QLabel(f"Current version: {display_version(APP_VERSION)}")
-        current_version_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        current_version_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         updates_layout.addWidget(current_version_label)
 
         self.update_status_label = QLabel("Latest release: Not checked yet.")
         self.update_status_label.setWordWrap(True)
-        self.update_status_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        self.update_status_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         updates_layout.addWidget(self.update_status_label)
 
         self.update_meta_label = QLabel("Last checked: Never")
@@ -459,14 +462,14 @@ class SettingsPage(QWidget):
         sources_header.setSpacing(10)
 
         sources_label = QLabel("Sources")
-        sources_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        sources_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         sources_header.addWidget(sources_label)
         sources_header.addStretch()
         sources_layout.addLayout(sources_header)
 
         sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover.")
         sources_help.setWordWrap(True)
-        sources_help.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         sources_layout.addWidget(sources_help)
         self._build_source_checkboxes(sources_layout)
 
@@ -478,7 +481,7 @@ class SettingsPage(QWidget):
         reader_header.setSpacing(10)
 
         reader_label = QLabel("Reader Defaults")
-        reader_label.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        reader_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         reader_header.addWidget(reader_label)
         reader_header.addStretch()
         reader_layout.addLayout(reader_header)
@@ -493,7 +496,7 @@ class SettingsPage(QWidget):
         zoom_row.setSpacing(10)
 
         zoom_text = QLabel("Default zoom")
-        zoom_text.setStyleSheet(TEXT_MUTED_LABEL_STYLE + " background: transparent;")
+        zoom_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         zoom_text.setFixedWidth(100)
 
         self.zoom_slider = QSlider(Qt.Horizontal)
@@ -535,17 +538,13 @@ class SettingsPage(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setStyleSheet(
-            "QScrollArea { background: transparent; border: none; }"
-            "QWidget { background: transparent; }"
-            + VERTICAL_SCROLLBAR_STYLE
-        )
+        scroll.setStyleSheet(TRANSPARENT_SCROLL_AREA_STYLE)
         scroll.setWidget(page)
         return scroll
 
     def _build_logs_tab(self) -> QWidget:
         page = QWidget()
-        page.setStyleSheet("background: transparent;")
+        page.setStyleSheet(TRANSPARENT_BG_STYLE)
 
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 8, 0, 0)
@@ -554,7 +553,7 @@ class SettingsPage(QWidget):
         logs_card, logs_layout = self._build_card(expand=True)
 
         title = QLabel("Current Session Log")
-        title.setStyleSheet(SECTION_LABEL_STYLE + " background: transparent;")
+        title.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         logs_layout.addWidget(title)
 
         self.log_meta_label = QLabel("")
