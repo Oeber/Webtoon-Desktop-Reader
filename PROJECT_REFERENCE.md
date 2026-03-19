@@ -120,6 +120,7 @@ open_discovery()
 open_site_authorization(site_name, url='')
 
 The authorization window opens as an application-modal top-level window and reactivates the main window after closing.
+When the authorization window closes, MainWindow now restores the pre-dialog top-level window state instead of forcing a normal-state show call, so the main app keeps its resizable state after authorization completes.
 open_updates()
 toggle_sidebar()
 suppress_detail_open(seconds)
@@ -1027,6 +1028,7 @@ apply setting changes live to the current viewer when it exists
 Settings page structure
 
 General tab
+is wrapped in a scroll area so the page can shrink vertically without forcing the main window to keep a tall minimum height
 contains separate Library, App Updates, Sources, and Reader Defaults panels
 Library panel now includes category/section visibility toggles
 App Updates panel shows the current app version, the latest release check result, release download actions, and a visible download progress bar plus byte-progress text during automatic app-update downloads
@@ -1452,6 +1454,7 @@ discovery cards defer cover requests until they are in or near the current viewp
 discovery catalog requests are deduped by provider, page, and search query so repeated refresh/search/site-change actions do not refetch the same remote page unnecessarily
 discovery cover requests are throttled behind a short timer, limited to the nearest visible cards, continue issuing follow-up passes while visible cards still need covers, and now clear failed in-flight card state so later visible covers can retry instead of stalling after scroll or relayout changes
 discovery Downloaded Only cards fall back to matched local library thumbnails when remote discovery metadata does not provide a cover url or the remote cover request fails
+discovery grid relayout now uses the scroll area's stable inner width instead of the fluctuating viewport width so appended pages and refreshes do not drop a visible card column when the vertical scrollbar appears
 discovery switching between providers resets the scroll position to the top, and toggling Downloaded Only off forces a fresh remote refresh for the selected provider
 the discovery middle-mouse auto-scroll handler now tracks events from the viewport, content widget, and entry widgets so it remains responsive while hovering cards
 discovery auto-scroll now uses a simplified directional custom cursor: up arrow when moving up, down arrow when moving down, and both arrows while idle inside the deadzone
@@ -1499,6 +1502,7 @@ OK Ctrl+K commands for download, search, update, open, read, library, updates, s
 OK Ctrl+K /download starts downloads without navigating to the Downloader page
 OK Embedded browser-based site authorization can persist per-site cookies and user agents for protected scrapers
 OK Authorization runs use a fresh in-memory browser session and can auto-close once a reusable session is detected
+OK Authorization close no longer forces the main window back through showNormal, preserving the existing top-level window state
 OK Shared scraper / discovery provider metadata can drive browser-session reuse and authorization without a hardcoded site map
 OK Protected discovery, downloader cover loads, and series/chapter requests can reuse the saved browser session when available
 OK Blocked discovery and download flows can auto-open the authorization browser and retry after session save when the scraper/provider raises the expected Cloudflare-style error
@@ -1528,6 +1532,7 @@ OK Ctrl+K search opens titles on single click
 OK Reader Back can return to DetailPage during updates
 OK Library and Detail remain navigable while updates are running
 OK Settings can enable or disable supported scraper sites for downloads, updates, remote chapter checks, and Discover
+OK Settings General tab now scrolls instead of forcing the whole main window to keep the Settings page's old tall minimum height
 OK Inline collapsible library categories
 OK Responsive multi-column library category sections
 OK Custom category creation, rename, delete, batch move, drag-and-drop move, and edit-dialog assignment
@@ -1536,6 +1541,7 @@ OK Settings can disable custom library categories entirely and hide the built-in
 OK No-categories mode shows the main library as a flat grid without a replacement Library category header
 OK Drag-and-drop reordering for system and custom library sections
 OK Batch comic bookmarking from the library page
+OK Discovery grid keeps a stable column count across append/refresh relayouts when the vertical scrollbar appears
 OK Library size slider handle tuned to a smaller circular knob with a dedicated track surface
 OK Library card overflow menu button now uses a centered ellipsis icon instead of text glyphs
 OK Collapsed sidebar navigation icons are centered inside the active highlight state

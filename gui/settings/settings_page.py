@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QProgressBar,
     QPushButton,
+    QScrollArea,
     QSlider,
     QTabWidget,
     QTextEdit,
@@ -156,7 +157,7 @@ class SettingsPage(QWidget):
         self.tabs.addTab(self._build_general_tab(), "General")
         self.tabs.addTab(self._build_logs_tab(), "Logs")
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        layout.addWidget(self.tabs)
+        layout.addWidget(self.tabs, 1)
 
         self._log_refresh_timer = QTimer(self)
         self._log_refresh_timer.timeout.connect(self._refresh_logs_if_changed)
@@ -387,7 +388,16 @@ class SettingsPage(QWidget):
         layout.addWidget(self.status_label)
         layout.addStretch()
 
-        return page
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            "QWidget { background: transparent; }"
+            + VERTICAL_SCROLLBAR_STYLE
+        )
+        scroll.setWidget(page)
+        return scroll
 
     def _build_logs_tab(self) -> QWidget:
         page = QWidget()

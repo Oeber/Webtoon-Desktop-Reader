@@ -231,13 +231,12 @@ class MainWindow(QMainWindow):
         self._set_sidebar_target("discovery")
 
     def open_site_authorization(self, site_name: str, url: str = "") -> bool:
+        prior_state = self.windowState()
         dialog = SiteAuthDialog(site_name, url=url, parent=None)
         dialog.setWindowModality(Qt.ApplicationModal)
-        dialog.showNormal()
-        dialog.raise_()
-        dialog.activateWindow()
         result = bool(dialog.exec())
-        self.showNormal()
+        if self.windowState() != prior_state:
+            self.setWindowState(prior_state)
         self.raise_()
         self.activateWindow()
         return result

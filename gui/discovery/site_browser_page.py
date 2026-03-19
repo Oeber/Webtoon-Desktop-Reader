@@ -947,7 +947,13 @@ class SiteBrowserPage(QWidget):
             if widget is None:
                 continue
 
-        viewport_width = max(1, self.scroll.viewport().width())
+        viewport_width = max(
+            1,
+            self.scroll.width()
+            - self.scroll.contentsMargins().left()
+            - self.scroll.contentsMargins().right()
+            - 2 * self.scroll.frameWidth(),
+        )
         card_span = CARD_WIDTH + 16 + DISCOVERY_CARD_SPACING
         columns = max(1, viewport_width // max(1, card_span))
         self._entry_columns = columns
