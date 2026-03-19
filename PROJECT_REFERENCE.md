@@ -1537,6 +1537,7 @@ OK Settings can enable or disable supported scraper sites for downloads, updates
 OK Settings General tab now scrolls instead of forcing the whole main window to keep the Settings page's old tall minimum height
 OK Inline collapsible library categories
 OK Responsive multi-column library category sections
+OK Expanding a collapsed library category after a window resize recalculates its responsive column layout instead of reopening as a single stuck column
 OK Custom category creation, rename, delete, batch move, drag-and-drop move, and edit-dialog assignment
 OK Library category creation keeps new sections embedded in the main library window instead of surfacing detached white/focus-stealing windows
 OK Settings can disable custom library categories entirely and hide the built-in New and Active Downloads sections

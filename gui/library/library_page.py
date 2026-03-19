@@ -978,6 +978,8 @@ class LibraryPage(QWidget):
 
     def _on_section_toggled(self, section_key: str, collapsed: bool):
         self._collapsed_sections[section_key] = bool(collapsed)
+        if section_key in self._section_widgets:
+            self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))
 
     def _show_library_context_menu(self, pos):
         if not self._categories_enabled():
