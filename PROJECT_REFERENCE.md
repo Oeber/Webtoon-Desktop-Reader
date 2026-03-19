@@ -686,6 +686,8 @@ runtime modules request loggers with app_logging.get_logger(__name__)
 uncaught crashes are written with logger name app.crash
 major UI flows, persistence actions, downloads, updates, viewer transitions, and scraper operations log key state changes
 viewer image decode logs include per-image path, pixel dimensions, on-disk file size, and decode time in milliseconds
+viewer panel-analysis logs now also include per-image detected content ranges plus sampled row brightness / variance / chroma metrics to diagnose auto-skip behaviour
+viewer auto-skip logs now distinguish carryover, next-panel, generic-target, and fallback-scroll down-navigation decisions
 
 Library page
 
@@ -920,7 +922,10 @@ supports keyboard navigation and middle-click auto scroll
 handles missing or empty chapter folders safely
 shows a loading overlay with spinner and decoded-image progress while a chapter is opening
 emits chapter-loading start/finish signals so MainWindow can show a temporary loading overlay when opening a chapter from Library, Detail, search, or quick-read actions
-panel-skip detection now caches per-image separator break fractions so rescales and revisits avoid rescanning the same decoded image rows
+panel-skip detection now caches per-image content ranges instead of only separator starts, so large blank runs can be excluded from panel bodies during auto-skip decisions
+panel-skip blank-row detection now treats low-detail low-chroma fade rows as skippable separators even when they are not pure white or black
+auto-skip target selection now mixes panel-range scoring, carryover handling for panels already entering at the bottom of the viewport, and next-panel handoff logic that accounts for content already consumed in the current viewport
+auto-skip target scoring now penalizes large internal blank gaps, repeated-content windows, and edge-hugging frames so skips land closer to centered reading beats when possible
 
 Resume prompt behaviour:
 
