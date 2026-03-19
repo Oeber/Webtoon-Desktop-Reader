@@ -445,11 +445,15 @@ def _pick_asset(assets: list[dict]) -> ReleaseAsset | None:
 
     def _score(item: ReleaseAsset) -> tuple[int, int]:
         name = item.name.casefold()
-        if name.endswith(".zip"):
-            return (0, 0)
+        if name.endswith("-portable.zip"):
+            return (0, len(name))
+        if name.endswith(".zip") and "installer" not in name:
+            return (1, len(name))
+        if name.endswith("-installer.zip"):
+            return (2, len(name))
         if name.endswith(".exe"):
-            return (1, 0)
-        return (2, len(name))
+            return (3, len(name))
+        return (4, len(name))
 
     parsed_assets.sort(key=_score)
     return parsed_assets[0]

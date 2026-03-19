@@ -180,6 +180,11 @@ Application version source:
 
 core/app_update.py loads the packaged app version from data/app_version.txt and falls back to a default version string during source runs when that file is not present.
 For packaged builds, core/app_update.py also owns the GitHub release-checking, release asset download, and updater-helper handoff used by the self-update flow.
+For packaged GitHub releases, core/app_update.py now prefers release assets whose names end with:
+
+*-portable.zip
+
+for automatic in-app self-updates, ranks other non-installer zip assets after that, and avoids choosing installer-packaged zip assets for the updater-helper extraction flow.
 The packaged updater helper executable is named:
 
 Webtoon Desktop Reader Updater.exe
@@ -208,20 +213,46 @@ Webtoon Desktop Reader Updater
 
 The updater helper build also embeds imgs/logo.png as its executable icon and keeps a visible console window so self-update progress is visible while the main app is closed.
 
+installer.iss defines the Inno Setup Windows installer build for the packaged application.
+
+The installer script now includes:
+
+the main packaged executable
+the packaged updater helper executable
+dist/data
+dist/scrapers
+dist/webtoons
+
+The installer executable icon is generated from imgs/logo.png during the build so the setup binary and packaged app share the same source icon artwork.
+
 build.ps1 responsibilities
 
 normalize the requested release version from -v
 write the normalized release version into data/app_version.txt before packaging
+rewrite installer.iss AppVersion and OutputBaseFilename to match the requested version before compiling the installer
 install or upgrade PyInstaller inside the project virtual environment
 clear previous build output
+generate a temporary installer .ico from imgs/logo.png for Inno Setup
 build the onefile packaged executable through main.spec
 build the updater helper executable through update_helper.spec
+compile the Windows installer through installer.iss using ISCC.exe
 verify dist/Webtoon Desktop Reader.exe exists after the build
 verify dist/Webtoon Desktop Reader Updater.exe exists after the build
 copy shared scraper package modules into dist/scrapers for post-build plugin support
 copy download scraper modules into dist/scrapers/sites for post-build editing
 copy discovery provider modules into dist/scrapers/discovery_sites for post-build editing
 create dist/webtoons as an output-friendly library root
+create a portable release archive named:
+
+Webtoon-Desktop-Reader-v<version>-portable.zip
+
+create an installer executable named:
+
+Webtoon-Desktop-Reader-Setup-v<version>.exe
+
+create an installer release archive named:
+
+Webtoon-Desktop-Reader-v<version>-installer.zip
 
 run.ps1 responsibilities
 
@@ -1010,6 +1041,7 @@ SettingsPage also performs release asset downloads on a separate QThread worker 
 The page persists the last check timestamp, latest release metadata, last error, and last notified version in app_settings.
 When enabled, MainWindow schedules a startup app-update check and SettingsPage only shows the update prompt once per discovered release version.
 For packaged Windows builds with a zip release asset, the update button now downloads the new package, shows live percentage and byte progress in the Settings UI, launches a detached PowerShell installer, closes the app, replaces the installed files in place, and relaunches the executable automatically.
+Automatic in-app updates now explicitly prefer the portable release zip naming used by build.ps1 and avoid installer-oriented zip assets during release asset selection.
 The detached Windows installer now also unwraps a single top-level folder inside the downloaded zip before copying files into the install directory, so release archives that expand into a versioned root folder still replace the installed executable and bundled files correctly.
 The app-update flow now logs release checks, package downloads, installer-launch attempts, and UI-side update failures through the shared application logger so failed self-updates are easier to diagnose from data/logs/current.log.
 The Settings app-update panel now depends on the shared APP_UPDATE_PROGRESS_STYLE constant from gui/common/styles.py for its progress-bar chrome.
@@ -1507,6 +1539,8 @@ OK Batch comic bookmarking from the library page
 OK Library size slider handle tuned to a smaller circular knob with a dedicated track surface
 OK Library card overflow menu button now uses a centered ellipsis icon instead of text glyphs
 OK Collapsed sidebar navigation icons are centered inside the active highlight state
+OK Windows release builds can now produce both installer and portable artifacts from build.ps1
+OK Automatic in-app app updates now prefer the portable release zip asset over installer-packaged zip assets
 
 Known limitations / future work
 
@@ -1515,4 +1549,5 @@ Cloudflare-protected sites still require a manual in-app browser authorization s
 only one active download per DownloadService instance
 gallery-dl progress is estimated, not exact
 scraper coverage is limited to implemented site modules
+Inno Setup must be installed on the build machine, or ISCC_PATH must point to ISCC.exe, for installer builds to succeed
 reference file should be kept aligned with code after future refactors
