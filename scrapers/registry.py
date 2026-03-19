@@ -11,6 +11,11 @@ from .base import BaseScraper, ScraperDisabledError
 from .site_availability import is_site_enabled
 
 logger = get_logger(__name__)
+_BUILTIN_SCRAPER_CLASSES: tuple[type[BaseScraper], ...] | None = None
+_EXTERNAL_SCRAPER_CACHE: dict[str, object] = {
+    "signature": None,
+    "classes": (),
+}
 
 
 def _iter_scraper_module_names(package):
@@ -24,12 +29,18 @@ def _iter_scraper_module_names(package):
 
 
 def _iter_builtin_scraper_classes():
+    global _BUILTIN_SCRAPER_CLASSES
+    if _BUILTIN_SCRAPER_CLASSES is not None:
+        yield from _BUILTIN_SCRAPER_CLASSES
+        return
+
     package_name = "scrapers.sites"
     try:
         package = importlib.import_module(package_name)
     except ModuleNotFoundError:
         return
 
+    discovered: list[type[BaseScraper]] = []
     for module_name in _iter_scraper_module_names(package):
         module = importlib.import_module(f"{package_name}.{module_name}")
 
@@ -38,14 +49,37 @@ def _iter_builtin_scraper_classes():
                 continue
             if obj is BaseScraper:
                 continue
-            yield obj
+            discovered.append(obj)
+
+    _BUILTIN_SCRAPER_CLASSES = tuple(discovered)
+    yield from _BUILTIN_SCRAPER_CLASSES
+
+
+def _external_scraper_signature(external_dir: Path):
+    return tuple(
+        (
+            path.name,
+            path.stat().st_mtime_ns,
+            path.stat().st_size,
+        )
+        for path in sorted(external_dir.glob("*.py"))
+        if not path.name.startswith("_")
+    )
 
 
 def _iter_external_scraper_classes():
+    global _EXTERNAL_SCRAPER_CACHE
     external_dir = external_scrapers_path()
     if not external_dir.is_dir():
         return
 
+    signature = _external_scraper_signature(external_dir)
+    cached_signature = _EXTERNAL_SCRAPER_CACHE.get("signature")
+    if cached_signature == signature:
+        yield from _EXTERNAL_SCRAPER_CACHE.get("classes", ())
+        return
+
+    discovered: list[type[BaseScraper]] = []
     for path in sorted(external_dir.glob("*.py")):
         if path.name.startswith("_"):
             continue
@@ -62,7 +96,13 @@ def _iter_external_scraper_classes():
                 continue
             if obj is BaseScraper:
                 continue
-            yield obj
+            discovered.append(obj)
+
+    _EXTERNAL_SCRAPER_CACHE = {
+        "signature": signature,
+        "classes": tuple(discovered),
+    }
+    yield from _EXTERNAL_SCRAPER_CACHE["classes"]
 
 
 def _load_external_module(module_name: str, path: Path):

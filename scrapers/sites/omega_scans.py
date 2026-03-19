@@ -38,6 +38,7 @@ class OmegaScansScraper(BaseScraper):
         "Accept": "application/json",
         "Origin": BASE,
     }
+    UPDATE_CHECK_PAGE_SIZE = 30
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -92,6 +93,79 @@ class OmegaScansScraper(BaseScraper):
             chapters=chapters,
         )
 
+    def get_update_snapshot(self, url: str, local_chapter_names=None, session=None) -> dict | None:
+        local_chapter_names = {
+            str(name or "").strip()
+            for name in (local_chapter_names or [])
+            if str(name or "").strip()
+        }
+        if not local_chapter_names:
+            return None
+
+        logger.info("OmegaScans: attempting lightweight update check for %s", url)
+        client = session or requests
+        slug = self._extract_series_slug(url)
+        if not slug:
+            return None
+
+        r = client.get(url, headers=self.HEADERS, timeout=20)
+        if r.status_code != 200:
+            raise ScraperError(f"Failed to load page: {url}")
+
+        series_id = self._extract_numeric_series_id(r.text)
+        if not series_id:
+            return None
+
+        raw_chapters, meta = self._fetch_chapter_api_page(
+            series_id,
+            page=1,
+            per_page=self.UPDATE_CHECK_PAGE_SIZE,
+            session=client if client is not requests else None,
+        )
+        if not raw_chapters:
+            return None
+
+        chapters = self._parse_raw_chapters(raw_chapters, slug)
+        chapters.sort(
+            key=lambda c: (
+                c.number is not None,
+                c.number if c.number is not None else float("-inf"),
+                c.url,
+            ),
+            reverse=True,
+        )
+
+        new_chapter_names: list[str] = []
+        seen = set()
+        matched_local_boundary = False
+        for chapter in chapters:
+            local_name = self._chapter_dir_name(chapter)
+            if not local_name or local_name in seen:
+                continue
+            seen.add(local_name)
+            if local_name in local_chapter_names:
+                matched_local_boundary = True
+                break
+            new_chapter_names.append(local_name)
+
+        if not matched_local_boundary:
+            logger.info(
+                "OmegaScans: lightweight update check could not prove boundary for %s, falling back",
+                url,
+            )
+            return None
+
+        remote_chapters = self._extract_total_items(meta) or len(chapters)
+        logger.info(
+            "OmegaScans: lightweight update check found %d new chapters for %s",
+            len(new_chapter_names),
+            url,
+        )
+        return {
+            "remote_chapters": remote_chapters,
+            "new_chapters": len(new_chapter_names),
+        }
+
     # ------------------------------------------------------------------
     # HeanCMS chapter query API
     # ------------------------------------------------------------------
@@ -125,34 +199,26 @@ class OmegaScansScraper(BaseScraper):
         Calls GET https://api.omegascans.org/chapter/query?series_id=<id>&page=N&perPage=30
         Paginates until all chapters are collected, including all fractional ones.
         """
-        api_url = f"{self.API_BASE}/chapter/query"
         all_raw: list[dict] = []
         page = 1
-        per_page = 30
+        per_page = self.UPDATE_CHECK_PAGE_SIZE
 
         client = session or requests
         while True:
-            params = {"series_id": series_id, "perPage": per_page, "page": page}
             try:
-                r = client.get(api_url, params=params, headers=self.API_HEADERS, timeout=30)
-                if r.status_code != 200:
-                    logger.warning("OmegaScans: chapter API returned %d for series_id=%s page=%d", r.status_code, series_id, page)
-                    break
-                data = r.json()
+                page_chapters, meta = self._fetch_chapter_api_page(
+                    series_id,
+                    page=page,
+                    per_page=per_page,
+                    session=client if client is not requests else None,
+                )
             except Exception as e:
                 logger.warning("OmegaScans: chapter API failed for series_id=%s page=%d: %s", series_id, page, e)
                 break
 
-            # Response: {"data": [...], "meta": {"last_page": N}} or flat list
-            if isinstance(data, dict):
-                page_chapters = data.get("data") or data.get("chapters") or []
-                meta = data.get("meta") or {}
+            last_page = 1
+            if isinstance(meta, dict):
                 last_page = meta.get("last_page") or meta.get("lastPage") or 1
-            elif isinstance(data, list):
-                page_chapters = data
-                last_page = 1
-            else:
-                break
 
             if not page_chapters:
                 break
@@ -169,6 +235,31 @@ class OmegaScansScraper(BaseScraper):
 
         logger.info("OmegaScans: chapter API returned %d chapters for series_id=%s", len(all_raw), series_id)
         return self._parse_raw_chapters(all_raw, slug)
+
+    def _fetch_chapter_api_page(self, series_id: str, page: int = 1, per_page: int = 30, session=None):
+        api_url = f"{self.API_BASE}/chapter/query"
+        params = {
+            "series_id": series_id,
+            "perPage": max(1, int(per_page)),
+            "page": max(1, int(page)),
+        }
+        client = session or requests
+        r = client.get(api_url, params=params, headers=self.API_HEADERS, timeout=30)
+        if r.status_code != 200:
+            logger.warning(
+                "OmegaScans: chapter API returned %d for series_id=%s page=%d",
+                r.status_code,
+                series_id,
+                page,
+            )
+            return [], {}
+
+        data = r.json()
+        if isinstance(data, dict):
+            return data.get("data") or data.get("chapters") or [], data.get("meta") or {}
+        if isinstance(data, list):
+            return data, {}
+        return [], {}
 
     def _parse_raw_chapters(self, raw_chapters: list, slug: str) -> list[ChapterInfo]:
         """
@@ -306,6 +397,32 @@ class OmegaScansScraper(BaseScraper):
         if float(chapter_number).is_integer():
             return f"Chapter {int(chapter_number)}"
         return f"Chapter {format(chapter_number, 'g')}"
+
+    def _chapter_dir_name(self, chapter) -> str:
+        number = getattr(chapter, "number", None)
+        if number is not None:
+            try:
+                number_value = float(number)
+                if number_value.is_integer():
+                    return f"Chapter {int(number_value)}"
+                return f"Chapter {format(number_value, 'g')}"
+            except Exception:
+                pass
+        title = " ".join(str(getattr(chapter, "title", "") or "").split()).strip()
+        return title or "Chapter"
+
+    def _extract_total_items(self, meta: dict) -> int | None:
+        if not isinstance(meta, dict):
+            return None
+        for key in ("total", "total_items", "totalItems", "count"):
+            value = meta.get(key)
+            try:
+                total = int(value)
+            except (TypeError, ValueError):
+                continue
+            if total >= 0:
+                return total
+        return None
 
     # ------------------------------------------------------------------
     # Page image extraction (unchanged from original)

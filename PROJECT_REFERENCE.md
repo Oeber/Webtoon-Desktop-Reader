@@ -1156,6 +1156,9 @@ scan the current library for webtoons with source URLs
 check each eligible source asynchronously against the matching scraper before showing it
 show only titles whose remote chapter list contains chapters not already present locally
 compare remote chapters against local folder names using the same chapter-name normalization used by the detail page instead of relying only on raw chapter totals
+reuse short-lived cached update-check results and recent failures so reopening the page shortly after a refresh does not immediately refetch every title
+reuse per-worker HTTP sessions during update checks so repeated requests can keep remote connections warm
+allow scraper-specific lightweight update snapshots when a scraper can prove the current new-chapter count without fetching the full remote chapter history, while falling back to the full series check when that shortcut is not conclusive
 render update candidates as library-style cards instead of history rows
 show per-title new-chapter counts on the cards
 support card-level selection plus a bottom batch bar for Update Selected and Clear actions
@@ -1168,6 +1171,7 @@ keep the local webtoon name as preferred_name during updates so local renames do
 
 Update page refresh behaviour
 
+defers the first refresh until the page is first shown instead of starting remote checks during main-window construction
 refreshes immediately when the page becomes visible and no update is running
 refreshes again shortly after a finished update
 refreshes immediately on library_changed when visible only if no update is still running
@@ -1281,6 +1285,7 @@ Behaviour
 
 the scrapers package extends its package path to include an external dist/scrapers folder when running as a packaged app
 registry auto-discovers scraper modules from both the packaged package path and dist/scrapers/sites
+registry now caches discovered builtin and external scraper classes in process memory and invalidates the external cache when the external scraper files change on disk
 external scraper modules can import shared helper modules from dist/scrapers and sibling modules from the external scraper folder
 get_scraper(url) chooses the first scraper that can_handle(url)
 custom scrapers implement the BaseScraper interface

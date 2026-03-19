@@ -1,8 +1,10 @@
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import requests
 from core.app_logging import get_logger
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
@@ -59,6 +61,9 @@ LIBRARY_CARD_HEIGHT = 270
 LIBRARY_CARD_RADIUS = 12
 UPDATE_CARD_WIDTH = LIBRARY_CARD_WIDTH
 UPDATE_CARD_SPACING = 16
+UPDATE_RESULT_CACHE_TTL_SECONDS = 45
+UPDATE_ERROR_CACHE_TTL_SECONDS = 30
+SHORTCUT_FALLBACK = object()
 UPDATE_STATUS_COLORS = {
     "Ready": "#b18b84",
     "Checking": "#b18b84",
@@ -79,11 +84,21 @@ class UpdateAvailabilityLoader(QObject):
             max_workers=4,
             thread_name_prefix="update-check",
         )
+        self._thread_local = threading.local()
+        self._result_cache: dict[tuple, tuple[float, dict | None]] = {}
+        self._error_cache: dict[str, tuple[float, str]] = {}
 
     def load(self, request_id: int, candidate: dict):
+        cached_result = self._cached_result(candidate)
+        if cached_result is not None:
+            result, error = cached_result
+            self.checked.emit(request_id, candidate, result, error)
+            return
+
         def worker():
             try:
                 result = self._check_candidate(candidate)
+                self._store_result_cache(candidate, result)
                 self.checked.emit(request_id, candidate, result, "")
             except ScraperDisabledError as e:
                 logger.info("Skipping disabled scraper update check for %s: %s", candidate.get("name"), e)
@@ -92,9 +107,11 @@ class UpdateAvailabilityLoader(QObject):
                 logger.info("Skipping unsupported scraper update check for %s: %s", candidate.get("name"), e)
                 self.checked.emit(request_id, candidate, None, UNSUPPORTED_CHECK_ERROR)
             except ScraperError as e:
+                self._store_error_cache(candidate, str(e))
                 self.checked.emit(request_id, candidate, None, str(e))
             except Exception as e:
                 logger.exception("Unexpected update check failure for %s", candidate.get("name"))
+                self._store_error_cache(candidate, str(e))
                 self.checked.emit(request_id, candidate, None, str(e))
 
         self._executor.submit(worker)
@@ -105,7 +122,12 @@ class UpdateAvailabilityLoader(QObject):
         series_url = source_url
         if scraper.is_chapter_url(series_url):
             series_url = scraper.series_url_from_chapter_url(series_url)
-        series = scraper.get_series_info(series_url)
+        session = self._get_thread_session()
+        shortcut_result = self._check_candidate_shortcut(scraper, series_url, candidate, session)
+        if shortcut_result is not SHORTCUT_FALLBACK:
+            return shortcut_result
+
+        series = scraper.get_series_info(series_url, session=session)
 
         local_chapters = set(candidate.get("chapter_names") or [])
         new_remote = []
@@ -131,6 +153,33 @@ class UpdateAvailabilityLoader(QObject):
             "new_chapters": new_chapters,
         }
 
+    def _check_candidate_shortcut(self, scraper, series_url: str, candidate: dict, session) -> dict | None:
+        get_update_snapshot = getattr(scraper, "get_update_snapshot", None)
+        if not callable(get_update_snapshot):
+            return SHORTCUT_FALLBACK
+
+        snapshot = get_update_snapshot(
+            series_url,
+            local_chapter_names=list(candidate.get("chapter_names") or []),
+            session=session,
+        )
+        if snapshot is None:
+            return SHORTCUT_FALLBACK
+
+        new_chapters = int(snapshot.get("new_chapters", 0) or 0)
+        if new_chapters <= 0:
+            return None
+
+        return {
+            "name": candidate.get("name") or "",
+            "source_url": series_url,
+            "webtoon": candidate.get("webtoon"),
+            "last_update_at": candidate.get("last_update_at"),
+            "local_chapters": int(candidate.get("local_chapters", 0) or 0),
+            "remote_chapters": int(snapshot.get("remote_chapters", 0) or 0),
+            "new_chapters": new_chapters,
+        }
+
     def _format_remote_chapter_dir_name(self, chapter) -> str:
         number = getattr(chapter, "number", None)
         if number is not None:
@@ -142,6 +191,91 @@ class UpdateAvailabilityLoader(QObject):
             except Exception:
                 pass
         return sanitize_webtoon_name(getattr(chapter, "title", "") or "") or "Chapter"
+
+    def _get_thread_session(self):
+        session = getattr(self._thread_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._thread_local.session = session
+        return session
+
+    def _cached_result(self, candidate: dict):
+        self._prune_expired_cache_entries()
+        error_key = self._error_cache_key(candidate)
+        cached_error = self._error_cache.get(error_key)
+        if cached_error is not None:
+            logger.info("Using cached update-check failure for %s", candidate.get("name"))
+            return None, cached_error[1]
+
+        result_key = self._result_cache_key(candidate)
+        cached_result = self._result_cache.get(result_key)
+        if cached_result is None:
+            return None
+
+        logger.info("Using cached update-check result for %s", candidate.get("name"))
+        payload = cached_result[1]
+        return self._rehydrate_cached_result(candidate, payload), ""
+
+    def _store_result_cache(self, candidate: dict, result: dict | None):
+        self._prune_expired_cache_entries()
+        self._error_cache.pop(self._error_cache_key(candidate), None)
+        self._result_cache[self._result_cache_key(candidate)] = (
+            time.monotonic() + UPDATE_RESULT_CACHE_TTL_SECONDS,
+            self._dehydrate_result(result),
+        )
+
+    def _store_error_cache(self, candidate: dict, error: str):
+        self._prune_expired_cache_entries()
+        self._result_cache.pop(self._result_cache_key(candidate), None)
+        self._error_cache[self._error_cache_key(candidate)] = (
+            time.monotonic() + UPDATE_ERROR_CACHE_TTL_SECONDS,
+            str(error or ""),
+        )
+
+    def _prune_expired_cache_entries(self):
+        now = time.monotonic()
+        self._result_cache = {
+            key: value
+            for key, value in self._result_cache.items()
+            if value[0] > now
+        }
+        self._error_cache = {
+            key: value
+            for key, value in self._error_cache.items()
+            if value[0] > now
+        }
+
+    def _result_cache_key(self, candidate: dict) -> tuple:
+        return (
+            str(candidate.get("source_url") or "").strip(),
+            tuple(sorted(str(name or "") for name in (candidate.get("chapter_names") or []))),
+        )
+
+    def _error_cache_key(self, candidate: dict) -> str:
+        return str(candidate.get("source_url") or "").strip()
+
+    def _dehydrate_result(self, result: dict | None):
+        if result is None:
+            return None
+        return {
+            "source_url": result.get("source_url") or "",
+            "local_chapters": int(result.get("local_chapters", 0) or 0),
+            "remote_chapters": int(result.get("remote_chapters", 0) or 0),
+            "new_chapters": int(result.get("new_chapters", 0) or 0),
+        }
+
+    def _rehydrate_cached_result(self, candidate: dict, payload: dict | None):
+        if payload is None:
+            return None
+        return {
+            "name": candidate.get("name") or "",
+            "source_url": payload.get("source_url") or "",
+            "webtoon": candidate.get("webtoon"),
+            "last_update_at": candidate.get("last_update_at"),
+            "local_chapters": int(payload.get("local_chapters", 0) or 0),
+            "remote_chapters": int(payload.get("remote_chapters", 0) or 0),
+            "new_chapters": int(payload.get("new_chapters", 0) or 0),
+        }
 
 class UpdateCard(QFrame):
 
@@ -449,6 +583,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self._cards_layout = None
         self._entry_widgets = []
         self._selected_titles = set()
+        self._has_loaded_once = False
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search titles with updates...")
@@ -505,8 +640,6 @@ class UpdatePage(DownloadHistoryPageBase):
         self._checker = UpdateAvailabilityLoader(self)
         self._checker.checked.connect(self._on_candidate_checked)
 
-        self.refresh_entries()
-
     def _rebuild_page_shell(self):
         root_layout = self.layout()
         items = []
@@ -534,7 +667,9 @@ class UpdatePage(DownloadHistoryPageBase):
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.refresh_entries()
+        if not self._has_loaded_once:
+            self._has_loaded_once = True
+            self.refresh_entries()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
