@@ -38,7 +38,12 @@ from PySide6.QtWidgets import (
 )
 
 from gui.library.thumbnail_dialog import ThumbnailDialog
-from gui.settings.settings_page import LIBRARY_USE_CATEGORIES_KEY, load_library_path, load_setting
+from stores.settings_store import (
+    LIBRARY_USE_CATEGORIES_KEY,
+    VIEWER_ZOOM_KEY,
+    load_library_path,
+    load_setting,
+)
 from library.library_categories import load_custom_categories, save_custom_categories
 
 
@@ -81,7 +86,7 @@ class EditWebtoonDialog(QDialog):
         self.progress_store = progress_store
         self.deleted = False
         self._zoom_dirty = False
-        self._initial_zoom_value = load_setting("viewer_zoom", 0.5)
+        self._initial_zoom_value = load_setting(VIEWER_ZOOM_KEY, 0.5)
 
         self.setWindowTitle("Edit Webtoon")
         self.setModal(True)
@@ -213,7 +218,7 @@ class EditWebtoonDialog(QDialog):
         self.url_input.setText(self.settings_store.get_source_url(self.webtoon.name) or "")
 
         zoom_override = self.settings_store.get_zoom_override(self.webtoon.name)
-        base_zoom = float(zoom_override) if zoom_override is not None else float(load_setting("viewer_zoom", 0.5))
+        base_zoom = float(zoom_override) if zoom_override is not None else float(load_setting(VIEWER_ZOOM_KEY, 0.5))
         self._initial_zoom_value = base_zoom * 100
         self.zoom_input.blockSignals(True)
         self.zoom_input.setValue(self._initial_zoom_value)

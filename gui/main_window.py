@@ -26,6 +26,8 @@ from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import (
     SettingsPage,
+)
+from stores.settings_store import (
     LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY,
     LIBRARY_UPDATE_INTERVAL_MINUTES_KEY,
     LIBRARY_UPDATE_LAST_CHECK_AT_KEY,
@@ -302,7 +304,7 @@ class MainWindow(QMainWindow):
     def open_chapter(self, webtoon, chapter_index: int, scroll_pct: float = 0.0):
         """
         Open viewer at a specific chapter + scroll percentage.
-        No continue/restart prompt — caller already decided.
+        No continue/restart prompt - caller already decided.
         """
         logger.info(
             "Opening chapter directly for %s index=%d scroll=%.3f",
@@ -680,6 +682,3 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_chapter_loading_overlay()
-
-
-

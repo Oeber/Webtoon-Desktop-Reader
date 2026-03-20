@@ -9,10 +9,7 @@ from core.profiler import create_session_profiler
 from gui.main_window import MainWindow
 from stores.db import prewarm_connection_async
 
-setup_logging()
-logger = get_logger(__name__)
-profiler, app_argv = create_session_profiler(sys.argv, logger)
-profiler.start()
+logger = None
 
 def _set_windows_app_id():
     if sys.platform != "win32":
@@ -24,28 +21,39 @@ def _set_windows_app_id():
     except Exception:
         logger.exception("Failed to set Windows AppUserModelID")
 
-_set_windows_app_id()
+def main(argv: list[str] | None = None) -> int:
+    global logger
+    setup_logging()
+    logger = get_logger(__name__)
+    profiler, app_argv = create_session_profiler(argv or sys.argv, logger)
+    profiler.start()
 
-app = QApplication(app_argv)
-logger.info("QApplication created")
-app.setApplicationName(APP_NAME)
-app.setApplicationVersion(APP_VERSION)
+    _set_windows_app_id()
 
-app_icon_path = resource_path("imgs", "logo.png")
-if app_icon_path.exists():
-    icon = QIcon(str(app_icon_path))
-    app.setWindowIcon(icon)
-    logger.info("Application icon loaded from %s", app_icon_path)
-else:
-    logger.warning("Application icon not found at %s", app_icon_path)
+    app = QApplication(app_argv)
+    logger.info("QApplication created")
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
 
-window = MainWindow()
-if app_icon_path.exists():
-    window.setWindowIcon(icon)
-app.aboutToQuit.connect(profiler.stop)
-app.aboutToQuit.connect(window.shutdown_background_tasks)
-window.show()
-prewarm_connection_async()
-logger.info("Main window shown")
+    app_icon_path = resource_path("imgs", "logo.png")
+    icon = None
+    if app_icon_path.exists():
+        icon = QIcon(str(app_icon_path))
+        app.setWindowIcon(icon)
+        logger.info("Application icon loaded from %s", app_icon_path)
+    else:
+        logger.warning("Application icon not found at %s", app_icon_path)
 
-sys.exit(app.exec())
+    window = MainWindow()
+    if icon is not None:
+        window.setWindowIcon(icon)
+    app.aboutToQuit.connect(profiler.stop)
+    app.aboutToQuit.connect(window.shutdown_background_tasks)
+    window.show()
+    prewarm_connection_async()
+    logger.info("Main window shown")
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,595 +1,60 @@
 import os
-import re
 import time
 from bisect import bisect_right
-from concurrent.futures import ThreadPoolExecutor
 
 from core.app_logging import get_logger
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
-    QPushButton, QComboBox, QHBoxLayout, QDialog, QSlider, QMessageBox
+    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QImage, QImageReader, QCursor
-from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QObject, QRect, QSize
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QImageReader
+from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QSize
 
 from gui.common.styles import (
     LOADING_DETAIL_LABEL_STYLE,
     LOADING_TITLE_LABEL_STYLE,
     VIEWER_LOADING_OVERLAY_STYLE,
-    VIEWER_RESUME_CONTINUE_BUTTON_STYLE,
-    VIEWER_RESUME_DIALOG_STYLE,
-    VIEWER_RESUME_RESTART_BUTTON_STYLE,
     VIEWER_ZOOM_BUTTON_STYLE,
     VIEWER_ZOOM_LABEL_STYLE,
 )
 from gui.downloader.download_widgets import SpinnerCircle
+from gui.viewer.viewer_skip_logic import (
+    best_existing_target_for_panel,
+    bottom_carryover_panel,
+    build_skip_targets,
+    edge_safe_target,
+    expand_panel_to_cluster,
+    lowest_fully_visible_panel_end,
+    nearest_existing_target_for_panel,
+    next_panel_after,
+    visible_content_overlap_between_windows,
+    visible_overlap,
+)
+from gui.viewer.viewer_support import (
+    ChapterPreview,
+    ContinueDialog,
+    ImageLoader,
+    PREVIEW_W,
+    SPECIAL_CHAPTER_RE,
+    VIEWER_AUTO_SCROLL_CURSOR_SIZE,
+    VIEWER_AUTO_SCROLL_LINE,
+)
 from stores.progress_store import get_instance as get_progress_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
-from gui.settings.settings_page import load_setting, save_setting
-
-FILMSTRIP_W   = 40
-IMAGE_STRIP_W = 50
-PREVIEW_W     = FILMSTRIP_W + IMAGE_STRIP_W
-
-# Matches chapter names that contain a decimal sub-number, e.g. "Chapter 1.5"
-_SPECIAL_CHAPTER_RE = re.compile(r'\b\d+\.\d+\b')
-
-TILE_GAP      = 2
-TILE_PADDING  = 2
-TILE_MIN_H    = 14
-TILE_MAX_H    = 120
+from stores.settings_store import (
+    VIEWER_AUTO_SKIP_KEY,
+    VIEWER_ZOOM_KEY,
+    load_setting,
+    save_setting,
+)
 
 LAZY_WINDOW   = 2000
 BATCH_MS      = 16
-NUM_WORKERS   = 8
-PREVIEW_WORKERS = 2
-PANEL_WORKERS = 1
 PREVIEW_EAGER_COUNT = 4
 PREVIEW_BATCH_SIZE = 16
 PREVIEW_BATCH_MS = 24
 SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
-VIEWER_AUTO_SCROLL_CURSOR_SIZE = 32
-VIEWER_AUTO_SCROLL_LINE = "#fff0ec"
 logger = get_logger(__name__)
-
-
-class ContinueDialog(QDialog):
-
-    def __init__(self, chapter: str, parent=None):
-        super().__init__(parent)
-        self.choice = "cancel"
-        self.setWindowTitle("Resume reading?")
-        self.setModal(True)
-        self.setFixedWidth(360)
-        self.setStyleSheet(VIEWER_RESUME_DIALOG_STYLE)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(24, 24, 24, 20)
-        layout.setSpacing(16)
-        msg = QLabel(
-            f"You have saved progress in <b>{chapter}</b>.<br>"
-            "Would you like to continue from where you left off?"
-        )
-        msg.setWordWrap(True)
-        msg.setTextFormat(Qt.RichText)
-        layout.addWidget(msg)
-
-        btn_layout = QHBoxLayout()
-        btn_layout.setSpacing(10)
-        restart_btn = QPushButton("Start over")
-        restart_btn.setStyleSheet(VIEWER_RESUME_RESTART_BUTTON_STYLE)
-        restart_btn.clicked.connect(self._start_over)
-        continue_btn = QPushButton("Continue")
-        continue_btn.setStyleSheet(VIEWER_RESUME_CONTINUE_BUTTON_STYLE)
-        continue_btn.clicked.connect(self._continue)
-        btn_layout.addWidget(restart_btn)
-        btn_layout.addWidget(continue_btn)
-        layout.addLayout(btn_layout)
-
-    def _start_over(self):
-        self.choice = "restart"
-        self.accept()
-
-    def _continue(self):
-        self.choice = "continue"
-        self.accept()
-
-
-def _format_bytes(size: int) -> str:
-    units = ("B", "KB", "MB", "GB")
-    value = float(max(0, int(size)))
-    for unit in units:
-        if value < 1024.0 or unit == units[-1]:
-            return f"{value:.1f} {unit}"
-        value /= 1024.0
-    return f"{value:.1f} GB"
-
-
-class ImageLoader(QObject):
-    image_ready = Signal(int, QPixmap)
-    preview_ready = Signal(int, QPixmap, int, int)  # index, thumb, natural_width, natural_height
-    panel_ranges_ready = Signal(int, list)
-
-    def __init__(self):
-        super().__init__()
-        self.executor = ThreadPoolExecutor(max_workers=NUM_WORKERS)
-        self.preview_executor = ThreadPoolExecutor(max_workers=PREVIEW_WORKERS)
-        self.panel_executor = ThreadPoolExecutor(max_workers=PANEL_WORKERS)
-        self._cancelled = False
-        self._queued = set()
-        self._preview_queued = set()
-        self._panel_range_cache: dict[str, list[tuple[float, float]]] = {}
-
-    def cancel(self):
-        self._cancelled = True
-        self._queued.clear()
-        self._preview_queued.clear()
-
-    def reset(self):
-        self._cancelled = False
-
-    def shutdown(self):
-        self.cancel()
-        self.executor.shutdown(wait=False, cancel_futures=True)
-        self.preview_executor.shutdown(wait=False, cancel_futures=True)
-        self.panel_executor.shutdown(wait=False, cancel_futures=True)
-
-    def load(self, index: int, path: str, width: int):
-        if index in self._queued:
-            return
-        self._queued.add(index)
-        self.executor.submit(self._load_task, index, path)
-
-    def load_preview(self, index: int, path: str, max_w: int = 50):
-        """Load a small thumbnail for the preview strip only."""
-        if index in self._preview_queued or index in self._queued:
-            return
-        self._preview_queued.add(index)
-        self.preview_executor.submit(self._preview_task, index, path, max_w)
-
-    def _load_task(self, index: int, path: str):
-        if self._cancelled:
-            return
-        started = time.perf_counter()
-        reader = QImageReader(path)
-        image = reader.read()
-        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
-        if pixmap.isNull():
-            logger.warning("Viewer image load failed index=%d path=%s", index, path)
-            return
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        try:
-            file_size = os.path.getsize(path)
-        except OSError:
-            file_size = 0
-        logger.info(
-            "Viewer image loaded index=%d path=%s dims=%dx%d file_size=%s load_ms=%.2f",
-            index,
-            path,
-            pixmap.width(),
-            pixmap.height(),
-            _format_bytes(file_size),
-            elapsed_ms,
-        )
-        if not self._cancelled:
-            self.image_ready.emit(index, pixmap)
-
-    def _preview_task(self, index: int, path: str, max_w: int):
-        if self._cancelled:
-            return
-        natural_w = 0
-        natural_h = 0
-        thumb = QPixmap()
-
-        reader = QImageReader(path)
-        size = reader.size()
-        if size.isValid():
-            natural_w = size.width()
-            natural_h = size.height()
-            if natural_w > max_w > 0 and natural_h > 0:
-                scaled_h = max(1, int(max_w * (natural_h / natural_w)))
-                reader.setScaledSize(QSize(max_w, scaled_h))
-
-            image = reader.read()
-            if not image.isNull():
-                thumb = QPixmap.fromImage(image)
-
-        if thumb.isNull():
-            pixmap = QPixmap(path)
-            if pixmap.isNull():
-                return
-            natural_w = pixmap.width()
-            natural_h = pixmap.height()
-            thumb = pixmap if natural_w <= max_w else pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
-
-        if not self._cancelled:
-            self.preview_ready.emit(index, thumb, natural_w, natural_h)
-
-    def build_panel_ranges(self, generation: int, payload: list):
-        self.panel_executor.submit(self._panel_task, generation, payload)
-
-    def _panel_task(self, generation: int, payload: list):
-        MIN_BLANK = 18
-        ROW_STEP = 4
-
-        ranges = []
-        cumulative = 0
-
-        for item in payload:
-            h = item["height"]
-            path = item["path"]
-
-            if not path or h <= 0:
-                cumulative += max(0, h)
-                continue
-
-            img = QImage(path)
-            if img.isNull():
-                cumulative += h
-                continue
-
-            ih = img.height()
-            if ih <= 0:
-                cumulative += h
-                continue
-
-            range_fractions = self._panel_range_cache.get(path)
-            if range_fractions is None:
-                range_fractions = self._compute_panel_ranges(img, MIN_BLANK=MIN_BLANK, ROW_STEP=ROW_STEP)
-                self._panel_range_cache[path] = range_fractions
-                sample_rows = []
-                for sample_y in {0, max(0, ih // 4), max(0, ih // 2), max(0, (ih * 3) // 4), max(0, ih - 1)}:
-                    avg, variance, chroma, is_blank = self._blank_row_metrics(img, sample_y)
-                    sample_rows.append(
-                        f"y={sample_y}:avg={avg:.1f},var={variance:.1f},chroma={chroma:.1f},blank={is_blank}"
-                    )
-                logger.info(
-                    "Viewer panel analysis path=%s image_h=%d scaled_h=%d ranges=%s samples=[%s]",
-                    path,
-                    ih,
-                    h,
-                    range_fractions,
-                    "; ".join(sample_rows),
-                )
-
-            for start_fraction, end_fraction in range_fractions:
-                start_y = cumulative + int(start_fraction * h)
-                end_y = cumulative + int(end_fraction * h)
-                if end_y > start_y:
-                    ranges.append((start_y, end_y))
-
-            cumulative += h
-
-        if not self._cancelled:
-            self.panel_ranges_ready.emit(generation, sorted(set(ranges)))
-
-    def _compute_panel_ranges(self, image: QImage, MIN_BLANK: int, ROW_STEP: int) -> list[tuple[float, float]]:
-        ih = image.height()
-        if ih <= 0:
-            return []
-
-        ranges = []
-        content_start = None
-        blank_run = 0
-        blank_start = None
-
-        for src_y in range(0, ih, ROW_STEP):
-            is_blank = self._is_blank_row(image, src_y)
-
-            if is_blank:
-                if blank_start is None:
-                    blank_start = src_y
-                blank_run += ROW_STEP
-                if content_start is not None and blank_run >= MIN_BLANK:
-                    content_end = max(content_start + ROW_STEP, blank_start)
-                    ranges.append((content_start / ih, min(1.0, content_end / ih)))
-                    content_start = None
-            else:
-                if content_start is None:
-                    content_start = src_y
-                blank_run = 0
-                blank_start = None
-
-        if content_start is not None:
-            ranges.append((content_start / ih, 1.0))
-
-        if not ranges:
-            return [(0.0, 1.0)]
-
-        return ranges
-
-    def _blank_row_metrics(self, image: QImage, y: int, sample_step: int = 12) -> tuple[float, float, float, bool]:
-        w = image.width()
-        if w <= 0:
-            return (0.0, 0.0, 0.0, True)
-
-        step = max(sample_step, w // 160)
-        total = 0
-        total_sq = 0
-        total_chroma = 0
-        count = 0
-
-        for x in range(0, w, step):
-            rgb = image.pixel(x, y)
-            red = (rgb >> 16) & 0xFF
-            green = (rgb >> 8) & 0xFF
-            blue = rgb & 0xFF
-            lum = (299 * red + 587 * green + 114 * blue) // 255
-            total += lum
-            total_sq += lum * lum
-            total_chroma += max(red, green, blue) - min(red, green, blue)
-            count += 1
-
-        if count == 0:
-            return (0.0, 0.0, 0.0, True)
-
-        avg = total / count
-        variance = (total_sq / count) - (avg * avg)
-        avg_chroma = total_chroma / count
-
-        is_extreme = avg < 120 or avg > 880
-        is_uniform = variance < 3000
-        is_soft_fade = variance < 900 and avg_chroma < 28
-        return (avg, variance, avg_chroma, (is_extreme and is_uniform) or is_soft_fade)
-
-    def _is_blank_row(self, image: QImage, y: int, sample_step: int = 12) -> bool:
-        return self._blank_row_metrics(image, y, sample_step)[3]
-
-
-class ChapterPreview(QWidget):
-
-    def __init__(self, scroll_area: QScrollArea, metrics_provider=None, parent=None):
-        super().__init__(parent)
-        self.scroll_area = scroll_area
-        self.metrics_provider = metrics_provider
-        self.image_labels = []
-        self.setFixedWidth(PREVIEW_W)
-        self.setCursor(Qt.PointingHandCursor)
-        self._dragging = False
-        self._zoom = 1.0
-
-    def set_zoom(self, zoom: float):
-        self._zoom = zoom
-        self.update()
-
-    def set_image_labels(self, labels: list):
-        self.image_labels = labels
-        self.update()
-
-    def notify_image_loaded(self):
-        self.update()
-
-    def _scaled_label_height(self, label) -> int:
-        if self.metrics_provider is not None:
-            return self.metrics_provider.scaled_label_height(label)
-        natural_w = getattr(label, '_natural_width', 0)
-        natural_h = getattr(label, '_natural_height', 0)
-        image_width = max(1, int(self.scroll_area.viewport().width() * self._zoom))
-        if natural_w > 0 and natural_h > 0:
-            return max(1, int(image_width * (natural_h / natural_w)))
-        return max(1, label.height())
-
-    def _total_content_height(self) -> int:
-        if self.metrics_provider is not None:
-            return self.metrics_provider.total_content_height()
-        return sum(self._scaled_label_height(label) for label in self.image_labels)
-
-    def _tile_height(self) -> int:
-        n = len(self.image_labels)
-        if n == 0:
-            return TILE_MAX_H
-        available = self.height() - (n - 1) * TILE_GAP
-        return int(max(TILE_MIN_H, min(TILE_MAX_H, available / n)))
-
-    def _tile_rect(self, index: int, tile_h: int) -> QRect:
-        y = index * (tile_h + TILE_GAP)
-        return QRect(TILE_PADDING, y, FILMSTRIP_W - TILE_PADDING * 2, tile_h)
-
-    def _tile_index_at(self, pos: QPoint) -> int | None:
-        if pos.x() >= FILMSTRIP_W:
-            return None
-        tile_h = self._tile_height()
-        stride = tile_h + TILE_GAP
-        index = pos.y() // stride
-        if index < 0 or index >= len(self.image_labels):
-            return None
-        if pos.y() > index * stride + tile_h:
-            return None
-        return index
-
-    def _current_image_index(self) -> int:
-        if not self.image_labels:
-            return 0
-        scroll_top = self.scroll_area.verticalScrollBar().value()
-        if self.metrics_provider is not None:
-            return self.metrics_provider.image_index_at_offset(scroll_top)
-        cumulative = 0
-        for i, label in enumerate(self.image_labels):
-            h = self._scaled_label_height(label)
-            if cumulative + h > scroll_top:
-                return i
-            cumulative += h
-        return len(self.image_labels) - 1
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.SmoothPixmapTransform)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(QRect(0, 0, FILMSTRIP_W, self.height()), QColor("#1a1a1a"))
-        painter.fillRect(QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height()), QColor("#141414"))
-        if not self.image_labels:
-            return
-        current_idx = self._current_image_index()
-        self._paint_filmstrip(painter, current_idx)
-        self._paint_image_strip(painter, current_idx)
-
-    def _paint_filmstrip(self, painter: QPainter, current_idx: int):
-        tile_h = self._tile_height()
-        tile_w = FILMSTRIP_W - TILE_PADDING * 2
-        for i, label in enumerate(self.image_labels):
-            rect = self._tile_rect(i, tile_h)
-            src = getattr(label, '_preview_pixmap', None) or getattr(label, '_source_pixmap', None)
-            if src and not src.isNull():
-                sw, sh = src.width(), src.height()
-                scale = max(tile_w / sw, tile_h / sh)
-                dw, dh = int(sw * scale), int(sh * scale)
-                cx, cy = (dw - tile_w) // 2, (dh - tile_h) // 2
-                src_crop = QRect(
-                    int(cx / scale), int(cy / scale),
-                    int(tile_w / scale), int(tile_h / scale)
-                )
-                painter.drawPixmap(rect, src, src_crop)
-            else:
-                painter.fillRect(rect, QColor("#2a2a2a"))
-            if i == current_idx:
-                painter.fillRect(rect, QColor(41, 121, 255, 50))
-                pen = QPen(QColor(41, 121, 255, 220))
-                pen.setWidth(1)
-                painter.setPen(pen)
-                painter.drawRect(rect.adjusted(0, 0, -1, -1))
-            else:
-                painter.setPen(QColor("#0e0e0e"))
-                painter.drawLine(rect.left(), rect.bottom() + 1, rect.right(), rect.bottom() + 1)
-
-    def _coverage(self, total_content_h: int, view_h: int) -> float:
-        return 0.20
-
-    def _window_fracs(self, total_content_h: int, view_h: int):
-        """Return (coverage, window_top_frac) for the current scroll position."""
-        bar = self.scroll_area.verticalScrollBar()
-        scroll_max = max(1, bar.maximum())
-        coverage = self._coverage(total_content_h, view_h)
-        scroll_frac = bar.value() / scroll_max
-        window_top_frac = scroll_frac * (1.0 - coverage)
-        window_bot_frac = window_top_frac + coverage
-        if window_bot_frac > 1.0:
-            window_bot_frac = 1.0
-            window_top_frac = 1.0 - coverage
-        window_top_frac = max(0.0, window_top_frac)
-        return coverage, window_top_frac
-
-    def _paint_image_strip(self, painter: QPainter, current_idx: int):
-        strip_x = FILMSTRIP_W
-        strip_w = IMAGE_STRIP_W
-        strip_h = self.height()
-        strip_rect = QRect(strip_x, 0, strip_w, strip_h)
-
-        total_content_h = self._total_content_height()
-        if total_content_h == 0:
-            painter.fillRect(strip_rect, QColor("#2a2a2a"))
-            return
-
-        scroll_top = self.scroll_area.verticalScrollBar().value()
-        view_h = self.scroll_area.viewport().height()
-
-        coverage, window_top_frac = self._window_fracs(total_content_h, view_h)
-        window_bot_frac = window_top_frac + coverage
-
-        content_top = window_top_frac * total_content_h
-        content_bot = window_bot_frac * total_content_h
-
-        painter.save()
-        painter.setClipRect(strip_rect)
-
-        cumulative = 0
-        for lbl in self.image_labels:
-            img_h = self._scaled_label_height(lbl)
-            img_top = cumulative
-            img_bot = cumulative + img_h
-            cumulative += img_h
-
-            if img_bot <= content_top or img_top >= content_bot:
-                continue
-
-            src = getattr(lbl, '_preview_pixmap', None) or getattr(lbl, '_source_pixmap', None)
-
-            src_frac_top = max(0.0, (content_top - img_top) / img_h) if img_h else 0.0
-            src_frac_bot = min(1.0, (content_bot - img_top) / img_h) if img_h else 1.0
-
-            dst_top = int((img_top - content_top) / (content_bot - content_top) * strip_h)
-            dst_bot = int((img_bot - content_top) / (content_bot - content_top) * strip_h)
-            dst_top = max(0, dst_top)
-            dst_bot = min(strip_h, dst_bot)
-            dst_rect = QRect(strip_x, dst_top, strip_w, dst_bot - dst_top)
-
-            if src and not src.isNull():
-                sw, sh = src.width(), src.height()
-                src_rect = QRect(
-                    0,
-                    int(src_frac_top * sh),
-                    sw,
-                    max(1, int((src_frac_bot - src_frac_top) * sh))
-                )
-                painter.drawPixmap(dst_rect, src, src_rect)
-            else:
-                painter.fillRect(dst_rect, QColor("#2a2a2a"))
-
-        painter.restore()
-
-        indicator_top = int(((scroll_top / total_content_h) - window_top_frac) / coverage * strip_h)
-        indicator_h = max(3, int((view_h / total_content_h) / coverage * strip_h))
-        indicator_top = max(0, min(strip_h - indicator_h, indicator_top))
-
-        vp_rect = QRect(strip_x, indicator_top, strip_w, indicator_h)
-        painter.fillRect(vp_rect, QColor(41, 121, 255, 55))
-        pen = QPen(QColor(41, 121, 255, 230))
-        pen.setWidth(1)
-        painter.setPen(pen)
-        painter.drawRect(vp_rect.adjusted(0, 0, -1, -1))
-
-    def _jump_to_image(self, index: int):
-        if not self.image_labels or index >= len(self.image_labels):
-            return
-        if self.metrics_provider is not None:
-            cumulative = self.metrics_provider.cumulative_height_before(index)
-        else:
-            cumulative = sum(self._scaled_label_height(self.image_labels[i]) for i in range(index))
-        bar = self.scroll_area.verticalScrollBar()
-        bar.setValue(max(0, min(cumulative, bar.maximum())))
-
-    def _scrub_strip_to_y(self, widget_y: int):
-        if not self.image_labels:
-            return
-        total_content_h = self._total_content_height()
-        if total_content_h == 0:
-            return
-
-        bar = self.scroll_area.verticalScrollBar()
-        view_h = self.scroll_area.viewport().height()
-        scroll_max = max(1, bar.maximum())
-
-        coverage, window_top_frac = self._window_fracs(total_content_h, view_h)
-
-        # Exact inverse of the indicator_top formula in _paint_image_strip.
-        # Subtract view_h // 2 so the clicked position lands at viewport center.
-        click_frac = max(0.0, min(1.0, widget_y / self.height()))
-        target = int((click_frac * coverage + window_top_frac) * total_content_h) - view_h // 2
-        bar.setValue(max(0, min(target, scroll_max)))
-
-    def mousePressEvent(self, event):
-        if event.button() != Qt.LeftButton:
-            return
-        self._dragging = True
-        self._handle_pos(event.pos())
-
-    def mouseMoveEvent(self, event):
-        if self._dragging:
-            self._handle_pos(event.pos())
-
-    def mouseReleaseEvent(self, event):
-        if event.button() == Qt.LeftButton:
-            self._dragging = False
-
-    def _handle_pos(self, pos: QPoint):
-        if pos.x() < FILMSTRIP_W:
-            idx = self._tile_index_at(pos)
-            if idx is not None:
-                self._jump_to_image(idx)
-        else:
-            self._scrub_strip_to_y(pos.y())
-
-    def resizeEvent(self, event):
-        self.update()
-        super().resizeEvent(event)
 
 
 class ViewerPage(QWidget):
@@ -650,11 +115,11 @@ class ViewerPage(QWidget):
         self._zoom_persist_timer.setInterval(250)
         self._zoom_persist_timer.timeout.connect(self._persist_zoom_override_now)
 
-        self._zoom = load_setting("viewer_zoom", 0.5)
-        self.auto_skip_enabled = load_setting("viewer_auto_skip", True)
+        self._zoom = load_setting(VIEWER_ZOOM_KEY, 0.5)
+        self.auto_skip_enabled = load_setting(VIEWER_AUTO_SKIP_KEY, True)
         self.skip_specials_enabled = False
         self._zoom_override_active = False  # True when this webtoon has a saved override
-        # Maps selector combo index → real webtoon.chapters index (used when skip_specials is on)
+        # Maps selector combo index to real webtoon.chapters index (used when skip_specials is on)
         self._chapter_index_map: list[int] = []
 
         main_layout = QVBoxLayout(self)
@@ -689,7 +154,7 @@ class ViewerPage(QWidget):
         self.nav_toggle.setFocusPolicy(Qt.NoFocus)
         self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
 
-        zoom_out_btn = QPushButton("−")
+        zoom_out_btn = QPushButton("-")
         zoom_out_btn.setFixedWidth(28)
         zoom_out_btn.setFocusPolicy(Qt.NoFocus)
         zoom_out_btn.setToolTip("Decrease image width")
@@ -851,7 +316,7 @@ class ViewerPage(QWidget):
             self._set_zoom(override, rescale_existing=rescale_existing)
         else:
             self._zoom_override_active = False
-            self._set_zoom(load_setting("viewer_zoom", 0.5), rescale_existing=rescale_existing)
+            self._set_zoom(load_setting(VIEWER_ZOOM_KEY, 0.5), rescale_existing=rescale_existing)
         self._zoom_reset_btn.setEnabled(self._zoom_override_active)
 
     def _current_packed_position(self) -> float:
@@ -1433,7 +898,7 @@ class ViewerPage(QWidget):
         label.setFixedHeight(scaled.height())
 
     def rescale_images(self, previous_zoom: float | None = None):
-        # Capture position as a fraction of total content height — this is
+        # Capture position as a fraction of total content height - this is
         # invariant across rescales, unlike packed position which depends on
         # individual label heights that are about to change.
         bar = self.scroll.verticalScrollBar()
@@ -1486,7 +951,7 @@ class ViewerPage(QWidget):
         chapters = self.webtoon.chapters
         candidates = range(from_index + 1, len(chapters))
         for i in candidates:
-            if not self.skip_specials_enabled or not _SPECIAL_CHAPTER_RE.search(chapters[i]):
+            if not self.skip_specials_enabled or not SPECIAL_CHAPTER_RE.search(chapters[i]):
                 return i
         return None
 
@@ -1495,7 +960,7 @@ class ViewerPage(QWidget):
         chapters = self.webtoon.chapters
         candidates = range(from_index - 1, -1, -1)
         for i in candidates:
-            if not self.skip_specials_enabled or not _SPECIAL_CHAPTER_RE.search(chapters[i]):
+            if not self.skip_specials_enabled or not SPECIAL_CHAPTER_RE.search(chapters[i]):
                 return i
         return None
 
@@ -1508,7 +973,7 @@ class ViewerPage(QWidget):
         if self.skip_specials_enabled:
             self._chapter_index_map = [
                 i for i, c in enumerate(self.webtoon.chapters)
-                if not _SPECIAL_CHAPTER_RE.search(c)
+                if not SPECIAL_CHAPTER_RE.search(c)
             ]
             self.chapter_selector.addItems(
                 [self.webtoon.chapters[i] for i in self._chapter_index_map]
@@ -1531,7 +996,7 @@ class ViewerPage(QWidget):
         self._zoom_override_active = False
         self._zoom_reset_btn.setEnabled(False)
         # Snap back to the global default without saving it as global
-        self._set_zoom(load_setting("viewer_zoom", 0.5))
+        self._set_zoom(load_setting(VIEWER_ZOOM_KEY, 0.5))
         self.setFocus()
 
     def go_back(self):
@@ -1585,7 +1050,7 @@ class ViewerPage(QWidget):
         self._panel_ranges_dirty = False
 
     def _on_preview_ready(self, index: int, pixmap: QPixmap, natural_w: int, natural_h: int):
-        """Thumbnail arrived — store it and set correct label height if not yet loaded."""
+        """Thumbnail arrived - store it and set correct label height if not yet loaded."""
         if index >= len(self.image_labels):
             return
         label = self.image_labels[index]
@@ -1607,469 +1072,13 @@ class ViewerPage(QWidget):
     def _total_content_height(self) -> int:
         return self.total_content_height()
 
-    def _merge_close_targets(self, targets: list[int], min_gap: int) -> list[int]:
-        if not targets:
-            return []
-
-        merged = [targets[0]]
-        for t in targets[1:]:
-            if t - merged[-1] < min_gap:
-                continue
-            merged.append(t)
-        return merged
-
-    def _score_panel_window(
-        self,
-        panels: list[tuple[int, int]],
-        top: int,
-        view_h: int,
-        anchor: tuple[int, int] | None = None,
-    ) -> int:
-        bottom = top + view_h
-        covered = 0
-        intervals = []
-
-        for start, end in panels:
-            if end <= top:
-                continue
-            if start >= bottom:
-                break
-            clipped_start = max(start, top)
-            clipped_end = min(end, bottom)
-            if clipped_end <= clipped_start:
-                continue
-            covered += clipped_end - clipped_start
-            intervals.append((clipped_start, clipped_end))
-
-        if not intervals:
-            return 0
-
-        internal_blank = 0
-        for i in range(1, len(intervals)):
-            internal_blank = max(internal_blank, intervals[i][0] - intervals[i - 1][1])
-
-        leading_blank = max(0, intervals[0][0] - top)
-        trailing_blank = max(0, bottom - intervals[-1][1])
-        balance_penalty = abs(leading_blank - trailing_blank) // 3
-        anchor_penalty = 0
-        edge_clip_penalty = 0
-
-        edge_pad = max(24, int(view_h * 0.06))
-        if intervals[0][0] <= top + edge_pad:
-            edge_clip_penalty += edge_pad - max(0, intervals[0][0] - top)
-        if intervals[-1][1] >= bottom - edge_pad:
-            edge_clip_penalty += edge_pad - max(0, bottom - intervals[-1][1])
-
-        if anchor is not None:
-            anchor_start, anchor_end = anchor
-            anchor_mid = (anchor_start + anchor_end) / 2
-            window_mid = top + (view_h / 2)
-            anchor_penalty = int(abs(anchor_mid - window_mid) * 0.35)
-
-        # Penalize large empty runs inside the viewport much more than edge padding.
-        return covered - (internal_blank * 2) - (leading_blank // 3) - (trailing_blank // 4) - balance_penalty - anchor_penalty - edge_clip_penalty
-
-    def _visible_overlap(self, start: int, end: int, top: int, view_h: int) -> int:
-        bottom = top + view_h
-        return max(0, min(end, bottom) - max(start, top))
-
-    def _visible_content_overlap_between_windows(
-        self,
-        panels: list[tuple[int, int]],
-        top_a: int,
-        top_b: int,
-        view_h: int,
-    ) -> int:
-        overlap_top = max(top_a, top_b)
-        overlap_bottom = min(top_a + view_h, top_b + view_h)
-        if overlap_bottom <= overlap_top:
-            return 0
-
-        covered = 0
-        for start, end in panels:
-            if end <= overlap_top:
-                continue
-            if start >= overlap_bottom:
-                break
-            covered += max(0, min(end, overlap_bottom) - max(start, overlap_top))
-        return covered
-
-    def _lowest_fully_visible_panel_end(self, panels: list[tuple[int, int]], top: int, view_h: int) -> int | None:
-        bottom = top + view_h
-        margin = max(12, int(view_h * 0.03))
-        best_end = None
-
-        for start, end in panels:
-            panel_h = end - start
-            if panel_h <= 0 or panel_h > int(view_h * 0.98):
-                continue
-            if start >= top + margin and end <= bottom - margin:
-                best_end = end if best_end is None else max(best_end, end)
-
-        return best_end
-
-    def _bottom_carryover_panel(
-        self,
-        panels: list[tuple[int, int]],
-        top: int,
-        view_h: int,
-    ) -> tuple[int, int] | None:
-        bottom = top + view_h
-        min_visible = max(24, int(view_h * 0.04))
-        min_remaining = max(48, int(view_h * 0.08))
-        candidate = None
-        candidate_start = None
-
-        for start, end in panels:
-            visible = self._visible_overlap(start, end, top, view_h)
-            if visible < min_visible:
-                continue
-            if start >= bottom:
-                continue
-            if end <= bottom:
-                continue
-            if (end - bottom) < min_remaining:
-                continue
-            if candidate is None or start > candidate_start:
-                candidate = (start, end)
-                candidate_start = start
-
-        return candidate
-
-    def _carryover_target(
-        self,
-        panels: list[tuple[int, int]],
-        panel: tuple[int, int],
-        view_h: int,
-        max_scroll: int,
-        current_top: int | None = None,
-    ) -> int:
-        start, end = panel
-        panel_h = end - start
-        if panel_h <= 0:
-            return max(0, min(start, max_scroll))
-
-        anchor = (start, end)
-        base_candidates = {max(0, min(start - int(view_h * 0.06), max_scroll))}
-
-        if panel_h <= view_h:
-            base_candidates.add(max(0, min(int((start + end - view_h) / 2), max_scroll)))
-
-        if current_top is not None:
-            base_candidates.add(max(0, min(current_top + int(view_h * 0.52), max_scroll)))
-            base_candidates.add(max(0, min(current_top + int(view_h * 0.68), max_scroll)))
-            base_candidates.add(max(0, min(current_top + int(view_h * 0.80), max_scroll)))
-            base_candidates.add(max(0, min(current_top + int(view_h * 0.90), max_scroll)))
-
-        if panel_h > view_h:
-            base_candidates.add(max(0, min(end - int(view_h * 0.74), max_scroll)))
-            base_candidates.add(max(0, min(end - int(view_h * 0.66), max_scroll)))
-            base_candidates.add(max(0, min(end - int(view_h * 0.58), max_scroll)))
-            base_candidates.add(max(0, min(end - int(view_h * 0.48), max_scroll)))
-            base_candidates.add(max(0, min(end - int(view_h * 0.40), max_scroll)))
-            base_candidates.add(max(0, min(start + int(panel_h * 0.45) - int(view_h * 0.35), max_scroll)))
-            base_candidates.add(max(0, min(start + int(panel_h * 0.58) - int(view_h * 0.30), max_scroll)))
-
-        best_target = None
-        best_score = None
-        min_visible = max(140, min(panel_h, int(view_h * 0.32)))
-        min_downward_target = None
-
-        if current_top is not None and panel_h > view_h:
-            # Continuing a tall panel should move decisively downward so we stop
-            # re-showing the panel's upper half.
-            min_downward_target = min(
-                max_scroll,
-                max(
-                    current_top + int(view_h * 0.72),
-                    start + int(panel_h * 0.18),
-                ),
-            )
-
-        for candidate in base_candidates:
-            if min_downward_target is not None and candidate < min_downward_target:
-                continue
-            if self._visible_overlap(start, end, candidate, view_h) < min_visible:
-                continue
-            score = self._score_panel_window(panels, candidate, view_h, anchor=anchor)
-            if current_top is not None and panel_h > view_h:
-                downward_bias = max(0, candidate - current_top)
-                score += min(int(view_h * 0.34), downward_bias)
-            if best_score is None or score > best_score or (score == best_score and candidate > best_target):
-                best_target = candidate
-                best_score = score
-
-        if min_downward_target is not None:
-            fallback = min_downward_target
-        else:
-            fallback = int((start + end - view_h) / 2) if panel_h <= view_h else end - int(view_h * 0.58)
-        return max(0, min(best_target if best_target is not None else fallback, max_scroll))
-
-    def _best_existing_target_for_panel(
-        self,
-        targets: list[int],
-        panels: list[tuple[int, int]],
-        panel: tuple[int, int],
-        current_top: int,
-        view_h: int,
-    ) -> int | None:
-        if not targets:
-            return None
-
-        start, end = panel
-        panel_h = end - start
-        min_move = max(24, int(view_h * 0.04))
-        min_visible = max(140, min(panel_h, int(view_h * 0.32)))
-        desired_center = int((start + end - view_h) / 2)
-        prefer_centering = panel_h <= int(view_h * 1.22)
-        best_target = None
-        best_score = None
-
-        for candidate in targets:
-            if candidate <= current_top + min_move:
-                continue
-            if self._visible_overlap(start, end, candidate, view_h) < min_visible:
-                continue
-
-            score = self._score_panel_window(panels, candidate, view_h, anchor=panel)
-            downward_bias = max(0, candidate - current_top)
-            score += min(int(view_h * 0.34), downward_bias)
-            if prefer_centering:
-                score -= abs(candidate - desired_center)
-
-            if best_score is None or score > best_score or (score == best_score and candidate > best_target):
-                best_target = candidate
-                best_score = score
-
-        return best_target
-
-    def _nearest_existing_target_for_panel(
-        self,
-        targets: list[int],
-        panel: tuple[int, int],
-        current_top: int,
-        view_h: int,
-        min_top: int = 0,
-    ) -> int | None:
-        if not targets:
-            return None
-
-        start, end = panel
-        panel_h = end - start
-        min_move = max(24, int(view_h * 0.04))
-        min_visible = max(120, min(panel_h, int(view_h * 0.24)))
-        desired_center = int((start + end - view_h) / 2)
-        prefer_centering = panel_h <= int(view_h * 1.22)
-        best_target = None
-        best_score = None
-
-        for candidate in targets:
-            if candidate <= current_top + min_move:
-                continue
-            if candidate < min_top:
-                continue
-            if self._visible_overlap(start, end, candidate, view_h) < min_visible:
-                continue
-            if not prefer_centering:
-                return candidate
-
-            score = -abs(candidate - desired_center)
-            downward_bias = max(0, candidate - current_top)
-            score += min(int(view_h * 0.18), downward_bias)
-            if best_score is None or score > best_score or (score == best_score and candidate > best_target):
-                best_target = candidate
-                best_score = score
-
-        return best_target
-
-    def _edge_safe_target(
-        self,
-        targets: list[int],
-        panels: list[tuple[int, int]],
-        candidate: int,
-        current_top: int,
-        view_h: int,
-    ) -> int:
-        if not targets:
-            return candidate
-
-        window_bottom = candidate + view_h
-        edge_pad = max(24, int(view_h * 0.05))
-        max_adjust = max(40, int(view_h * 0.22))
-
-        top_cut = any(
-            start < candidate and start >= current_top and end > candidate + edge_pad
-            for start, end in panels
-        )
-        bottom_cut = any(
-            start < window_bottom - edge_pad and start > candidate and end > window_bottom
-            for start, end in panels
-        )
-
-        if not top_cut and not bottom_cut:
-            return candidate
-
-        nearby = [
-            t for t in targets
-            if t >= current_top and abs(t - candidate) <= max_adjust
-        ]
-        if not nearby:
-            return candidate
-
-        def edge_penalty(top: int) -> tuple[int, int]:
-            bottom = top + view_h
-            top_hits = sum(
-                1 for start, end in panels
-                if start < top and start >= current_top and end > top + edge_pad
-            )
-            bottom_hits = sum(
-                1 for start, end in panels
-                if start < bottom - edge_pad and start > top and end > bottom
-            )
-            return (top_hits + bottom_hits, abs(top - candidate))
-
-        return min(nearby, key=edge_penalty)
-
-    def _next_panel_after(self, panels: list[tuple[int, int]], y: int, min_gap: int = 0) -> tuple[int, int] | None:
-        threshold = y + max(0, min_gap)
-        for start, end in panels:
-            if start >= threshold:
-                return (start, end)
-        return None
-
-    def _expand_panel_to_cluster(
-        self,
-        panels: list[tuple[int, int]],
-        panel: tuple[int, int],
-        view_h: int,
-    ) -> tuple[int, int]:
-        try:
-            idx = panels.index(panel)
-        except ValueError:
-            return panel
-
-        cluster_start, cluster_end = panel
-        gap_limit = int(view_h * 0.14)
-        short_limit = int(view_h * 0.34)
-
-        j = idx - 1
-        while j >= 0:
-            prev_start, prev_end = panels[j]
-            prev_h = prev_end - prev_start
-            gap = cluster_start - prev_end
-            if gap > gap_limit or prev_h > short_limit:
-                break
-            cluster_start = prev_start
-            j -= 1
-
-        return (cluster_start, cluster_end)
-
     def _get_skip_targets(self) -> list[int]:
-        panels = self._get_panel_ranges()
-        if not panels:
-            return []
-
-        total_h = self._total_content_height()
-        view_h = self.scroll.viewport().height()
-        if total_h <= 0 or view_h <= 0:
-            return []
-
-        targets = []
-
-        # Tunables
-        SHORT_PANEL_MAX = int(view_h * 0.95)
-        TALL_STEP = int(view_h * 0.78)
-        FIRST_PAD = int(view_h * 0.16)
-        MIN_TARGET_GAP = max(90, int(view_h * 0.18))
-        LOOKAHEAD_WINDOW = int(view_h * 1.10)
-        CONTENT_BIAS = max(24, int(view_h * 0.05))
-        CLUSTER_BOTTOM_FRACTION = 0.72
-        max_scroll = self.scroll.verticalScrollBar().maximum()
-
-        prev_end = 0
-        for i, (start, end) in enumerate(panels):
-            panel_h = end - start
-            leading_gap = max(0, start - prev_end)
-            entry_pad = max(0, FIRST_PAD - leading_gap)
-
-            if panel_h <= SHORT_PANEL_MAX:
-                base_target = max(0, min(start - entry_pad, max_scroll))
-                best_target = base_target
-                anchor = (start, end)
-                best_score = self._score_panel_window(panels, base_target, view_h, anchor=anchor)
-                cluster_end = end
-                min_anchor_visible = max(80, min(panel_h, int(view_h * 0.28)))
-
-                for j in range(i, len(panels)):
-                    look_start, look_end = panels[j]
-                    if look_start - start > LOOKAHEAD_WINDOW:
-                        break
-                    cluster_end = max(cluster_end, look_end)
-                    cluster_mid_target = max(0, min(int((start + cluster_end - view_h) / 2), max_scroll))
-
-                    candidates = {
-                        max(0, min(look_start - min(entry_pad, FIRST_PAD // 2), max_scroll)),
-                        max(0, min(look_end - int(view_h * CLUSTER_BOTTOM_FRACTION), max_scroll)),
-                        cluster_mid_target,
-                    }
-
-                    for candidate in candidates:
-                        if self._visible_overlap(start, end, candidate, view_h) < min_anchor_visible:
-                            continue
-                        coverage = self._score_panel_window(panels, candidate, view_h, anchor=anchor)
-                        forward_bias = max(0, candidate - base_target)
-                        score = coverage + min(CONTENT_BIAS, forward_bias)
-                        if score > best_score or (score == best_score and candidate > best_target):
-                            best_target = candidate
-                            best_score = score
-
-                targets.append(best_target)
-                prev_end = end
-                continue
-
-            # Tall panels get multiple stops.
-            anchor = (start, end)
-            first_target = max(0, start - min(entry_pad, int(view_h * 0.08)))
-            last_target = max(first_target, end - int(view_h * 0.80))
-            probe_span = max(24, int(view_h * 0.12))
-
-            t = first_target
-            while t < last_target - 8:
-                probe_candidates = {
-                    max(0, min(t, max_scroll)),
-                    max(0, min(t + probe_span, max_scroll)),
-                    max(0, min(t - probe_span, max_scroll)),
-                }
-
-                best_t = None
-                best_score = None
-                for candidate in probe_candidates:
-                    score = self._score_panel_window(panels, candidate, view_h, anchor=anchor)
-                    if best_score is None or score > best_score or (score == best_score and candidate > best_t):
-                        best_t = candidate
-                        best_score = score
-
-                targets.append(max(0, best_t if best_t is not None else t))
-                t += TALL_STEP
-
-            end_candidates = {
-                max(0, min(last_target, max_scroll)),
-                max(0, min(last_target - probe_span, max_scroll)),
-            }
-            best_end_target = None
-            best_end_score = None
-            for candidate in end_candidates:
-                score = self._score_panel_window(panels, candidate, view_h, anchor=anchor)
-                if best_end_score is None or score > best_end_score or (score == best_end_score and candidate > best_end_target):
-                    best_end_target = candidate
-                    best_end_score = score
-
-            targets.append(max(0, best_end_target if best_end_target is not None else last_target))
-            prev_end = end
-
-        targets = [max(0, min(t, max_scroll)) for t in sorted(set(targets))]
-        targets = self._merge_close_targets(targets, MIN_TARGET_GAP)
-        return targets
+        return build_skip_targets(
+            self._get_panel_ranges(),
+            self._total_content_height(),
+            self.scroll.viewport().height(),
+            self.scroll.verticalScrollBar().maximum(),
+        )
 
     def _jump_to_target(self, target_y: int):
         bar = self.scroll.verticalScrollBar()
@@ -2108,7 +1117,7 @@ class ViewerPage(QWidget):
 
             if key == Qt.Key_Down:
                 panels = self._get_panel_ranges()
-                carryover_panel = self._bottom_carryover_panel(panels, pos, view_h) if panels else None
+                carryover_panel = bottom_carryover_panel(panels, pos, view_h) if panels else None
                 if carryover_panel is not None:
                     carry_target = None
                     carryover_h = carryover_panel[1] - carryover_panel[0]
@@ -2117,7 +1126,7 @@ class ViewerPage(QWidget):
                             pos + max(24, int(view_h * 0.04)),
                             carryover_panel[1] - int(view_h * 0.74),
                         )
-                        carry_target = self._nearest_existing_target_for_panel(
+                        carry_target = nearest_existing_target_for_panel(
                             targets,
                             carryover_panel,
                             pos,
@@ -2128,7 +1137,7 @@ class ViewerPage(QWidget):
                             carry_target = min(bar.maximum(), lower_bias_top)
 
                     if carry_target is None and carryover_h > int(view_h * 1.18):
-                        carry_target = self._best_existing_target_for_panel(
+                        carry_target = best_existing_target_for_panel(
                             targets,
                             panels,
                             carryover_panel,
@@ -2143,19 +1152,19 @@ class ViewerPage(QWidget):
                             carryover_panel,
                             carry_target,
                         )
-                        carry_target = self._edge_safe_target(targets, panels, carry_target, pos, view_h)
+                        carry_target = edge_safe_target(targets, panels, carry_target, pos, view_h)
                         self._jump_to_target(carry_target)
                         return
 
-                consumed_end = self._lowest_fully_visible_panel_end(panels, pos, view_h) if panels else None
+                consumed_end = lowest_fully_visible_panel_end(panels, pos, view_h) if panels else None
                 if consumed_end is not None:
-                    next_panel = self._next_panel_after(
+                    next_panel = next_panel_after(
                         panels,
                         consumed_end,
                         min_gap=max(24, int(view_h * 0.03)),
                     )
                     if next_panel is not None:
-                        next_cluster = self._expand_panel_to_cluster(panels, next_panel, view_h)
+                        next_cluster = expand_panel_to_cluster(panels, next_panel, view_h)
                         reveal_pad = max(18, int(view_h * 0.06))
                         min_target = consumed_end + max(12, int(view_h * 0.02))
                         cluster_h = next_cluster[1] - next_cluster[0]
@@ -2166,7 +1175,7 @@ class ViewerPage(QWidget):
                             desired_target = max(min_target, next_cluster[0] - reveal_pad)
                         gap_before_next = max(0, next_cluster[0] - consumed_end)
 
-                        existing_target = self._nearest_existing_target_for_panel(
+                        existing_target = nearest_existing_target_for_panel(
                             targets,
                             next_cluster,
                             pos,
@@ -2190,7 +1199,7 @@ class ViewerPage(QWidget):
                             next_cluster,
                             next_panel_target,
                         )
-                        next_panel_target = self._edge_safe_target(targets, panels, next_panel_target, pos, view_h)
+                        next_panel_target = edge_safe_target(targets, panels, next_panel_target, pos, view_h)
                         self._jump_to_target(next_panel_target)
                         return
 
@@ -2226,14 +1235,14 @@ class ViewerPage(QWidget):
                         if (
                             carryover_panel is not None and
                             min_carryover_visible is not None and
-                            self._visible_overlap(carryover_panel[0], carryover_panel[1], next_target, view_h) < min_carryover_visible
+                            visible_overlap(carryover_panel[0], carryover_panel[1], next_target, view_h) < min_carryover_visible
                         ):
                             next_target = next(
                                 (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
                                 None
                             )
                             continue
-                        repeated = self._visible_content_overlap_between_windows(panels, pos, next_target, view_h)
+                        repeated = visible_content_overlap_between_windows(panels, pos, next_target, view_h)
                         if repeated <= MAX_REPEAT:
                             break
                         next_target = next(
@@ -2249,7 +1258,7 @@ class ViewerPage(QWidget):
                         next_target,
                         len(panels),
                     )
-                    next_target = self._edge_safe_target(targets, panels, next_target, pos, view_h)
+                    next_target = edge_safe_target(targets, panels, next_target, pos, view_h)
                     self._jump_to_target(next_target)
                 else:
                     logger.info(
@@ -2435,7 +1444,7 @@ class ViewerPage(QWidget):
         else:
             self.nav_toggle.setText("Standard")
 
-        save_setting("viewer_auto_skip", self.auto_skip_enabled)
+        save_setting(VIEWER_AUTO_SKIP_KEY, self.auto_skip_enabled)
         logger.info("Viewer navigation mode changed auto_skip=%s", self.auto_skip_enabled)
 
         self.setFocus()

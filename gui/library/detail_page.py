@@ -61,7 +61,7 @@ from scrapers.base import ScraperError
 from scrapers.registry import get_scraper, is_scraper_enabled_for_url
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
-from gui.settings.settings_page import load_library_path
+from stores.settings_store import load_library_path
 
 logger = get_logger(__name__)
 
@@ -69,7 +69,7 @@ logger = get_logger(__name__)
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
-# ── Small circular progress indicator ────────────────────────────────────────
+# Small circular progress indicator
 class ProgressCircle(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -185,7 +185,7 @@ class DetailPage(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # ── Top bar ──────────────────────────────────────────────────────
+        # Top bar
         top_bar = QWidget()
         top_bar.setFixedHeight(52)
         top_bar.setStyleSheet(TOP_BAR_STYLE)
@@ -218,7 +218,7 @@ class DetailPage(QWidget):
         tb_layout.addWidget(self.edit_btn)
         root.addWidget(top_bar)
 
-        # ── Hero ─────────────────────────────────────────────────────────
+        # Hero
         hero = QWidget()
         hero.setStyleSheet(HERO_PANEL_STYLE)
         hero_layout = QHBoxLayout(hero)
@@ -319,7 +319,7 @@ class DetailPage(QWidget):
         hero_layout.addWidget(info_widget, 1)
         root.addWidget(hero)
 
-        # ── Section header ───────────────────────────────────────────────
+        # Section header
         section_header = QWidget()
         section_header.setStyleSheet(SECTION_HEADER_PANEL_STYLE)
 
@@ -405,7 +405,7 @@ class DetailPage(QWidget):
 
         self.chapter_batch_bar.hide()
 
-        # ── Chapter list ─────────────────────────────────────────────────
+        # Chapter list
         self.chapter_scroll = QScrollArea()
         self.chapter_scroll.setWidgetResizable(True)
         self.chapter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -615,9 +615,9 @@ class DetailPage(QWidget):
             lambda checked, ch=chapter, btn=bookmark_btn: self._toggle_chapter_bookmark(ch, btn)
         )
 
-        # ── Last-read bookmark icon (new) ─────────────────────────────────
+        # Last-read bookmark icon (new)
 
-        # ── Progress circle ───────────────────────────────────────────────
+        # Progress circle
         percent = self._calc_percent(scroll, total)
         if percent > 0:
             circle = ProgressCircle()
@@ -1546,7 +1546,3 @@ class DetailPage(QWidget):
     def _start_from_beginning(self): 
         logger.info("Start from beginning requested for %s", self.webtoon.name if self.webtoon else "<none>")
         self.main_window.open_chapter(self.webtoon, 0)
-
-
-
-

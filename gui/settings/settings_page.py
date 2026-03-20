@@ -37,12 +37,36 @@ from core.app_update import (
     launch_windows_update_installer,
     load_last_update_error,
 )
-from stores.app_settings_store import get_instance as get_app_settings_store
 from core.app_logging import archived_log_paths, current_log_path, get_logger
-from core.app_paths import default_library_path
 from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
 from scrapers.registry import get_all_scrapers_including_disabled
 from scrapers.site_availability import is_site_enabled, save_disabled_sites
+from stores.settings_store import (
+    APP_UPDATE_CHECK_ON_STARTUP_KEY,
+    APP_UPDATE_LAST_ASSET_URL_KEY,
+    APP_UPDATE_LAST_CHECK_AT_KEY,
+    APP_UPDATE_LAST_ERROR_KEY,
+    APP_UPDATE_LAST_NOTIFIED_VERSION_KEY,
+    APP_UPDATE_LAST_STATUS_KEY,
+    APP_UPDATE_LAST_URL_KEY,
+    APP_UPDATE_LAST_VERSION_KEY,
+    DEFAULT_LIBRARY_PATH,
+    LIBRARY_SHOW_DOWNLOADS_SECTION_KEY,
+    LIBRARY_SHOW_NEW_SECTION_KEY,
+    LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY,
+    LIBRARY_UPDATE_INTERVAL_MINUTES_KEY,
+    LIBRARY_UPDATE_INTERVAL_OPTIONS,
+    LIBRARY_UPDATE_LAST_CHECK_AT_KEY,
+    LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY,
+    LIBRARY_UPDATE_LAST_RESULT_KEY,
+    LIBRARY_USE_CATEGORIES_KEY,
+    VIEWER_AUTO_SKIP_KEY,
+    VIEWER_ZOOM_KEY,
+    load_library_path,
+    load_setting,
+    save_library_path,
+    save_setting,
+)
 from gui.common.styles import (
     APP_UPDATE_PROGRESS_STYLE,
     BUTTON_STYLE,
@@ -72,51 +96,7 @@ from gui.common.styles import (
 
 logger = get_logger(__name__)
 
-DEFAULT_PATH = str(default_library_path())
-LIBRARY_USE_CATEGORIES_KEY = "library_use_categories"
-LIBRARY_SHOW_NEW_SECTION_KEY = "library_show_new_section"
-LIBRARY_SHOW_DOWNLOADS_SECTION_KEY = "library_show_downloads_section"
-APP_UPDATE_CHECK_ON_STARTUP_KEY = "app_update_check_on_startup"
-APP_UPDATE_LAST_CHECK_AT_KEY = "app_update_last_check_at"
-APP_UPDATE_LAST_VERSION_KEY = "app_update_last_version"
-APP_UPDATE_LAST_URL_KEY = "app_update_last_url"
-APP_UPDATE_LAST_ASSET_URL_KEY = "app_update_last_asset_url"
-APP_UPDATE_LAST_STATUS_KEY = "app_update_last_status"
-APP_UPDATE_LAST_ERROR_KEY = "app_update_last_error"
-APP_UPDATE_LAST_NOTIFIED_VERSION_KEY = "app_update_last_notified_version"
-LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY = "library_update_check_on_startup"
-LIBRARY_UPDATE_INTERVAL_MINUTES_KEY = "library_update_interval_minutes"
-LIBRARY_UPDATE_LAST_CHECK_AT_KEY = "library_update_last_check_at"
-LIBRARY_UPDATE_LAST_RESULT_KEY = "library_update_last_result"
-LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY = "library_update_last_notified_signature"
-LIBRARY_UPDATE_INTERVAL_OPTIONS = [
-    (0, "Off"),
-    (15, "Every 15 minutes"),
-    (30, "Every 30 minutes"),
-    (60, "Every hour"),
-    (120, "Every 2 hours"),
-    (240, "Every 4 hours"),
-]
-
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
-_app_settings = get_app_settings_store()
-
-
-def load_library_path() -> str:
-    return str(_app_settings.get("library_path", DEFAULT_PATH))
-
-
-def save_library_path(path: str):
-    _app_settings.set("library_path", path)
-
-
-def load_setting(key: str, default):
-    return _app_settings.get(key, default)
-
-
-def save_setting(key: str, value):
-    _app_settings.set(key, value)
-
 
 class _AppUpdateWorker(QThread):
     result_ready = Signal(object)
@@ -557,7 +537,7 @@ class SettingsPage(QWidget):
         reader_layout.addLayout(reader_header)
 
         self.auto_skip_checkbox = QCheckBox("Enable auto panel skip")
-        self.auto_skip_checkbox.setChecked(load_setting("viewer_auto_skip", True))
+        self.auto_skip_checkbox.setChecked(load_setting(VIEWER_AUTO_SKIP_KEY, True))
         self.auto_skip_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.auto_skip_checkbox.toggled.connect(self._on_auto_skip_changed)
         reader_layout.addWidget(self.auto_skip_checkbox)
@@ -572,7 +552,7 @@ class SettingsPage(QWidget):
         self.zoom_slider = QSlider(Qt.Horizontal)
         self.zoom_slider.setMinimum(15)
         self.zoom_slider.setMaximum(100)
-        self.zoom_slider.setValue(int(load_setting("viewer_zoom", 0.5) * 100))
+        self.zoom_slider.setValue(int(load_setting(VIEWER_ZOOM_KEY, 0.5) * 100))
         self.zoom_slider.setStyleSheet(SLIDER_STYLE)
         self.zoom_slider.valueChanged.connect(self._on_zoom_changed)
 
@@ -726,9 +706,9 @@ class SettingsPage(QWidget):
 
     def _reset(self):
         logger.info("Resetting settings to defaults")
-        self.path_input.setText(DEFAULT_PATH)
-        save_setting("viewer_auto_skip", True)
-        save_setting("viewer_zoom", 0.5)
+        self.path_input.setText(DEFAULT_LIBRARY_PATH)
+        save_setting(VIEWER_AUTO_SKIP_KEY, True)
+        save_setting(VIEWER_ZOOM_KEY, 0.5)
         save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
@@ -794,12 +774,12 @@ class SettingsPage(QWidget):
             if getattr(viewer, "image_labels", None):
                 viewer.rescale_images()
 
-        self._save(DEFAULT_PATH)
+        self._save(DEFAULT_LIBRARY_PATH)
         self.main_window.reload_scraper_availability()
         self._set_settings_status("Settings reset to defaults.")
 
     def _on_auto_skip_changed(self, checked: bool):
-        save_setting("viewer_auto_skip", checked)
+        save_setting(VIEWER_AUTO_SKIP_KEY, checked)
         logger.info("Viewer auto-skip changed: %s", checked)
         self._set_settings_status("Reader settings saved.")
 
@@ -814,7 +794,7 @@ class SettingsPage(QWidget):
 
     def _on_zoom_changed(self, value: int):
         zoom = value / 100.0
-        save_setting("viewer_zoom", zoom)
+        save_setting(VIEWER_ZOOM_KEY, zoom)
         logger.info("Viewer default zoom changed: %.2f", zoom)
         self.zoom_value_label.setText(f"{value}%")
         self._set_settings_status("Reader settings saved.")

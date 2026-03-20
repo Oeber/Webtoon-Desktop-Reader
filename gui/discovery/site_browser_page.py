@@ -39,7 +39,7 @@ from gui.common.styles import (
 from gui.discovery.cover_loader import DiscoveryCoverLoader
 from gui.library.webtoon_card import CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH
 from library.library_manager import scan_library
-from gui.settings.settings_page import load_library_path
+from stores.settings_store import load_library_path
 from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.discovery_support import build_discovery_library_snapshot
@@ -1320,6 +1320,3 @@ class SiteBrowserPage(QWidget):
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
-
-
-

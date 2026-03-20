@@ -1,6 +1,7 @@
 import sqlite3
 import threading
 import time
+from contextlib import suppress
 
 from core.app_logging import get_logger
 from core.app_paths import data_path
@@ -9,30 +10,33 @@ from core.app_paths import data_path
 logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
+SQLITE_BUSY_TIMEOUT_MS = 5000
 
-_connection: sqlite3.Connection | None = None
-_connection_lock = threading.Lock()
+_thread_state = threading.local()
+_init_lock = threading.Lock()
+_db_initialized = False
 
 
 def get_connection() -> sqlite3.Connection:
-    global _connection
-    if _connection is not None:
-        return _connection
+    _ensure_initialized()
+    conn = getattr(_thread_state, "connection", None)
+    if conn is not None:
+        return conn
 
-    with _connection_lock:
-        if _connection is None:
-            started_at = time.perf_counter()
-            logger.info("Opening SQLite connection at %s", DB_PATH)
-            _connection = _init_db()
-            logger.info(
-                "SQLite initialization finished in %.1f ms",
-                (time.perf_counter() - started_at) * 1000.0,
-            )
-    return _connection
+    started_at = time.perf_counter()
+    logger.info("Opening SQLite connection at %s for thread %s", DB_PATH, threading.current_thread().name)
+    conn = _create_connection()
+    _thread_state.connection = conn
+    logger.info(
+        "SQLite connection ready in %.1f ms for thread %s",
+        (time.perf_counter() - started_at) * 1000.0,
+        threading.current_thread().name,
+    )
+    return conn
 
 
 def prewarm_connection_async():
-    if _connection is not None:
+    if getattr(_thread_state, "connection", None) is not None:
         return
 
     def _worker():
@@ -52,17 +56,39 @@ def prewarm_connection_async():
 #  Internal
 # --------------------------------------------------------------------------- #
 
-def _init_db() -> sqlite3.Connection:
+def _ensure_initialized():
+    global _db_initialized
+    if _db_initialized:
+        return
+
+    with _init_lock:
+        if _db_initialized:
+            return
+
+        started_at = time.perf_counter()
+        logger.info("Initializing SQLite schema at %s", DB_PATH)
+        conn = _create_connection()
+        try:
+            _create_schema(conn)
+            logger.info(
+                "SQLite initialization finished in %.1f ms",
+                (time.perf_counter() - started_at) * 1000.0,
+            )
+            _db_initialized = True
+        finally:
+            with suppress(Exception):
+                conn.close()
+
+
+def _create_connection() -> sqlite3.Connection:
     data_path().mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
 
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
-
-    _create_schema(conn)
-    logger.info("Database ready")
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
 
     return conn
 

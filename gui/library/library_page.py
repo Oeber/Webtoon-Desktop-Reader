@@ -46,7 +46,7 @@ from gui.common.styles import (
 )
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.search.global_search import rank_webtoons
-from gui.settings.settings_page import (
+from stores.settings_store import (
     LIBRARY_SHOW_DOWNLOADS_SECTION_KEY,
     LIBRARY_SHOW_NEW_SECTION_KEY,
     LIBRARY_USE_CATEGORIES_KEY,
@@ -173,7 +173,7 @@ class CategorySection(QFrame):
 
     def set_title(self, title: str, count: int):
         self._title = title
-        prefix = "▸" if self._collapsed else "▾"
+        prefix = ">" if self._collapsed else "v"
         self.header_btn.setText(f"{prefix}  {title} ({count})")
 
     def set_collapsed(self, collapsed: bool):

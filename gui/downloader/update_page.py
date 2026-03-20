@@ -47,7 +47,7 @@ from gui.downloader.download_widgets import SpinnerCircle, format_last_updated
 from gui.downloader.helpers import sanitize_webtoon_name
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
-from gui.settings.settings_page import load_library_path
+from stores.settings_store import load_library_path
 from library.library_manager import scan_library
 from scrapers.base import ScraperDisabledError, ScraperError
 from scrapers.registry import get_scraper, is_scraper_enabled_for_url
