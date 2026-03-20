@@ -1,3 +1,5 @@
+import time
+
 from stores.db import get_connection
 from core.app_logging import get_logger
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
@@ -25,7 +27,7 @@ class ProgressStore:
             """SELECT chapter, scroll, total_images 
                FROM progress 
                WHERE webtoon_name = ? 
-               ORDER BY updated_at DESC 
+               ORDER BY updated_at DESC, chapter DESC
                LIMIT 1""",
             (webtoon_name,)
         ).fetchone()
@@ -62,15 +64,16 @@ class ProgressStore:
             scroll,
             total_images,
         )
+        updated_at = int(time.time() * 1000)
         conn = get_connection()
         conn.execute(
             """INSERT INTO progress (webtoon_name, chapter, scroll, total_images, updated_at)
-               VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(webtoon_name, chapter) DO UPDATE SET
                    scroll       = excluded.scroll,
                    total_images = excluded.total_images,
                    updated_at   = excluded.updated_at""",
-            (webtoon_name, chapter, scroll, total_images)
+            (webtoon_name, chapter, scroll, total_images, updated_at)
         )
         conn.commit()
 
@@ -82,15 +85,19 @@ class ProgressStore:
         if not entries:
             return
         logger.info("Saving progress for %d chapters in %s", len(entries), webtoon_name)
+        updated_at_base = int(time.time() * 1000)
         conn = get_connection()
         conn.executemany(
             """INSERT INTO progress (webtoon_name, chapter, scroll, total_images, updated_at)
-               VALUES (?, ?, ?, ?, strftime('%s', 'now'))
+               VALUES (?, ?, ?, ?, ?)
                ON CONFLICT(webtoon_name, chapter) DO UPDATE SET
                    scroll       = excluded.scroll,
                    total_images = excluded.total_images,
                    updated_at   = excluded.updated_at""",
-            [(webtoon_name, chapter, scroll, total_images) for chapter, scroll, total_images in entries]
+            [
+                (webtoon_name, chapter, scroll, total_images, updated_at_base + index)
+                for index, (chapter, scroll, total_images) in enumerate(entries)
+            ]
         )
         conn.commit()
 

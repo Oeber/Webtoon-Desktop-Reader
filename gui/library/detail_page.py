@@ -507,6 +507,17 @@ class DetailPage(QWidget):
         self._sync_update_button()
         self._begin_remote_series_lookup()
 
+    def suspend_remote_state(self):
+        self._remote_request_id += 1
+        self._remote_status = ""
+        self._sync_remote_chapter_state(rebuild_chapter_list=False)
+
+    def _is_active_detail_page(self) -> bool:
+        stack = getattr(self.main_window, "stack", None)
+        if stack is None:
+            return False
+        return stack.currentWidget() is self and self.isVisible()
+
     def _calc_percent(self, scroll: float, total_images: int) -> int:
         if total_images <= 0:
             return 0
@@ -574,7 +585,7 @@ class DetailPage(QWidget):
         select_slot_layout.setContentsMargins(0, 0, 0, 0)
         select_slot_layout.setSpacing(0)
 
-        select_btn = QToolButton()
+        select_btn = QToolButton(select_slot)
         select_btn.setCursor(Qt.PointingHandCursor)
         select_btn.setAutoRaise(True)
         select_btn.setCheckable(True)
@@ -583,11 +594,11 @@ class DetailPage(QWidget):
         select_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         select_btn.setProperty("chapter_name", chapter)
         apply_select_icon(select_btn, select_btn.isChecked())
-        set_selector_visibility(row, select_btn, force=self._chapter_selection_visible())
         select_btn.clicked.connect(
             lambda checked, ch=chapter, btn=select_btn: self._toggle_chapter_selected(ch, btn, checked)
         )
         select_slot_layout.addWidget(select_btn, 0, Qt.AlignCenter)
+        set_selector_visibility(row, select_btn, force=self._chapter_selection_visible())
         layout.addWidget(select_slot)
 
         color = "#ff8a7a" if is_last_read else "#ffd7cf"
@@ -609,7 +620,7 @@ class DetailPage(QWidget):
         title_row.addStretch()
         layout.addLayout(title_row, 1)
 
-        bookmark_btn = QToolButton()
+        bookmark_btn = QToolButton(row)
         bookmark_btn.setCursor(Qt.PointingHandCursor)
         bookmark_btn.setAutoRaise(True)
         bookmark_btn.setCheckable(True)
@@ -661,7 +672,7 @@ class DetailPage(QWidget):
         select_slot_layout.setSpacing(0)
 
         chapter_url = entry.get("url", "")
-        select_btn = QToolButton()
+        select_btn = QToolButton(select_slot)
         select_btn.setCursor(Qt.PointingHandCursor)
         select_btn.setAutoRaise(True)
         select_btn.setCheckable(True)
@@ -670,11 +681,11 @@ class DetailPage(QWidget):
         select_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         select_btn.setProperty("remote_chapter_url", chapter_url)
         apply_select_icon(select_btn, select_btn.isChecked())
-        set_selector_visibility(row, select_btn, force=self._remote_chapter_selection_visible())
         select_btn.clicked.connect(
             lambda checked, url=chapter_url, btn=select_btn: self._toggle_remote_chapter_selected(url, btn, checked)
         )
         select_slot_layout.addWidget(select_btn, 0, Qt.AlignCenter)
+        set_selector_visibility(row, select_btn, force=self._remote_chapter_selection_visible())
         layout.addWidget(select_slot)
 
         title_row = QHBoxLayout()
@@ -695,7 +706,7 @@ class DetailPage(QWidget):
         title_row.addStretch()
         layout.addLayout(title_row, 1)
 
-        download_btn = QToolButton()
+        download_btn = QToolButton(row)
         download_btn.setText("Download")
         download_btn.setCursor(Qt.PointingHandCursor)
         download_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
@@ -833,6 +844,9 @@ class DetailPage(QWidget):
     def _on_remote_series_loaded(self, request_id: int, series, error: str):
         if request_id != self._remote_request_id or self.webtoon is None:
             return
+        if not self._is_active_detail_page():
+            logger.info("Ignoring stale remote lookup result because detail page is no longer active")
+            return
 
         if error:
             source_url = self.settings_store.get_source_url(self.webtoon.name)
@@ -844,9 +858,14 @@ class DetailPage(QWidget):
                     scraper = None
             site_name = getattr(scraper, "site_name", "") if scraper is not None else ""
             if self._looks_like_access_block(error) and site_name:
-                if self.main_window.open_site_authorization(site_name, url=source_url or ""):
-                    self._remote_series_loader.load(self._remote_request_id, source_url or "")
-                    return
+                logger.info(
+                    "Detail-page remote lookup requires authorization for %s; suppressing auto-popup during background check",
+                    self.webtoon.name,
+                )
+                self._remote_series = None
+                self._remote_status = "Couldn't check for new chapters. Site authorization may be required."
+                self._sync_remote_chapter_state()
+                return
             logger.warning("Remote chapter lookup failed for %s: %s", self.webtoon.name, error)
             self._remote_series = None
             self._remote_status = "Couldn't check for new chapters."
@@ -1167,19 +1186,42 @@ class DetailPage(QWidget):
 
         import shutil
 
+        failed = []
+        bookmarks_changed = False
+
         for chapter in selected:
             chapter_path = os.path.join(self.webtoon.path, chapter)
-            if os.path.isdir(chapter_path):
-                shutil.rmtree(chapter_path, ignore_errors=True)
+            try:
+                if os.path.isdir(chapter_path):
+                    shutil.rmtree(chapter_path)
+                    if os.path.exists(chapter_path):
+                        raise OSError(f"Chapter folder still exists after deletion: {chapter_path}")
+            except OSError:
+                logger.exception("Failed to delete chapter folder %s", chapter_path)
+                failed.append(chapter)
+                continue
+
             self.progress_store.clear_chapter(self.webtoon.name, chapter)
             self.progress_map.pop(chapter, None)
-            self.bookmarked_chapters.discard(chapter)
+            if chapter in self.bookmarked_chapters:
+                self.bookmarked_chapters.discard(chapter)
+                bookmarks_changed = True
             if self.latest_new_chapter == chapter:
                 self.settings_store.clear_latest_new_chapter(self.webtoon.name)
                 self.latest_new_chapter = None
 
+        if bookmarks_changed:
+            self.settings_store.set_bookmarked_chapters(self.webtoon.name, self.bookmarked_chapters)
+
         self._refresh_webtoon_from_disk()
         self._clear_chapter_selection()
+        if failed:
+            noun = "chapter" if len(failed) == 1 else "chapters"
+            QMessageBox.warning(
+                self,
+                "Delete selected chapters",
+                f"Could not delete {len(failed)} {noun}. Their progress and bookmarks were left unchanged.",
+            )
 
     def _toggle_hide_specials(self):
         self.hide_specials = self.hide_specials_btn.isChecked()

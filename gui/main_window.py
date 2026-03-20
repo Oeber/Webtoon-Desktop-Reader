@@ -191,6 +191,7 @@ class MainWindow(QMainWindow):
         self.global_search_shortcut.setContext(Qt.ApplicationShortcut)
         self.global_search_shortcut.activated.connect(self.global_search.open_dialog)
         self._shutdown_done = False
+        self._site_auth_dialog_open = False
         self._download_sidebar_jobs = {}
         self._download_sidebar_icon_state = None
         self._download_sidebar_spin = qta.Spin(self.btn_downloader)
@@ -258,10 +259,18 @@ class MainWindow(QMainWindow):
         self._set_sidebar_target("discovery")
 
     def open_site_authorization(self, site_name: str, url: str = "") -> bool:
+        if self._site_auth_dialog_open:
+            logger.info("Ignoring duplicate site authorization request for %s", site_name)
+            return False
+
         prior_state = self.windowState()
         dialog = SiteAuthDialog(site_name, url=url, parent=None)
         dialog.setWindowModality(Qt.ApplicationModal)
-        result = bool(dialog.exec())
+        self._site_auth_dialog_open = True
+        try:
+            result = bool(dialog.exec())
+        finally:
+            self._site_auth_dialog_open = False
         if self.windowState() != prior_state:
             self.setWindowState(prior_state)
         self.raise_()
@@ -312,13 +321,14 @@ class MainWindow(QMainWindow):
             chapter_index,
             scroll_pct,
         )
+        self.detail.suspend_remote_state()
         self._clear_new_chapter_marker(webtoon, chapter_index)
-        self.viewer.load_webtoon(webtoon,
-                                 start_chapter=chapter_index,
-                                 start_scroll=scroll_pct)
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
         self._set_sidebar_target("library")
+        self.viewer.load_webtoon(webtoon,
+                                 start_chapter=chapter_index,
+                                 start_scroll=scroll_pct)
         self._hide_chapter_loading_overlay()
 
     def open_chapter_with_prompt(self, webtoon, chapter_index: int):
@@ -327,14 +337,18 @@ class MainWindow(QMainWindow):
         show the continue/restart dialog if progress exists.
         """
         logger.info("Opening chapter with prompt for %s index=%d", webtoon.name, chapter_index)
+        self.detail.suspend_remote_state()
         self._clear_new_chapter_marker(webtoon, chapter_index)
-        opened = self.viewer.open_chapter_with_prompt(webtoon, chapter_index)
-        if not opened:
-            self._hide_chapter_loading_overlay()
-            return
         self.set_window_context_title(webtoon.name)
         self.stack.setCurrentWidget(self.viewer)
         self._set_sidebar_target("library")
+        opened = self.viewer.open_chapter_with_prompt(webtoon, chapter_index)
+        if not opened:
+            self.set_window_context_title(webtoon.name)
+            self.stack.setCurrentWidget(self.detail)
+            self._set_sidebar_target("library")
+            self._hide_chapter_loading_overlay()
+            return
         self._hide_chapter_loading_overlay()
 
     def open_viewer(self, webtoon):
