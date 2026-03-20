@@ -202,6 +202,7 @@ class MainWindow(QMainWindow):
         self._library_update_schedule_timer = QTimer(self)
         self._library_update_schedule_timer.setSingleShot(False)
         self._library_update_schedule_timer.timeout.connect(self._run_interval_library_update_check)
+        self._library_update_interval_check_queued = False
         self._refresh_download_sidebar_indicator()
         self._refresh_sidebar_nav_state()
         self._apply_sidebar_button_layout()
@@ -359,10 +360,19 @@ class MainWindow(QMainWindow):
         interval_minutes = int(load_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60) or 0)
         if interval_minutes <= 0:
             self._library_update_schedule_timer.stop()
+            self._library_update_interval_check_queued = False
             return
 
         interval_ms = max(60_000, interval_minutes * 60 * 1000)
         self._library_update_schedule_timer.start(interval_ms)
+        startup_checks_enabled = bool(load_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False))
+        if startup_checks_enabled or not self._library_update_check_due():
+            self._library_update_interval_check_queued = False
+            return
+        if self._library_update_interval_check_queued:
+            return
+        self._library_update_interval_check_queued = True
+        QTimer.singleShot(1000, self._run_queued_interval_library_update_check)
 
     def run_library_update_check(self, reason: str = "scheduled") -> bool:
         if self.updates.service.is_busy():
@@ -392,6 +402,10 @@ class MainWindow(QMainWindow):
         if not self._library_update_check_due():
             return
         self.run_library_update_check(reason="auto_interval")
+
+    def _run_queued_interval_library_update_check(self):
+        self._library_update_interval_check_queued = False
+        self._run_interval_library_update_check()
 
     def _library_update_result_text(self, count: int, errors: int) -> str:
         if count <= 0:
