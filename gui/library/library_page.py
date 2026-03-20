@@ -670,21 +670,11 @@ class LibraryPage(QWidget):
     def _build_section_defs(self):
         defs = []
         placeholders = []
-        names_in_library = {webtoon.name for webtoon in self._webtoons}
+        show_download_section = self._show_downloads_section() and self._categories_enabled()
         if self._show_downloads_section():
-            for name, state in self._active_manual_downloads.items():
-                if name in names_in_library:
-                    continue
-                placeholders.append(SimpleNamespace(
-                    name=name,
-                    path="",
-                    thumbnail=state.get("thumbnail", "") or "",
-                    chapters=[],
-                    _download_placeholder=True,
-                    category=None,
-                ))
+            placeholders = self._download_placeholders()
             placeholders.sort(key=lambda item: item.name.lower())
-            if placeholders:
+            if show_download_section and placeholders:
                 defs.append((SECTION_DOWNLOADS, "Active Downloads", placeholders, None))
 
         if self._show_new_section():
@@ -718,6 +708,8 @@ class LibraryPage(QWidget):
                 webtoon for webtoon in self._webtoons
                 if self._section_key_for_webtoon(webtoon) == SECTION_LIBRARY
             ]
+            if placeholders:
+                library_webtoons = [*placeholders, *library_webtoons]
             defs.append((SECTION_LIBRARY, "Library", library_webtoons, None))
         return defs
 
@@ -935,7 +927,7 @@ class LibraryPage(QWidget):
         return ordered
 
     def _all_display_webtoons(self):
-        return list(self._webtoons)
+        return [*self._webtoons, *self._download_placeholders()]
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1070,7 +1062,7 @@ class LibraryPage(QWidget):
 
     def _reconcile_section_order(self, stored_order: list[str]) -> list[str]:
         available = []
-        if self._show_downloads_section():
+        if self._show_downloads_section() and self._categories_enabled():
             available.append(SECTION_DOWNLOADS)
         if self._show_new_section():
             available.append(SECTION_NEW)
@@ -1444,7 +1436,7 @@ class LibraryPage(QWidget):
             "current": 0,
             "total": 0,
             "thumbnail": "",
-            "existing": self._has_webtoon(name),
+            "existing": self._manual_download_targets_existing_webtoon(name),
         }
         if self._sync_manual_download_placeholders():
             return
@@ -1455,7 +1447,7 @@ class LibraryPage(QWidget):
             old_name,
             {"current": 0, "total": 0, "thumbnail": "", "existing": False},
         )
-        state["existing"] = bool(state.get("existing")) or self._has_webtoon(name)
+        state["existing"] = bool(state.get("existing")) or self._manual_download_targets_existing_webtoon(name)
         self._active_manual_downloads[name] = state
         if self._sync_manual_download_placeholders():
             return
@@ -1471,7 +1463,7 @@ class LibraryPage(QWidget):
     def _on_manual_download_progress_changed(self, name: str, current: int, total: int):
         state = self._active_manual_downloads.setdefault(
             name,
-            {"current": 0, "total": 0, "thumbnail": "", "existing": self._has_webtoon(name)},
+            {"current": 0, "total": 0, "thumbnail": "", "existing": self._manual_download_targets_existing_webtoon(name)},
         )
         state["current"] = max(0, int(current))
         state["total"] = max(0, int(total))
@@ -1482,7 +1474,7 @@ class LibraryPage(QWidget):
     def _on_manual_download_thumbnail_resolved(self, name: str, path: str):
         state = self._active_manual_downloads.setdefault(
             name,
-            {"current": 0, "total": 0, "thumbnail": "", "existing": self._has_webtoon(name)},
+            {"current": 0, "total": 0, "thumbnail": "", "existing": self._manual_download_targets_existing_webtoon(name)},
         )
         state["thumbnail"] = path or ""
         if self._sync_manual_download_placeholders():
@@ -1564,6 +1556,31 @@ class LibraryPage(QWidget):
 
     def _has_webtoon(self, webtoon_name: str) -> bool:
         return any(webtoon.name == webtoon_name for webtoon in self._webtoons)
+
+    def _manual_download_targets_existing_webtoon(self, webtoon_name: str) -> bool:
+        if self._has_webtoon(webtoon_name):
+            return True
+        if not webtoon_name:
+            return False
+        return os.path.isdir(os.path.join(load_library_path(), webtoon_name))
+
+    def _download_placeholders(self) -> list[SimpleNamespace]:
+        if not self._show_downloads_section():
+            return []
+        names_in_library = {webtoon.name for webtoon in self._webtoons}
+        placeholders = []
+        for name, state in self._active_manual_downloads.items():
+            if name in names_in_library or bool(state.get("existing")):
+                continue
+            placeholders.append(SimpleNamespace(
+                name=name,
+                path="",
+                thumbnail=state.get("thumbnail", "") or "",
+                chapters=[],
+                _download_placeholder=True,
+                category=None,
+            ))
+        return placeholders
 
     def _active_placeholder_names(self) -> set[str]:
         return {
@@ -1657,4 +1674,6 @@ class LibraryPage(QWidget):
         return bool(load_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True))
 
     def _show_downloads_section(self) -> bool:
+        if self._active_manual_downloads:
+            return True
         return bool(load_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True))

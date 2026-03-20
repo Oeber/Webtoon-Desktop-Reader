@@ -20,6 +20,7 @@ BTN_STYLE = BUTTON_STYLE_DISABLED
 
 STATUS_COLORS = {
     "Ready": "#b18b84",
+    "Queued": "#d7b1aa",
     "Downloading": ACCENT,
     "Completed": "#4caf50",
     "Failed": "#f44336",
@@ -266,8 +267,9 @@ class CancellableDownloadEntry(DownloadEntry):
 
     def set_status(self, status: str):
         super().set_status(status)
-        self.cancel_btn.setVisible(status == "Downloading")
-        self.cancel_btn.setEnabled(status == "Downloading")
+        cancellable = status in {"Queued", "Downloading"}
+        self.cancel_btn.setVisible(cancellable)
+        self.cancel_btn.setEnabled(cancellable)
 
     def _cancel_requested(self):
         if callable(self.on_cancel):

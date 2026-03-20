@@ -68,6 +68,7 @@ UPDATE_ERROR_CACHE_TTL_SECONDS = 30
 SHORTCUT_FALLBACK = object()
 UPDATE_STATUS_COLORS = {
     "Ready": "#b18b84",
+    "Queued": "#d7b1aa",
     "Checking": "#b18b84",
     "Downloading": ACCENT,
     "Completed": "#4caf50",
@@ -904,9 +905,12 @@ class UpdatePage(DownloadHistoryPageBase):
                 continue
             if self.service.has_active_download(widget.name):
                 widget.update_btn.setEnabled(False)
-                widget.update_btn.setToolTip("Updating...")
+                job_status = self.service.get_status(widget.name) or "Downloading"
+                widget.update_btn.setToolTip("Queued..." if job_status == "Queued" else "Updating...")
                 current, total = self.service.get_progress(widget.name)
-                if total > 0:
+                if job_status == "Queued":
+                    widget.set_status("Queued")
+                elif total > 0:
                     widget.set_progress(current, total)
                 else:
                     widget.set_status("Downloading")

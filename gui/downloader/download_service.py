@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import deque
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -34,20 +35,86 @@ class DownloadCancelled(Exception):
 
 class DownloadJob:
 
-    def __init__(self, initial_name: str, source_url: str):
+    def __init__(
+        self,
+        initial_name: str,
+        source_url: str,
+        *,
+        service,
+        history_kind: str,
+        url: str,
+        output_path: str,
+        preferred_name: str | None = None,
+        chapter_urls: list[str] | None = None,
+    ):
+        self.service = service
         self.initial_name = initial_name
         self.active_name = initial_name
         self.source_url = source_url
+        self.history_kind = history_kind
+        self.url = url
+        self.output_path = output_path
+        self.preferred_name = preferred_name
+        self.chapter_urls = list(chapter_urls or [])
         self.cancel_requested = False
         self.process = None
         self.thread = None
         self.executor = None
         self.progress_current = 0
         self.progress_total = 0
+        self.state = "Queued"
         self.temp_dir = str(data_path("_download_temp", f"job-{uuid.uuid4().hex}"))
         self.session_local = threading.local()
         self.sessions: list[requests.Session] = []
         self.sessions_lock = threading.Lock()
+
+
+class GlobalDownloadQueue:
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_job: DownloadJob | None = None
+        self._pending_jobs: deque[DownloadJob] = deque()
+
+    def enqueue(self, job: DownloadJob) -> bool:
+        with self._lock:
+            if self._active_job is None:
+                self._active_job = job
+                return True
+            self._pending_jobs.append(job)
+            return False
+
+    def remove(self, job: DownloadJob) -> tuple[bool, DownloadJob | None]:
+        with self._lock:
+            if self._active_job is job:
+                self._active_job = None
+                return True, self._advance_locked()
+
+            remaining = deque(item for item in self._pending_jobs if item is not job)
+            removed = len(remaining) != len(self._pending_jobs)
+            self._pending_jobs = remaining
+            return removed, None
+
+    def finish(self, job: DownloadJob) -> DownloadJob | None:
+        with self._lock:
+            if self._active_job is job:
+                self._active_job = None
+            else:
+                self._pending_jobs = deque(item for item in self._pending_jobs if item is not job)
+                return None
+            return self._advance_locked()
+
+    def _advance_locked(self) -> DownloadJob | None:
+        while self._pending_jobs:
+            next_job = self._pending_jobs.popleft()
+            if next_job.cancel_requested:
+                continue
+            self._active_job = next_job
+            return next_job
+        return None
+
+
+_global_download_queue = GlobalDownloadQueue()
 
 
 class DownloadService(QObject):
@@ -106,19 +173,23 @@ class DownloadService(QObject):
             return f"'{initial_name}' is already downloading."
 
         logger.info("Starting download url=%s preferred_name=%s output=%s", url, preferred_name, output_path)
-        job = DownloadJob(initial_name, self._normalized_source_url(url))
-        self.history_store.upsert(self.history_kind, job.initial_name, "Downloading", job.source_url)
+        job = DownloadJob(
+            initial_name,
+            self._normalized_source_url(url),
+            service=self,
+            history_kind=self.history_kind,
+            url=url,
+            output_path=output_path,
+            preferred_name=preferred_name,
+            chapter_urls=chapter_urls,
+        )
         with self._jobs_lock:
             self._jobs[job.initial_name] = job
-        self.download_started.emit(job.initial_name)
-
-        thread = threading.Thread(
-            target=self._run_download,
-            args=(job, url, output_path, preferred_name, list(chapter_urls or [])),
-            daemon=True,
-        )
-        job.thread = thread
-        thread.start()
+        if _global_download_queue.enqueue(job):
+            self._begin_job(job)
+        else:
+            self.history_store.upsert(job.history_kind, job.initial_name, "Queued", job.source_url)
+            self.status_changed.emit(job.initial_name, "Queued")
         return None
 
     def cancel_download(self, name: str | None = None):
@@ -129,8 +200,12 @@ class DownloadService(QObject):
         for job in jobs:
             if name and job.active_name != sanitize_webtoon_name(name):
                 continue
-            logger.warning("Cancelling active download for %s", job.active_name)
             job.cancel_requested = True
+            if job.state == "Queued":
+                logger.warning("Cancelling queued download for %s", job.active_name)
+                self._finalize_queued_cancellation(job)
+                continue
+            logger.warning("Cancelling active download for %s", job.active_name)
             if job.process and job.process.poll() is None:
                 job.process.terminate()
             if job.executor is not None:
@@ -175,14 +250,51 @@ class DownloadService(QObject):
                     return int(job.progress_current), int(job.progress_total)
         return 0, 0
 
-    def _run_download(
-        self,
-        job: DownloadJob,
-        url: str,
-        output_path: str,
-        preferred_name: str | None,
-        chapter_urls: list[str] | None,
-    ):
+    def get_status(self, name: str) -> str:
+        normalized = sanitize_webtoon_name(name or "")
+        if not normalized:
+            return ""
+        with self._jobs_lock:
+            for job in self._jobs.values():
+                if job.active_name == normalized or job.initial_name == normalized:
+                    return str(job.state or "")
+        return ""
+
+    def _begin_job(self, job: DownloadJob):
+        job.state = "Downloading"
+        self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Downloading", job.source_url)
+        self.status_changed.emit(job.active_name or job.initial_name, "Downloading")
+        self.download_started.emit(job.active_name or job.initial_name)
+        thread = threading.Thread(
+            target=self._run_download,
+            args=(job,),
+            daemon=True,
+        )
+        job.thread = thread
+        thread.start()
+
+    def _finalize_queued_cancellation(self, job: DownloadJob):
+        removed, next_job = _global_download_queue.remove(job)
+        if not removed:
+            return
+        self._close_job_sessions(job)
+        shutil.rmtree(job.temp_dir, ignore_errors=True)
+        with self._jobs_lock:
+            self._jobs.pop(job.initial_name, None)
+        job.state = "Cancelled"
+        self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Cancelled", job.source_url)
+        self.status_changed.emit(job.active_name or job.initial_name, "Cancelled")
+        self.download_finished.emit(job.active_name or job.initial_name, "Cancelled")
+        if next_job is not None:
+            next_job_service = getattr(next_job, "service", None)
+            if next_job_service is not None:
+                next_job_service._begin_job(next_job)
+
+    def _run_download(self, job: DownloadJob):
+        url = job.url
+        output_path = job.output_path
+        preferred_name = job.preferred_name
+        chapter_urls = list(job.chapter_urls or [])
         name = sanitize_webtoon_name(preferred_name) or job.initial_name or "download"
         status = "Failed"
 
@@ -190,11 +302,11 @@ class DownloadService(QObject):
             os.makedirs(job.temp_dir, exist_ok=True)
 
             if preferred_name:
-                self.history_store.rename(self.history_kind, job.initial_name, name, job.source_url, "Downloading")
+                self.history_store.rename(job.history_kind, job.initial_name, name, job.source_url, "Downloading")
                 self.name_resolved.emit(job.initial_name, name)
             else:
                 name = self._resolve_name(url)
-                self.history_store.rename(self.history_kind, job.initial_name, name, job.source_url, "Downloading")
+                self.history_store.rename(job.history_kind, job.initial_name, name, job.source_url, "Downloading")
                 self.name_resolved.emit(job.initial_name, name)
 
             job.active_name = name
@@ -253,10 +365,16 @@ class DownloadService(QObject):
             shutil.rmtree(job.temp_dir, ignore_errors=True)
             with self._jobs_lock:
                 self._jobs.pop(job.initial_name, None)
-            self.history_store.upsert(self.history_kind, job.active_name or name, status, job.source_url)
+            job.state = status
+            self.history_store.upsert(job.history_kind, job.active_name or name, status, job.source_url)
             logger.info("Download finished for %s with status=%s", job.active_name or name, status)
             self.status_changed.emit(job.active_name or name, status)
             self.download_finished.emit(job.active_name or name, status)
+            next_job = _global_download_queue.finish(job)
+            if next_job is not None:
+                next_job_service = getattr(next_job, "service", None)
+                if next_job_service is not None:
+                    next_job_service._begin_job(next_job)
 
     def _format_chapter_number(self, chapter_number: float | None) -> str | None:
         if chapter_number is None:
