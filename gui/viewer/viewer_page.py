@@ -303,6 +303,15 @@ class ViewerPage(QWidget):
         self.current_chapter_index = start_chapter
         self._load_chapter_no_prompt(start_chapter)
 
+    def open_chapter_with_prompt(self, webtoon, chapter_index: int) -> bool:
+        logger.info("Viewer opening chapter with prompt for %s index=%d", webtoon.name, chapter_index)
+        webtoon.path = os.path.abspath(webtoon.path)
+        self.webtoon = webtoon
+        self._apply_webtoon_settings(webtoon)
+        self._repopulate_chapter_selector()
+        self._pending_scroll_pct = 0.0
+        return self._load_chapter_with_prompt(chapter_index)
+
     def _apply_webtoon_settings(self, webtoon, rescale_existing: bool = True):
         """Apply per-webtoon settings (zoom, hide filler). Called whenever a webtoon is opened."""
         logger.info("Applying viewer settings for %s", webtoon.name)

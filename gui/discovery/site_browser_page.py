@@ -464,6 +464,9 @@ class SiteBrowserPage(QWidget):
             self._loaded_once = True
             self.refresh_catalog(reset=True)
 
+    def reload_providers(self, load_catalog: bool = True):
+        self._reload_scrapers(load_catalog=load_catalog)
+
     def refresh_catalog(self, reset: bool = False, force: bool = False, page_override: int | None = None):
         provider = self._current_provider()
         if provider is None:
@@ -1320,3 +1323,4 @@ class SiteBrowserPage(QWidget):
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
+

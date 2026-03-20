@@ -873,6 +873,9 @@ class SettingsPage(QWidget):
         else:
             self._set_settings_status("A library update check is already in progress.")
 
+    def notify_library_update_check_completed(self):
+        self._set_settings_status("Library update check completed.")
+
     def _set_settings_status(self, message: str):
         self.status_label.setText(message)
         scrapers_status_label = getattr(self, "scrapers_status_label", None)
@@ -1409,3 +1412,4 @@ class SettingsPage(QWidget):
     def _open_releases_page(self):
         logger.info("Opening releases page url=%s", GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))
+

@@ -276,10 +276,9 @@ class MainWindow(QMainWindow):
 
     def reload_scraper_availability(self):
         logger.info("Reloading scrapers across the UI")
-        self.discovery._reload_scrapers(load_catalog=True)
+        self.discovery.reload_providers(load_catalog=True)
         if self.detail.webtoon is not None:
-            self.detail._sync_update_button()
-            self.detail._begin_remote_series_lookup()
+            self.detail.refresh_remote_state()
         self.updates.refresh_entries()
 
     def open_detail(self, webtoon, force: bool = False):
@@ -328,14 +327,8 @@ class MainWindow(QMainWindow):
         show the continue/restart dialog if progress exists.
         """
         logger.info("Opening chapter with prompt for %s index=%d", webtoon.name, chapter_index)
-        webtoon.path = __import__("os").path.abspath(webtoon.path)
         self._clear_new_chapter_marker(webtoon, chapter_index)
-        self.viewer.webtoon = webtoon
-        self.viewer._apply_webtoon_settings(webtoon)
-        self.viewer._repopulate_chapter_selector()
-        # This path goes through the prompt logic
-        self.viewer._pending_scroll_pct = 0.0
-        opened = self.viewer._load_chapter_with_prompt(chapter_index)
+        opened = self.viewer.open_chapter_with_prompt(webtoon, chapter_index)
         if not opened:
             self._hide_chapter_loading_overlay()
             return
@@ -430,7 +423,7 @@ class MainWindow(QMainWindow):
         self.library.refresh_dynamic_state()
 
         if reason == "settings_manual":
-            self.settings._set_settings_status("Library update check completed.")
+            self.settings.notify_library_update_check_completed()
 
         if reason not in {"auto_startup", "auto_interval"}:
             return
@@ -696,3 +689,4 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_chapter_loading_overlay()
+

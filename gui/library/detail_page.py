@@ -501,6 +501,12 @@ class DetailPage(QWidget):
         self._sync_chapter_batch_actions()
         self._sync_update_button()
 
+    def refresh_remote_state(self):
+        if self.webtoon is None:
+            return
+        self._sync_update_button()
+        self._begin_remote_series_lookup()
+
     def _calc_percent(self, scroll: float, total_images: int) -> int:
         if total_images <= 0:
             return 0
