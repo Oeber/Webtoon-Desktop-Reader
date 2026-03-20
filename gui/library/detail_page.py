@@ -1307,6 +1307,10 @@ class DetailPage(QWidget):
         scroll_pct = progress.get("scroll", 0.0)
         if chapter in self.webtoon.chapters:
             idx = self.webtoon.chapters.index(chapter)
+            total_images = int(progress.get("total_images", 0) or 0)
+            if total_images > 0 and scroll_pct >= total_images and idx + 1 < len(self.webtoon.chapters):
+                self.main_window.open_chapter(self.webtoon, idx + 1, 0.0)
+                return
             self.main_window.open_chapter(self.webtoon, idx, scroll_pct)
         else:
             QMessageBox.information(
@@ -1542,4 +1546,7 @@ class DetailPage(QWidget):
     def _start_from_beginning(self): 
         logger.info("Start from beginning requested for %s", self.webtoon.name if self.webtoon else "<none>")
         self.main_window.open_chapter(self.webtoon, 0)
+
+
+
 

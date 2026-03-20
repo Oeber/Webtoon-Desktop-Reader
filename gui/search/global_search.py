@@ -786,11 +786,13 @@ class GlobalSearchDialog(QDialog):
             chapter = progress.get("chapter")
             scroll_pct = progress.get("scroll", 0.0)
             if chapter in webtoon.chapters:
-                self.main_window.open_chapter(
-                    webtoon,
-                    webtoon.chapters.index(chapter),
-                    scroll_pct,
-                )
+                chapter_index = webtoon.chapters.index(chapter)
+                total_images = int(progress.get("total_images", 0) or 0)
+                if total_images > 0 and scroll_pct >= total_images and chapter_index + 1 < len(webtoon.chapters):
+                    self.main_window.open_chapter(webtoon, chapter_index + 1, 0.0)
+                    return
+                self.main_window.open_chapter(webtoon, chapter_index, scroll_pct)
                 return
 
         self.main_window.open_chapter(webtoon, 0, 0.0)
+

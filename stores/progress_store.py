@@ -22,7 +22,7 @@ class ProgressStore:
         """Most recent progress (for Last read label + Continue button)."""
         conn = get_connection()
         row = conn.execute(
-            """SELECT chapter, scroll 
+            """SELECT chapter, scroll, total_images 
                FROM progress 
                WHERE webtoon_name = ? 
                ORDER BY updated_at DESC 
@@ -31,7 +31,7 @@ class ProgressStore:
         ).fetchone()
         if row is None:
             return None
-        return {"chapter": row["chapter"], "scroll": row["scroll"]}
+        return {"chapter": row["chapter"], "scroll": row["scroll"], "total_images": row["total_images"]}
 
     def get_for_chapter(self, webtoon_name: str, chapter: str) -> float:
         """Scroll for a specific chapter (used in viewer prompt)."""
@@ -139,3 +139,6 @@ class ProgressStore:
             (new_name, old_name)
         )
         conn.commit()
+
+
+
