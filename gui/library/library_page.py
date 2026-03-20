@@ -1,10 +1,11 @@
 import json
 import os
 import shutil
+import threading
 import time
 from types import SimpleNamespace
 
-from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer
+from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -420,6 +421,7 @@ class FlatLibrarySection(QFrame):
 
 
 class LibraryPage(QWidget):
+    delete_paths_finished = Signal(object)
 
     def __init__(self, main_window):
         super().__init__()
@@ -440,6 +442,9 @@ class LibraryPage(QWidget):
         self._block_input_until = 0.0
         self._pending_reload = False
         self._pending_incremental_refresh_names = set()
+        self._update_controls_refresh_pending = False
+        self._delete_in_progress = False
+        self._pending_deleted_names = set()
         self._card_scale = int(load_setting(CARD_SCALE_KEY, 100))
         self._pending_card_scale = self._card_scale
         self._selected_webtoons = set()
@@ -573,12 +578,16 @@ class LibraryPage(QWidget):
         self._scale_timer.timeout.connect(self._apply_pending_card_scale)
 
         self._cooldown_timer = QTimer(self)
-        self._cooldown_timer.timeout.connect(self._sync_update_controls)
+        self._cooldown_timer.timeout.connect(self._schedule_update_controls_refresh)
         self._cooldown_timer.start(1000)
 
         self._incremental_refresh_timer = QTimer(self)
         self._incremental_refresh_timer.setSingleShot(True)
         self._incremental_refresh_timer.timeout.connect(self._flush_incremental_refreshes)
+
+        self._update_controls_refresh_timer = QTimer(self)
+        self._update_controls_refresh_timer.setSingleShot(True)
+        self._update_controls_refresh_timer.timeout.connect(self._flush_update_controls_refresh)
 
         self._live_progress_timer = QTimer(self)
         self._live_progress_timer.timeout.connect(self._poll_live_progress)
@@ -587,6 +596,7 @@ class LibraryPage(QWidget):
         self._input_blocker = QWidget(self)
         self._input_blocker.hide()
         self._input_blocker.setStyleSheet(TRANSPARENT_BG_STYLE)
+        self.delete_paths_finished.connect(self._on_delete_paths_finished)
 
         self.load_library()
 
@@ -605,6 +615,8 @@ class LibraryPage(QWidget):
         super().showEvent(event)
         if self._pending_reload and (self._update_service is None or not self._update_service.is_busy()):
             self.load_library()
+        if self._update_controls_refresh_pending:
+            self._flush_update_controls_refresh()
         self._poll_live_progress()
 
     def refresh_progress(self):
@@ -613,7 +625,7 @@ class LibraryPage(QWidget):
 
     def refresh_dynamic_state(self):
         self._refresh_webtoon_flags()
-        self._sync_update_controls()
+        self._schedule_update_controls_refresh(delay_ms=0)
         self._sync_manual_download_cards()
 
     def _refresh_webtoon_flags(self):
@@ -1183,14 +1195,14 @@ class LibraryPage(QWidget):
         if self._update_service is None:
             return
         if self.settings_store.get_completed(webtoon_name):
-            self._sync_update_controls()
+            self._schedule_update_controls_refresh(delay_ms=0)
             return
         source_url = self.settings_store.get_source_url(webtoon_name)
         if not source_url:
             return
         remaining = self._cooldown_remaining(webtoon_name)
         if remaining > 0:
-            self._sync_update_controls()
+            self._schedule_update_controls_refresh(delay_ms=0)
             return
         error = self._update_service.start_download(
             source_url,
@@ -1199,23 +1211,47 @@ class LibraryPage(QWidget):
         )
         if error:
             logger.warning("Failed to start update for %s: %s", webtoon_name, error)
-            self._sync_update_controls()
+            self._schedule_update_controls_refresh(delay_ms=0)
             return
-        self._sync_update_controls()
+        self._schedule_update_controls_refresh(delay_ms=0)
 
     def _cooldown_remaining(self, webtoon_name: str) -> int:
         return cooldown_remaining(self.settings_store.get_last_update_at(webtoon_name))
 
+    def _schedule_update_controls_refresh(self, delay_ms: int = 50):
+        self._update_controls_refresh_pending = True
+        if self.isVisible():
+            self._update_controls_refresh_timer.start(max(0, int(delay_ms)))
+
+    def _flush_update_controls_refresh(self):
+        if not self._update_controls_refresh_pending and not self.isVisible():
+            return
+        self._update_controls_refresh_pending = False
+        self._update_controls_refresh_timer.stop()
+        self._sync_update_controls()
+
     def _sync_update_controls(self):
+        card_names = [
+            card.webtoon.name
+            for card in self._cards
+            if not getattr(card, "_download_placeholder", False)
+            and card.webtoon.name not in self._active_manual_downloads
+        ]
+        settings_rows = self.settings_store.get_rows(
+            card_names,
+            columns=("completed", "source_url", "last_update_at"),
+        ) if card_names else {}
+
         for card in self._cards:
             if getattr(card, "_download_placeholder", False):
                 continue
             if card.webtoon.name in self._active_manual_downloads:
                 continue
+            row = settings_rows.get(card.webtoon.name, {})
             active_update = self._active_updates.get(card.webtoon.name)
-            has_source = bool(self.settings_store.get_source_url(card.webtoon.name))
+            has_source = bool(row.get("source_url"))
             has_remote_updates = int(getattr(card.webtoon, "remote_update_count", 0) or 0) > 0
-            is_completed = self.settings_store.get_completed(card.webtoon.name)
+            is_completed = bool(row.get("completed", 0))
             update_allowed = has_source and not is_completed
             card.set_update_available(has_source, has_remote_updates=has_remote_updates)
             if is_completed:
@@ -1240,7 +1276,7 @@ class LibraryPage(QWidget):
                 if total > 0:
                     card.set_update_progress(current, total)
                 continue
-            remaining = self._cooldown_remaining(card.webtoon.name)
+            remaining = cooldown_remaining(row.get("last_update_at"))
             if remaining > 0:
                 card.set_update_enabled(
                     False,
@@ -1252,13 +1288,12 @@ class LibraryPage(QWidget):
             card.set_update_status("Ready")
 
     def _sync_manual_download_cards(self):
-        for card in self._cards:
-            state = self._active_manual_downloads.get(card.webtoon.name)
-            if state is None:
-                card.clear_download_progress()
+        for name, state in self._active_manual_downloads.items():
+            card = self._card_for(name)
+            if card is None:
                 continue
             if self._manual_download_service is not None:
-                service_current, service_total = self._manual_download_service.get_progress(card.webtoon.name)
+                service_current, service_total = self._manual_download_service.get_progress(name)
                 if service_total > 0:
                     state["current"] = service_current
                     state["total"] = service_total
@@ -1267,7 +1302,6 @@ class LibraryPage(QWidget):
     def _poll_live_progress(self):
         if not self.isVisible():
             return
-        self._sync_update_controls()
         self._sync_manual_download_cards()
 
     def _on_card_selected(self, webtoon_name: str, selected: bool):
@@ -1360,7 +1394,7 @@ class LibraryPage(QWidget):
             self._sync_batch_actions()
 
     def _delete_webtoons(self, names: list[str]) -> bool:
-        if not names:
+        if not names or self._delete_in_progress:
             return False
         if len(names) == 1:
             message = f"Delete '{names[0]}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings."
@@ -1375,7 +1409,25 @@ class LibraryPage(QWidget):
         if answer != QMessageBox.Yes:
             return False
         library_path = load_library_path()
+        pending_names = {str(name).strip() for name in names if str(name).strip()}
+        self._pending_deleted_names.update(pending_names)
+        self._selected_webtoons.difference_update(pending_names)
+        self._webtoons = [webtoon for webtoon in self._webtoons if webtoon.name not in self._pending_deleted_names]
+        self._rebuild_sections()
+        self._sync_batch_actions()
+        self._delete_in_progress = True
+
+        worker = threading.Thread(
+            target=self._delete_webtoon_paths_worker,
+            args=(list(names), library_path),
+            daemon=True,
+        )
+        worker.start()
+        return True
+
+    def _delete_webtoon_paths_worker(self, names: list[str], library_path: str):
         deleted_names = []
+        failed_names = []
         for name in names:
             try:
                 webtoon_path = os.path.join(library_path, name)
@@ -1384,18 +1436,43 @@ class LibraryPage(QWidget):
                 deleted_names.append(name)
             except Exception as e:
                 logger.error("Failed to delete webtoon %s", name, exc_info=e)
-        if deleted_names:
-            self.progress_store.clear_many(deleted_names)
-            self.settings_store.delete_webtoons(deleted_names)
-        if not deleted_names:
-            return False
-        self.load_library()
-        self._apply_filter()
-        return True
+                failed_names.append(name)
+        self.delete_paths_finished.emit(
+            {
+                "requested_names": list(names),
+                "deleted_names": deleted_names,
+                "failed_names": failed_names,
+            }
+        )
+
+    def _on_delete_paths_finished(self, payload: object):
+        payload = payload if isinstance(payload, dict) else {}
+        requested_names = list(payload.get("requested_names") or [])
+        deleted_names = list(payload.get("deleted_names") or [])
+        failed_names = list(payload.get("failed_names") or [])
+        affected_names = {str(name).strip() for name in [*requested_names, *deleted_names, *failed_names] if str(name).strip()}
+
+        try:
+            if deleted_names:
+                self.progress_store.clear_many(deleted_names)
+                self.settings_store.delete_webtoons(deleted_names)
+            if affected_names or self._pending_deleted_names:
+                self._pending_deleted_names.difference_update(affected_names)
+                self.load_library()
+                self._apply_filter()
+        finally:
+            self._delete_in_progress = False
+
+        if failed_names:
+            suffix = "series" if len(failed_names) != 1 else "series"
+            self.main_window.statusBar().showMessage(
+                f"Some {suffix} could not be deleted.",
+                5000,
+            )
 
     def _on_update_started(self, name: str):
         self._active_updates[name] = {"current": 0, "total": 0}
-        self._sync_update_controls()
+        self._schedule_update_controls_refresh(delay_ms=0)
 
     def _on_update_finished(self, name: str, status: str):
         self._active_updates.pop(name, None)
@@ -1405,7 +1482,7 @@ class LibraryPage(QWidget):
             webtoon = next((item for item in self._webtoons if item.name == name), None)
             if webtoon is not None:
                 webtoon.remote_update_count = 0
-        self._sync_update_controls()
+        self._schedule_update_controls_refresh(delay_ms=0)
 
     def _on_update_library_changed(self, name: str):
         if self.isVisible():
@@ -1532,14 +1609,14 @@ class LibraryPage(QWidget):
             card = self._card_for(webtoon_name)
             if card is not None:
                 card.refresh_webtoon(updated)
-            self._sync_update_controls()
+            self._schedule_update_controls_refresh(delay_ms=0)
             return True
         return False
 
     def _schedule_incremental_refresh(self, webtoon_name: str):
         if webtoon_name:
             self._pending_incremental_refresh_names.add(webtoon_name)
-        self._sync_update_controls()
+        self._schedule_update_controls_refresh()
         self._sync_manual_download_cards()
         if not self._incremental_refresh_timer.isActive():
             self._incremental_refresh_timer.start(150)

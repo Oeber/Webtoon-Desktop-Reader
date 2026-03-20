@@ -564,6 +564,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self._has_loaded_once = False
         self._current_check_reason = "manual"
         self._last_check_counts_by_name = {}
+        self._results_refresh_pending = False
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search titles with updates...")
@@ -613,6 +614,10 @@ class UpdatePage(DownloadHistoryPageBase):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self.refresh_entries)
 
+        self._results_refresh_timer = QTimer(self)
+        self._results_refresh_timer.setSingleShot(True)
+        self._results_refresh_timer.timeout.connect(self._flush_results_refresh)
+
         self._cooldown_timer = QTimer(self)
         self._cooldown_timer.timeout.connect(self._sync_update_buttons)
         self._cooldown_timer.start(1000)
@@ -650,6 +655,9 @@ class UpdatePage(DownloadHistoryPageBase):
         if not self._has_loaded_once:
             self._has_loaded_once = True
             self.refresh_entries(reason="open")
+            return
+        if self._results_refresh_pending:
+            self._flush_results_refresh()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -696,6 +704,8 @@ class UpdatePage(DownloadHistoryPageBase):
         self._pending_checks = len(candidates)
         self._completed_checks = 0
         self._check_errors = 0
+        self._results_refresh_pending = False
+        self._results_refresh_timer.stop()
         self._empty_message = (
             "Checking saved titles for updates..."
             if candidates else
@@ -800,6 +810,18 @@ class UpdatePage(DownloadHistoryPageBase):
         logger.info("Scheduling update-page filter for query='%s'", text.strip())
         self._pending_search = text
         self._search_timer.start(150)
+
+    def _schedule_results_refresh(self, delay_ms: int = 100):
+        self._results_refresh_pending = True
+        if self.isVisible():
+            self._results_refresh_timer.start(max(0, int(delay_ms)))
+
+    def _flush_results_refresh(self):
+        if not self._results_refresh_pending and not self.isVisible():
+            return
+        self._results_refresh_pending = False
+        self._results_refresh_timer.stop()
+        self._apply_filter()
 
     def _on_card_selected(self, webtoon_name: str, selected: bool):
         if selected:
@@ -959,7 +981,7 @@ class UpdatePage(DownloadHistoryPageBase):
             self._available_updates.append(result)
             self._last_check_counts_by_name[str(candidate.get("name") or "")] = int(result.get("new_chapters", 0) or 0)
             self._available_updates.sort(key=lambda item: item["webtoon"].name.lower())
-            self._apply_filter()
+            self._schedule_results_refresh()
 
         if self._pending_checks > 0:
             self.status_label.setText(
@@ -989,6 +1011,8 @@ class UpdatePage(DownloadHistoryPageBase):
             clear_missing_names=[item["name"] for item in self._candidates],
         )
         self._empty_message = "No updates found right now."
+        self._results_refresh_pending = False
+        self._results_refresh_timer.stop()
         self._apply_filter()
         self.check_cycle_finished.emit(
             self._current_check_reason,

@@ -1,3 +1,4 @@
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from core.app_logging import get_logger
@@ -16,6 +17,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         super().__init__(main_window, "Downloader", "History", history_kind="download")
         self.history_store = get_download_history()
         self._auth_retry_in_progress = False
+        self._activity_refresh_pending = False
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -53,12 +55,15 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.history_layout.addWidget(self.activity_section)
 
         self.service.auth_required.connect(self._on_auth_required)
+        self._activity_refresh_timer = QTimer(self)
+        self._activity_refresh_timer.setSingleShot(True)
+        self._activity_refresh_timer.timeout.connect(self._flush_recent_activity_refresh)
         self.refresh_recent_activity()
         self._sync_controls()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self.refresh_recent_activity()
+        self._flush_recent_activity_refresh()
 
     def _start_download(self):
         url = self.url_input.text()
@@ -105,7 +110,7 @@ class DownloaderPage(DownloadHistoryPageBase):
             entry.deleteLater()
             self._remove_entry(entry)
             self.set_error_text(error)
-            self.refresh_recent_activity()
+            self._schedule_recent_activity_refresh(delay_ms=0)
             return error
 
         self.set_error_text("")
@@ -132,7 +137,7 @@ class DownloaderPage(DownloadHistoryPageBase):
             self.history_layout.removeWidget(entry)
             entry.deleteLater()
             self._remove_entry(entry)
-        self.refresh_recent_activity()
+        self._schedule_recent_activity_refresh(delay_ms=0)
         self._sync_controls()
 
     def _open_downloaded_webtoon_detail(self, webtoon_name: str):
@@ -154,10 +159,22 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.cancel_btn.setEnabled(self.service.is_busy())
 
     def attach_history_service(self, service):
-        service.download_started.connect(lambda _name: self.refresh_recent_activity())
-        service.name_resolved.connect(lambda _old_name, _new_name: self.refresh_recent_activity())
-        service.download_finished.connect(lambda _name, _status: self.refresh_recent_activity())
-        service.status_changed.connect(lambda _name, _status: self.refresh_recent_activity())
+        service.download_started.connect(lambda _name: self._schedule_recent_activity_refresh())
+        service.name_resolved.connect(lambda _old_name, _new_name: self._schedule_recent_activity_refresh())
+        service.download_finished.connect(lambda _name, _status: self._schedule_recent_activity_refresh())
+        service.status_changed.connect(lambda _name, _status: self._schedule_recent_activity_refresh())
+
+    def _schedule_recent_activity_refresh(self, delay_ms: int = 100):
+        self._activity_refresh_pending = True
+        if self.isVisible():
+            self._activity_refresh_timer.start(max(0, int(delay_ms)))
+
+    def _flush_recent_activity_refresh(self):
+        if not self._activity_refresh_pending and not self.isVisible():
+            return
+        self._activity_refresh_pending = False
+        self._activity_refresh_timer.stop()
+        self.refresh_recent_activity()
 
     def refresh_recent_activity(self):
         while self.activity_list.count():

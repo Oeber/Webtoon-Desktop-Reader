@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import CancelledError
 from urllib.parse import parse_qs, urlparse
 
 import requests
@@ -62,6 +63,7 @@ class DownloadJob:
         self.process = None
         self.thread = None
         self.executor = None
+        self.executor_lock = threading.Lock()
         self.progress_current = 0
         self.progress_total = 0
         self.state = "Queued"
@@ -237,11 +239,7 @@ class DownloadService(QObject):
             logger.warning("Cancelling active download for %s", job.active_name)
             if job.process and job.process.poll() is None:
                 job.process.terminate()
-            if job.executor is not None:
-                try:
-                    job.executor.shutdown(wait=False, cancel_futures=True)
-                except Exception as e:
-                    logger.warning("Failed to stop executor for %s", job.active_name, exc_info=e)
+            self._shutdown_job_executor(job, wait=False, cancel_futures=True)
 
     def shutdown(self, wait_timeout: float = 5.0):
         logger.info("Shutting down DownloadService")
@@ -392,6 +390,7 @@ class DownloadService(QObject):
             logger.error("Download failed for %s", url, exc_info=e)
             status = "Failed"
         finally:
+            self._shutdown_job_executor(job, wait=not job.cancel_requested, cancel_futures=job.cancel_requested)
             self._close_job_sessions(job)
             shutil.rmtree(job.temp_dir, ignore_errors=True)
             with self._jobs_lock:
@@ -549,6 +548,29 @@ class DownloadService(QObject):
         if thread_local is not None and hasattr(thread_local, "session"):
             delattr(thread_local, "session")
 
+    def _get_job_executor(self, job: DownloadJob, max_workers: int = 8):
+        with job.executor_lock:
+            executor = job.executor
+            if executor is None:
+                from concurrent.futures import ThreadPoolExecutor
+
+                executor = ThreadPoolExecutor(max_workers=max(1, max_workers))
+                job.executor = executor
+            return executor
+
+    def _shutdown_job_executor(self, job: DownloadJob, *, wait: bool, cancel_futures: bool) -> None:
+        with job.executor_lock:
+            executor = job.executor
+            job.executor = None
+
+        if executor is None:
+            return
+
+        try:
+            executor.shutdown(wait=wait, cancel_futures=cancel_futures)
+        except Exception as e:
+            logger.warning("Failed to stop executor for %s", job.active_name, exc_info=e)
+
     def _save_source_url(self, webtoon_name: str, source_url: str):
         if not webtoon_name or not source_url:
             return
@@ -608,7 +630,7 @@ class DownloadService(QObject):
         target_name: str | None = None,
         selected_chapter_urls: list[str] | None = None,
     ):
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import as_completed
 
         scraper = get_scraper(url)
         scraper_session = self._get_job_session(job)
@@ -700,24 +722,24 @@ class DownloadService(QObject):
 
             success_count = 0
             failure_count = 0
-            max_workers = min(8, max(1, len(pages)))
+            executor = self._get_job_executor(job, max_workers=8)
+            future_to_page = {}
+            for page in pages:
+                if job.cancel_requested:
+                    raise DownloadCancelled()
 
-            executor = ThreadPoolExecutor(max_workers=max_workers)
-            job.executor = executor
-            try:
-                future_to_page = {}
-                for page in pages:
-                    raw_url = page.image_url.split("?", 1)[0]
-                    ext = raw_url.rsplit(".", 1)[-1].lower() if "." in raw_url else "jpg"
-                    if f".{ext}" not in SUPPORTED_IMAGE_EXTENSIONS:
-                        ext = "jpg"
+                raw_url = page.image_url.split("?", 1)[0]
+                ext = raw_url.rsplit(".", 1)[-1].lower() if "." in raw_url else "jpg"
+                if f".{ext}" not in SUPPORTED_IMAGE_EXTENSIONS:
+                    ext = "jpg"
 
-                    filename = f"{page.index:03d}.{ext}"
-                    dest_path = os.path.join(chapter_dir, filename)
-                    if os.path.exists(dest_path):
-                        success_count += 1
-                        continue
+                filename = f"{page.index:03d}.{ext}"
+                dest_path = os.path.join(chapter_dir, filename)
+                if os.path.exists(dest_path):
+                    success_count += 1
+                    continue
 
+                try:
                     future = executor.submit(
                         self._download_page_asset,
                         scraper,
@@ -726,28 +748,32 @@ class DownloadService(QObject):
                         dest_path,
                         headers,
                     )
-                    future_to_page[future] = page.image_url
-
-                for future in as_completed(future_to_page):
-                    try:
-                        future.result()
-                        success_count += 1
-                    except DownloadCancelled:
+                except RuntimeError:
+                    if job.cancel_requested:
                         shutil.rmtree(chapter_dir, ignore_errors=True)
-                        raise
-                    except Exception as e:
-                        failure_count += 1
-                        logger.warning(
-                            "Page download failed for %s",
-                            future_to_page[future],
-                            exc_info=e,
-                        )
-            finally:
+                        raise DownloadCancelled()
+                    raise
+                future_to_page[future] = page.image_url
+
+            for future in as_completed(future_to_page):
                 try:
-                    executor.shutdown(wait=not job.cancel_requested, cancel_futures=job.cancel_requested)
-                finally:
-                    if job.executor is executor:
-                        job.executor = None
+                    future.result()
+                    success_count += 1
+                except DownloadCancelled:
+                    shutil.rmtree(chapter_dir, ignore_errors=True)
+                    raise
+                except CancelledError:
+                    if job.cancel_requested:
+                        shutil.rmtree(chapter_dir, ignore_errors=True)
+                        raise DownloadCancelled()
+                    failure_count += 1
+                except Exception as e:
+                    failure_count += 1
+                    logger.warning(
+                        "Page download failed for %s",
+                        future_to_page[future],
+                        exc_info=e,
+                    )
 
             if success_count == 0:
                 shutil.rmtree(chapter_dir, ignore_errors=True)
