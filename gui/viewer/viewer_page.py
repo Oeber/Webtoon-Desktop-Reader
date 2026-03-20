@@ -610,6 +610,7 @@ class ViewerPage(QWidget):
         self._restore_image_offset = 0.0
         self._resize_packed = None
         self._resize_anchor_px = 0
+        self._applying_restore = False
 
         self._pending_batch: dict[int, QPixmap] = {}
         self._chapter_image_cache: dict[str, tuple[int, list[str]]] = {}
@@ -702,7 +703,7 @@ class ViewerPage(QWidget):
 
         self._zoom_slider = QSlider(Qt.Horizontal)
         self._zoom_slider.setFixedWidth(100)
-        self._zoom_slider.setMinimum(25)
+        self._zoom_slider.setMinimum(15)
         self._zoom_slider.setMaximum(100)
         self._zoom_slider.setValue(int(self._zoom * 100))
         self._zoom_slider.setFocusPolicy(Qt.NoFocus)
@@ -953,6 +954,10 @@ class ViewerPage(QWidget):
             self._restore_image_index = int(packed)
             self._restore_image_offset = packed - int(packed)
 
+    def _clear_pending_restore(self):
+        self._restore_image_index = None
+        self._restore_image_offset = 0.0
+
     def _apply_restore(self):
         idx = self._restore_image_index
         if idx is None or idx >= len(self.image_labels):
@@ -961,8 +966,12 @@ class ViewerPage(QWidget):
             lbl = self.image_labels[i]
             if lbl.pixmap() is None or lbl.pixmap().isNull():
                 return
-        if self._jump_to_packed(idx, self._restore_image_offset):
-            self._restore_image_index = None
+        self._applying_restore = True
+        try:
+            if self._jump_to_packed(idx, self._restore_image_offset):
+                self._clear_pending_restore()
+        finally:
+            self._applying_restore = False
 
     def _jump_to_packed(self, idx: int, offset_frac: float, anchor_px: int = 0) -> bool:
         cumulative = self.cumulative_height_before(idx)
@@ -1398,7 +1407,7 @@ class ViewerPage(QWidget):
 
     def _set_zoom(self, zoom: float, update_slider: bool = True, rescale_existing: bool = True):
         previous_zoom = self._zoom
-        next_zoom = max(0.25, min(1.0, zoom))
+        next_zoom = max(0.15, min(1.0, zoom))
         changed = abs(next_zoom - previous_zoom) > 0.0001
         self._zoom = next_zoom
 
@@ -2068,6 +2077,9 @@ class ViewerPage(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
+        if self._restore_image_index is not None and not self._applying_restore:
+            if key in (Qt.Key_Down, Qt.Key_Up, Qt.Key_Left, Qt.Key_Right, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Space):
+                self._clear_pending_restore()
         bar = self.scroll.verticalScrollBar()
         view_h = self.scroll.viewport().height()
         pos = bar.value()
@@ -2362,6 +2374,13 @@ class ViewerPage(QWidget):
                 handles_scroll_area_event = obj == viewport or obj == container or obj == preview or viewport.isAncestorOf(obj)
                 if handles_scroll_area_event:
                     event_type = event.type()
+
+                    if (
+                        self._restore_image_index is not None
+                        and not self._applying_restore
+                        and event_type in (QEvent.Wheel, QEvent.MouseButtonPress)
+                    ):
+                        self._clear_pending_restore()
 
                     if event_type in (QEvent.MouseButtonPress, QEvent.MouseMove):
                         if obj == viewport:

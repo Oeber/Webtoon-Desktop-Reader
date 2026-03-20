@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QTextEdit,
     QVBoxLayout,
     QWidget,
-    QMessageBox,
 )
 
 from core.app_update import (
@@ -302,6 +301,7 @@ class SettingsPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(TAB_STYLE)
         self.tabs.addTab(self._build_general_tab(), "General")
+        self.tabs.addTab(self._build_scrapers_tab(), "Scrapers")
         self.tabs.addTab(self._build_logs_tab(), "Logs")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
@@ -456,25 +456,6 @@ class SettingsPage(QWidget):
 
         layout.addWidget(updates_card)
 
-        sources_card, sources_layout = self._build_card()
-        sources_header = QHBoxLayout()
-        sources_header.setContentsMargins(0, 0, 0, 0)
-        sources_header.setSpacing(10)
-
-        sources_label = QLabel("Sources")
-        sources_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
-        sources_header.addWidget(sources_label)
-        sources_header.addStretch()
-        sources_layout.addLayout(sources_header)
-
-        sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover.")
-        sources_help.setWordWrap(True)
-        sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
-        sources_layout.addWidget(sources_help)
-        self._build_source_checkboxes(sources_layout)
-
-        layout.addWidget(sources_card)
-
         reader_card, reader_layout = self._build_card()
         reader_header = QHBoxLayout()
         reader_header.setContentsMargins(0, 0, 0, 0)
@@ -500,7 +481,7 @@ class SettingsPage(QWidget):
         zoom_text.setFixedWidth(100)
 
         self.zoom_slider = QSlider(Qt.Horizontal)
-        self.zoom_slider.setMinimum(25)
+        self.zoom_slider.setMinimum(15)
         self.zoom_slider.setMaximum(100)
         self.zoom_slider.setValue(int(load_setting("viewer_zoom", 0.5) * 100))
         self.zoom_slider.setStyleSheet(SLIDER_STYLE)
@@ -533,6 +514,46 @@ class SettingsPage(QWidget):
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
         layout.addWidget(self.status_label)
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(TRANSPARENT_SCROLL_AREA_STYLE)
+        scroll.setWidget(page)
+        return scroll
+
+    def _build_scrapers_tab(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet(TRANSPARENT_BG_STYLE)
+
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(16)
+        layout.setAlignment(Qt.AlignTop)
+
+        sources_card, sources_layout = self._build_card()
+        sources_header = QHBoxLayout()
+        sources_header.setContentsMargins(0, 0, 0, 0)
+        sources_header.setSpacing(10)
+
+        sources_label = QLabel("Sources")
+        sources_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        sources_header.addWidget(sources_label)
+        sources_header.addStretch()
+        sources_layout.addLayout(sources_header)
+
+        sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover.")
+        sources_help.setWordWrap(True)
+        sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        sources_layout.addWidget(sources_help)
+        self._build_source_checkboxes(sources_layout)
+
+        layout.addWidget(sources_card)
+
+        self.scrapers_status_label = QLabel("")
+        self.scrapers_status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        layout.addWidget(self.scrapers_status_label)
         layout.addStretch()
 
         scroll = QScrollArea()
@@ -606,12 +627,12 @@ class SettingsPage(QWidget):
     def _save(self, path: str):
         if not os.path.isdir(path):
             logger.warning("Rejected invalid library folder: %s", path)
-            self.status_label.setText("Warning: Folder not found.")
+            self._set_settings_status("Warning: Folder not found.")
             return
 
         save_library_path(path)
         logger.info("Library path saved: %s", path)
-        self.status_label.setText("Saved.")
+        self._set_settings_status("Saved.")
         self.main_window.library.load_library()
 
     def _reset(self):
@@ -675,12 +696,12 @@ class SettingsPage(QWidget):
 
         self._save(DEFAULT_PATH)
         self.main_window.reload_scraper_availability()
-        self.status_label.setText("Settings reset to defaults.")
+        self._set_settings_status("Settings reset to defaults.")
 
     def _on_auto_skip_changed(self, checked: bool):
         save_setting("viewer_auto_skip", checked)
         logger.info("Viewer auto-skip changed: %s", checked)
-        self.status_label.setText("Reader settings saved.")
+        self._set_settings_status("Reader settings saved.")
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -696,7 +717,7 @@ class SettingsPage(QWidget):
         save_setting("viewer_zoom", zoom)
         logger.info("Viewer default zoom changed: %.2f", zoom)
         self.zoom_value_label.setText(f"{value}%")
-        self.status_label.setText("Reader settings saved.")
+        self._set_settings_status("Reader settings saved.")
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -715,25 +736,31 @@ class SettingsPage(QWidget):
     def _on_use_categories_changed(self, checked: bool):
         save_setting(LIBRARY_USE_CATEGORIES_KEY, checked)
         logger.info("Library categories enabled changed: %s", checked)
-        self.status_label.setText("Library settings saved.")
+        self._set_settings_status("Library settings saved.")
         self.main_window.library.load_library()
 
     def _on_show_new_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, checked)
         logger.info("Library New section visibility changed: %s", checked)
-        self.status_label.setText("Library settings saved.")
+        self._set_settings_status("Library settings saved.")
         self.main_window.library.load_library()
 
     def _on_show_downloads_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, checked)
         logger.info("Library Active Downloads section visibility changed: %s", checked)
-        self.status_label.setText("Library settings saved.")
+        self._set_settings_status("Library settings saved.")
         self.main_window.library.load_library()
 
     def _on_check_updates_on_startup_changed(self, checked: bool):
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, checked)
         logger.info("App update startup checks changed: %s", checked)
-        self.status_label.setText("Update settings saved.")
+        self._set_settings_status("Update settings saved.")
+
+    def _set_settings_status(self, message: str):
+        self.status_label.setText(message)
+        scrapers_status_label = getattr(self, "scrapers_status_label", None)
+        if scrapers_status_label is not None:
+            scrapers_status_label.setText(message)
 
     def _source_rows(self) -> list[dict]:
         rows_by_site = {}
@@ -794,7 +821,7 @@ class SettingsPage(QWidget):
         }
         save_disabled_sites(disabled_sites)
         logger.info("Scraper site availability changed for %s enabled=%s", site_name, checked)
-        self.status_label.setText("Source settings saved.")
+        self._set_settings_status("Source settings saved.")
         self.main_window.reload_scraper_availability()
 
     def _on_tab_changed(self, index: int):
@@ -1125,7 +1152,7 @@ class SettingsPage(QWidget):
             can_self_update(release),
             self,
         )
-        dialog.install_btn.clicked.connect(lambda: self._trigger_app_update(confirm=False, startup_dialog=dialog))
+        dialog.install_btn.clicked.connect(lambda: self._trigger_app_update(startup_dialog=dialog))
         dialog.finished.connect(self._clear_startup_update_dialog)
         self._startup_update_dialog = dialog
         dialog.exec()
@@ -1137,7 +1164,7 @@ class SettingsPage(QWidget):
     def _clear_startup_update_dialog(self, *_args):
         self._startup_update_dialog = None
 
-    def _trigger_app_update(self, confirm: bool = True, startup_dialog: _StartupUpdateDialog | None = None):
+    def _trigger_app_update(self, startup_dialog: _StartupUpdateDialog | None = None):
         release = self._latest_update_result.latest_release if self._latest_update_result else None
         if release is None:
             logger.info("No release metadata available for self-update; opening releases page instead")
@@ -1162,20 +1189,6 @@ class SettingsPage(QWidget):
             logger.info("Ignoring duplicate self-update request while download is already running")
             return
 
-        if confirm:
-            result = QMessageBox.question(
-                self,
-                "Install Update",
-                (
-                    f"Install {display_version(release.version)} now?\n\n"
-                    "The app will download the update, close itself, replace the installed files, and relaunch automatically."
-                ),
-                QMessageBox.Yes | QMessageBox.Cancel,
-                QMessageBox.Yes,
-            )
-            if result != QMessageBox.Yes:
-                logger.info("User cancelled self-update confirmation for release=%s", release.version)
-                return
         logger.info(
             "User accepted self-update release=%s asset=%s",
             release.version,

@@ -1,7 +1,7 @@
 import json
 
 from PySide6.QtCore import QPoint, Qt, QSize, QMimeData
-from PySide6.QtGui import QAction, QDrag, QFont, QIcon
+from PySide6.QtGui import QAction, QDrag, QFont, QFontMetrics, QIcon
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMenu, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 import qtawesome as qta
 import time

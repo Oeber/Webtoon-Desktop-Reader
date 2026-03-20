@@ -4,6 +4,7 @@ import threading
 import time
 
 from core.app_logging import get_logger
+from requests.exceptions import RequestException
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QToolButton, QMessageBox
@@ -110,6 +111,13 @@ class ProgressCircle(QWidget):
 class RemoteSeriesLoader(QObject):
     loaded = Signal(int, object, str)
 
+    @staticmethod
+    def _format_request_error(exc: Exception) -> str:
+        message = str(exc).strip()
+        if "read timed out" in message.casefold():
+            return "The site took too long to respond."
+        return message or "Network request failed."
+
     def load(self, request_id: int, source_url: str):
         def worker():
             try:
@@ -121,6 +129,9 @@ class RemoteSeriesLoader(QObject):
                 self.loaded.emit(request_id, series, "")
             except ScraperError as e:
                 self.loaded.emit(request_id, None, str(e))
+            except RequestException as e:
+                logger.warning("Remote chapter lookup request failed for %s: %s", source_url, e)
+                self.loaded.emit(request_id, None, self._format_request_error(e))
             except Exception as e:
                 logger.exception("Unexpected remote chapter lookup failure")
                 self.loaded.emit(request_id, None, str(e))
