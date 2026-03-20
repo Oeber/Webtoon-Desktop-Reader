@@ -92,7 +92,8 @@ def _create_schema(conn: sqlite3.Connection):
             category            TEXT,
             bookmarked_chapters TEXT,
             last_update_at      INTEGER,
-            latest_new_chapter  TEXT
+            latest_new_chapter  TEXT,
+            remote_update_count INTEGER NOT NULL DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -127,6 +128,7 @@ def _create_schema(conn: sqlite3.Connection):
     _ensure_column(conn, "webtoon_settings", "bookmarked_chapters", "TEXT")
     _ensure_column(conn, "webtoon_settings", "last_update_at", "INTEGER")
     _ensure_column(conn, "webtoon_settings", "latest_new_chapter", "TEXT")
+    _ensure_column(conn, "webtoon_settings", "remote_update_count", "INTEGER NOT NULL DEFAULT 0")
     _ensure_column(conn, "app_settings", "updated_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
     _ensure_column(conn, "download_history", "source_url", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "download_history", "status", "TEXT NOT NULL DEFAULT 'Ready'")

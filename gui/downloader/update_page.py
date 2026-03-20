@@ -543,6 +543,7 @@ class UpdateCard(QFrame):
 
 
 class UpdatePage(DownloadHistoryPageBase):
+    check_cycle_finished = Signal(str, int, int)
 
     def __init__(self, main_window):
         super().__init__(main_window, "Updates", "Series with new chapters", history_kind="update")
@@ -560,6 +561,8 @@ class UpdatePage(DownloadHistoryPageBase):
         self._entry_widgets = []
         self._selected_titles = set()
         self._has_loaded_once = False
+        self._current_check_reason = "manual"
+        self._last_check_counts_by_name = {}
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search titles with updates...")
@@ -645,20 +648,33 @@ class UpdatePage(DownloadHistoryPageBase):
         super().showEvent(event)
         if not self._has_loaded_once:
             self._has_loaded_once = True
-            self.refresh_entries()
+            self.refresh_entries(reason="open")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._relayout_cards()
 
-    def refresh_entries(self):
-        logger.info("Refreshing update entries")
+    def is_check_in_progress(self) -> bool:
+        return self._pending_checks > self._completed_checks
+
+    def refresh_entries(self, reason: str = "manual") -> bool:
+        if self.is_check_in_progress():
+            logger.info("Skipping update refresh because a check is already in progress")
+            return False
+
+        logger.info("Refreshing update entries reason=%s", reason)
+        self._current_check_reason = str(reason or "manual")
         webtoons = scan_library(load_library_path(), self.settings_store)
+        settings_rows = self.settings_store.get_rows(
+            [webtoon.name for webtoon in webtoons],
+            columns=("completed", "source_url", "last_update_at"),
+        )
         candidates = []
         for webtoon in webtoons:
-            if self.settings_store.get_completed(webtoon.name):
+            row = settings_rows.get(webtoon.name, {})
+            if bool(row.get("completed", 0)):
                 continue
-            source_url = self.settings_store.get_source_url(webtoon.name)
+            source_url = row.get("source_url")
             if not source_url or not is_scraper_enabled_for_url(source_url):
                 continue
             candidates.append(
@@ -666,7 +682,7 @@ class UpdatePage(DownloadHistoryPageBase):
                     "name": webtoon.name,
                     "webtoon": webtoon,
                     "source_url": source_url,
-                    "last_update_at": self.settings_store.get_last_update_at(webtoon.name),
+                    "last_update_at": row.get("last_update_at"),
                     "local_chapters": len(getattr(webtoon, "chapters", []) or []),
                     "chapter_names": list(getattr(webtoon, "chapters", []) or []),
                 }
@@ -674,6 +690,7 @@ class UpdatePage(DownloadHistoryPageBase):
 
         self._candidates = candidates
         self._available_updates = []
+        self._last_check_counts_by_name = {}
         self._check_request_id += 1
         self._pending_checks = len(candidates)
         self._completed_checks = 0
@@ -688,12 +705,25 @@ class UpdatePage(DownloadHistoryPageBase):
 
         if not candidates:
             self.status_label.setText("No saved titles available for updates")
-            return
+            self._finish_check_cycle()
+            return True
 
         self.status_label.setText(f"Checking 0 / {len(candidates)} saved titles...")
         current_request_id = self._check_request_id
         for candidate in candidates:
             self._checker.load(current_request_id, candidate)
+        return True
+
+    def run_background_check(self, reason: str = "scheduled") -> bool:
+        return self.refresh_entries(reason=reason)
+
+    def available_update_signature(self) -> str:
+        parts = []
+        for item in sorted(self._available_updates, key=lambda entry: entry["webtoon"].name.lower()):
+            parts.append(
+                f"{item['webtoon'].name}:{int(item.get('new_chapters', 0) or 0)}"
+            )
+        return "|".join(parts)
 
     def _clear_history(self):
         self._entries_by_name.clear()
@@ -923,6 +953,7 @@ class UpdatePage(DownloadHistoryPageBase):
             logger.warning("Update check failed for %s: %s", candidate.get("name"), error)
         elif result is not None:
             self._available_updates.append(result)
+            self._last_check_counts_by_name[str(candidate.get("name") or "")] = int(result.get("new_chapters", 0) or 0)
             self._available_updates.sort(key=lambda item: item["webtoon"].name.lower())
             self._apply_filter()
 
@@ -949,8 +980,17 @@ class UpdatePage(DownloadHistoryPageBase):
         else:
             self.set_error_text("")
 
+        self.settings_store.save_remote_update_counts(
+            self._last_check_counts_by_name,
+            clear_missing_names=[item["name"] for item in self._candidates],
+        )
         self._empty_message = "No updates found right now."
         self._apply_filter()
+        self.check_cycle_finished.emit(
+            self._current_check_reason,
+            count,
+            int(self._check_errors),
+        )
 
     def _current_empty_message(self) -> str:
         if self._pending_search.strip():

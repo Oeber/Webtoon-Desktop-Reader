@@ -618,11 +618,17 @@ class LibraryPage(QWidget):
 
     def _refresh_webtoon_flags(self):
         section_changed = False
+        settings_rows = self.settings_store.get_rows(
+            [webtoon.name for webtoon in self._webtoons],
+            columns=("category", "bookmarked", "latest_new_chapter", "remote_update_count"),
+        )
         for webtoon in self._webtoons:
             old_section = self._section_key_for_webtoon(webtoon)
-            webtoon.category = self.settings_store.get_category(webtoon.name)
-            webtoon.is_bookmarked = self.settings_store.get_bookmarked(webtoon.name)
-            webtoon.has_new_chapter = bool(self.settings_store.get_latest_new_chapter(webtoon.name))
+            row = settings_rows.get(webtoon.name, {})
+            webtoon.category = row.get("category")
+            webtoon.is_bookmarked = bool(row.get("bookmarked", 0))
+            webtoon.has_new_chapter = bool(row.get("latest_new_chapter"))
+            webtoon.remote_update_count = int(row.get("remote_update_count", 0) or 0)
             new_section = self._section_key_for_webtoon(webtoon)
             section_changed = section_changed or old_section != new_section
             card = self._cards_by_name.get(webtoon.name)
@@ -1216,9 +1222,10 @@ class LibraryPage(QWidget):
                 continue
             active_update = self._active_updates.get(card.webtoon.name)
             has_source = bool(self.settings_store.get_source_url(card.webtoon.name))
+            has_remote_updates = int(getattr(card.webtoon, "remote_update_count", 0) or 0) > 0
             is_completed = self.settings_store.get_completed(card.webtoon.name)
             update_allowed = has_source and not is_completed
-            card.set_update_available(has_source)
+            card.set_update_available(has_source, has_remote_updates=has_remote_updates)
             if is_completed:
                 card.set_update_available(False)
                 card.set_update_status("Ready")
@@ -1376,18 +1383,19 @@ class LibraryPage(QWidget):
         if answer != QMessageBox.Yes:
             return False
         library_path = load_library_path()
-        deleted_count = 0
+        deleted_names = []
         for name in names:
             try:
                 webtoon_path = os.path.join(library_path, name)
                 if os.path.isdir(webtoon_path):
                     shutil.rmtree(webtoon_path)
-                self.progress_store.clear(name)
-                self.settings_store.delete_webtoon(name)
-                deleted_count += 1
+                deleted_names.append(name)
             except Exception as e:
                 logger.error("Failed to delete webtoon %s", name, exc_info=e)
-        if deleted_count <= 0:
+        if deleted_names:
+            self.progress_store.clear_many(deleted_names)
+            self.settings_store.delete_webtoons(deleted_names)
+        if not deleted_names:
             return False
         self.load_library()
         self._apply_filter()
@@ -1401,6 +1409,10 @@ class LibraryPage(QWidget):
         self._active_updates.pop(name, None)
         if status == "Completed":
             self.settings_store.set_last_update_at(name, int(time.time()))
+            self.settings_store.set_remote_update_count(name, 0)
+            webtoon = next((item for item in self._webtoons if item.name == name), None)
+            if webtoon is not None:
+                webtoon.remote_update_count = 0
         self._sync_update_controls()
 
     def _on_update_library_changed(self, name: str):

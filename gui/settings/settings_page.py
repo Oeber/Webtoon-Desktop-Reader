@@ -6,6 +6,7 @@ from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
@@ -83,6 +84,19 @@ APP_UPDATE_LAST_ASSET_URL_KEY = "app_update_last_asset_url"
 APP_UPDATE_LAST_STATUS_KEY = "app_update_last_status"
 APP_UPDATE_LAST_ERROR_KEY = "app_update_last_error"
 APP_UPDATE_LAST_NOTIFIED_VERSION_KEY = "app_update_last_notified_version"
+LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY = "library_update_check_on_startup"
+LIBRARY_UPDATE_INTERVAL_MINUTES_KEY = "library_update_interval_minutes"
+LIBRARY_UPDATE_LAST_CHECK_AT_KEY = "library_update_last_check_at"
+LIBRARY_UPDATE_LAST_RESULT_KEY = "library_update_last_result"
+LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY = "library_update_last_notified_signature"
+LIBRARY_UPDATE_INTERVAL_OPTIONS = [
+    (0, "Off"),
+    (15, "Every 15 minutes"),
+    (30, "Every 30 minutes"),
+    (60, "Every hour"),
+    (120, "Every 2 hours"),
+    (240, "Every 4 hours"),
+]
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
 _app_settings = get_app_settings_store()
@@ -310,6 +324,7 @@ class SettingsPage(QWidget):
         self._log_refresh_timer.timeout.connect(self._refresh_logs_if_changed)
         self._log_refresh_timer.start(1500)
         self._load_saved_update_state()
+        self.refresh_library_update_status()
 
     def open_logs_tab(self):
         self.tabs.setCurrentWidget(self.logs_tab)
@@ -455,6 +470,80 @@ class SettingsPage(QWidget):
         updates_layout.addWidget(self.check_updates_on_startup_checkbox)
 
         layout.addWidget(updates_card)
+
+        library_updates_card, library_updates_layout = self._build_card()
+        library_updates_header = QHBoxLayout()
+        library_updates_header.setContentsMargins(0, 0, 0, 0)
+        library_updates_header.setSpacing(10)
+
+        library_updates_label = QLabel("Library Update Checks")
+        library_updates_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        library_updates_header.addWidget(library_updates_label)
+        library_updates_header.addStretch()
+        library_updates_layout.addLayout(library_updates_header)
+
+        library_updates_help = QLabel(
+            "Check saved source URLs in the background and let the app surface new chapter updates."
+        )
+        library_updates_help.setWordWrap(True)
+        library_updates_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        library_updates_layout.addWidget(library_updates_help)
+
+        self.library_update_check_on_startup_checkbox = QCheckBox("Check saved titles on startup")
+        self.library_update_check_on_startup_checkbox.setChecked(
+            load_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False)
+        )
+        self.library_update_check_on_startup_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.library_update_check_on_startup_checkbox.toggled.connect(
+            self._on_library_update_check_on_startup_changed
+        )
+        library_updates_layout.addWidget(self.library_update_check_on_startup_checkbox)
+
+        library_update_interval_row = QHBoxLayout()
+        library_update_interval_row.setSpacing(10)
+
+        library_update_interval_label = QLabel("Background interval")
+        library_update_interval_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        library_update_interval_label.setFixedWidth(140)
+
+        self.library_update_interval_combo = QComboBox()
+        self.library_update_interval_combo.setStyleSheet(INPUT_STYLE)
+        for minutes, label in LIBRARY_UPDATE_INTERVAL_OPTIONS:
+            self.library_update_interval_combo.addItem(label, minutes)
+        self._set_library_update_interval_selection(
+            int(load_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60))
+        )
+        self.library_update_interval_combo.currentIndexChanged.connect(
+            self._on_library_update_interval_changed
+        )
+
+        library_update_interval_row.addWidget(library_update_interval_label)
+        library_update_interval_row.addWidget(self.library_update_interval_combo, 1)
+        library_updates_layout.addLayout(library_update_interval_row)
+
+        self.library_update_status_label = QLabel("Latest result: Not checked yet.")
+        self.library_update_status_label.setWordWrap(True)
+        self.library_update_status_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        library_updates_layout.addWidget(self.library_update_status_label)
+
+        self.library_update_meta_label = QLabel("Last checked: Never")
+        self.library_update_meta_label.setWordWrap(True)
+        self.library_update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
+        library_updates_layout.addWidget(self.library_update_meta_label)
+
+        library_update_actions = QHBoxLayout()
+        library_update_actions.setSpacing(8)
+
+        self.check_library_updates_btn = QPushButton("Check Saved Titles Now")
+        self.check_library_updates_btn.setStyleSheet(BUTTON_STYLE)
+        self.check_library_updates_btn.setMinimumWidth(180)
+        self.check_library_updates_btn.setMinimumHeight(34)
+        self.check_library_updates_btn.clicked.connect(self._check_library_updates_now)
+        library_update_actions.addWidget(self.check_library_updates_btn)
+        library_update_actions.addStretch()
+        library_updates_layout.addLayout(library_update_actions)
+
+        layout.addWidget(library_updates_card)
 
         reader_card, reader_layout = self._build_card()
         reader_header = QHBoxLayout()
@@ -644,6 +733,8 @@ class SettingsPage(QWidget):
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True)
+        save_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False)
+        save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60)
         save_disabled_sites([])
 
         self.auto_skip_checkbox.blockSignals(True)
@@ -666,7 +757,16 @@ class SettingsPage(QWidget):
         self.check_updates_on_startup_checkbox.setChecked(True)
         self.check_updates_on_startup_checkbox.blockSignals(False)
 
+        self.library_update_check_on_startup_checkbox.blockSignals(True)
+        self.library_update_check_on_startup_checkbox.setChecked(False)
+        self.library_update_check_on_startup_checkbox.blockSignals(False)
+
+        self.library_update_interval_combo.blockSignals(True)
+        self._set_library_update_interval_selection(60)
+        self.library_update_interval_combo.blockSignals(False)
+
         self._refresh_source_checkboxes()
+        self.refresh_library_update_status()
 
         self.zoom_slider.blockSignals(True)
         self.zoom_slider.setValue(50)
@@ -755,6 +855,43 @@ class SettingsPage(QWidget):
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, checked)
         logger.info("App update startup checks changed: %s", checked)
         self._set_settings_status("Update settings saved.")
+
+    def _set_library_update_interval_selection(self, minutes: int):
+        normalized = int(minutes)
+        for index, (value, _label) in enumerate(LIBRARY_UPDATE_INTERVAL_OPTIONS):
+            if value == normalized:
+                self.library_update_interval_combo.setCurrentIndex(index)
+                return
+        fallback_minutes = LIBRARY_UPDATE_INTERVAL_OPTIONS[3][0]
+        self._set_library_update_interval_selection(fallback_minutes)
+
+    def refresh_library_update_status(self):
+        last_checked_at = int(load_setting(LIBRARY_UPDATE_LAST_CHECK_AT_KEY, 0) or 0)
+        last_result = str(load_setting(LIBRARY_UPDATE_LAST_RESULT_KEY, "") or "").strip()
+        self.library_update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
+        self.library_update_status_label.setText(
+            f"Latest result: {last_result}" if last_result else "Latest result: Not checked yet."
+        )
+
+    def _on_library_update_check_on_startup_changed(self, checked: bool):
+        save_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, checked)
+        logger.info("Library update startup checks changed: %s", checked)
+        self._set_settings_status("Library update settings saved.")
+        self.main_window.refresh_library_update_schedule()
+
+    def _on_library_update_interval_changed(self, _index: int):
+        minutes = int(self.library_update_interval_combo.currentData() or 0)
+        save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, minutes)
+        logger.info("Library update interval changed: %s minutes", minutes)
+        self._set_settings_status("Library update settings saved.")
+        self.main_window.refresh_library_update_schedule()
+
+    def _check_library_updates_now(self):
+        if self.main_window.run_library_update_check(reason="settings_manual"):
+            self.library_update_status_label.setText("Latest result: Checking saved titles...")
+            self.library_update_meta_label.setText("Last checked: In progress...")
+        else:
+            self._set_settings_status("A library update check is already in progress.")
 
     def _set_settings_status(self, message: str):
         self.status_label.setText(message)

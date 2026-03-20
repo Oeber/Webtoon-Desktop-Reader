@@ -131,6 +131,17 @@ class ProgressStore:
         )
         conn.commit()
 
+    def clear_many(self, webtoon_names: list[str]):
+        if not webtoon_names:
+            return
+        logger.info("Clearing progress for %d webtoons", len(webtoon_names))
+        conn = get_connection()
+        conn.executemany(
+            "DELETE FROM progress WHERE webtoon_name = ?",
+            [(webtoon_name,) for webtoon_name in webtoon_names]
+        )
+        conn.commit()
+
     def rename_webtoon(self, old_name: str, new_name: str):
         logger.info("Renaming progress rows from %s to %s", old_name, new_name)
         conn = get_connection()

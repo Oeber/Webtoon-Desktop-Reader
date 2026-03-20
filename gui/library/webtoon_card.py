@@ -70,6 +70,7 @@ class WebtoonCard(QWidget):
         self._latest_connected = False
         self._lastread_connected = False
         self._update_available = False
+        self._remote_update_available = False
         self._ignore_open_until = 0.0
         self._update_menu_label = "Update"
         self._update_button_label = ""
@@ -431,7 +432,7 @@ class WebtoonCard(QWidget):
         if self._manual_download_active:
             self.cancel_download_btn.show()
             self.update_btn.hide()
-        elif self._update_available:
+        elif self._remote_update_available or self._update_available:
             self.update_btn.show()
         self._refresh_select_visibility()
         self._refresh_bookmark_visibility()
@@ -446,7 +447,9 @@ class WebtoonCard(QWidget):
         self._apply_border_style(hovered=False)
         self.dots_btn.hide()
         self.cancel_download_btn.hide()
-        if self._update_available and not self.progress_overlay.isVisible() and not self._manual_download_active:
+        if self._remote_update_available:
+            self.update_btn.show()
+        elif self._update_available and not self.progress_overlay.isVisible() and not self._manual_download_active:
             self.update_btn.hide()
         self._refresh_select_visibility()
         self._refresh_bookmark_visibility()
@@ -547,11 +550,13 @@ class WebtoonCard(QWidget):
         self._drag_executed = False
         super().mouseReleaseEvent(event)
 
-    def set_update_available(self, available: bool):
+    def set_update_available(self, available: bool, *, has_remote_updates: bool = False):
         if self._download_placeholder:
             return
         self._update_available = available
-        self.update_btn.setVisible(available and self.underMouse() and not self._manual_download_active)
+        self._remote_update_available = bool(has_remote_updates)
+        should_show = self._remote_update_available or (available and self.underMouse())
+        self.update_btn.setVisible(should_show and not self._manual_download_active)
         if not available:
             self.progress_overlay.hide()
 
@@ -592,8 +597,11 @@ class WebtoonCard(QWidget):
 
         if not self._manual_download_active:
             self.progress_overlay.hide()
-        if self._update_available and self.underMouse() and not self._manual_download_active:
-            self.update_btn.show()
+        if (self._remote_update_available or self._update_available) and not self._manual_download_active:
+            if self._remote_update_available or self.underMouse():
+                self.update_btn.show()
+            else:
+                self.update_btn.hide()
 
     def _center_progress_overlay(self):
         x = (self.card_width - self.progress_overlay.width()) // 2
@@ -614,7 +622,12 @@ class WebtoonCard(QWidget):
             self.update_btn.setIcon(QIcon())
         else:
             self.update_btn.setText("")
-            self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
+            if self._remote_update_available:
+                self.update_btn.setToolTip("Remote updates found")
+                self.update_btn.setIcon(qta.icon("fa5s.exclamation", color="#ff8a7a"))
+            else:
+                self.update_btn.setToolTip("Update this webtoon")
+                self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
             self.update_btn.setIconSize(QSize(12, 12))
         self._layout_update_button()
 
@@ -665,8 +678,11 @@ class WebtoonCard(QWidget):
         if self._current_update_status != "Downloading":
             self.progress_overlay.hide()
         self.info_label.hide()
-        if self._current_update_status != "Downloading" and self._update_available and self.underMouse():
-            self.update_btn.show()
+        if self._current_update_status != "Downloading" and (self._remote_update_available or self._update_available):
+            if self._remote_update_available or self.underMouse():
+                self.update_btn.show()
+            else:
+                self.update_btn.hide()
 
     def _apply_download_placeholder_mode(self):
         self.dots_btn.hide()

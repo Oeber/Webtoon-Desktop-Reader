@@ -122,6 +122,43 @@ class WebtoonSettingsStore:
         )
         conn.commit()
 
+    def get_rows(self, webtoon_names: list[str], *, columns: tuple[str, ...] | None = None) -> dict[str, dict]:
+        names = []
+        seen = set()
+        for webtoon_name in webtoon_names:
+            normalized = str(webtoon_name or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            names.append(normalized)
+        if not names:
+            return {}
+
+        selected_columns = tuple(columns or ())
+        if not selected_columns:
+            selected_columns = (
+                "custom_thumbnail",
+                "category",
+                "bookmarked",
+                "latest_new_chapter",
+                "completed",
+                "source_url",
+                "last_update_at",
+            )
+
+        conn = get_connection()
+        placeholders = ", ".join("?" for _ in names)
+        query = (
+            "SELECT webtoon_name, "
+            + ", ".join(selected_columns)
+            + f" FROM webtoon_settings WHERE webtoon_name IN ({placeholders})"
+        )
+        rows = conn.execute(query, names).fetchall()
+        return {
+            str(row["webtoon_name"]): {column: row[column] for column in selected_columns}
+            for row in rows
+        }
+
     def _clear_scalar(self, webtoon_name: str, column: str, *, log_message: str | None = None):
         if log_message:
             logger.info(log_message, webtoon_name)
@@ -140,6 +177,9 @@ class WebtoonSettingsStore:
 
     def get_bookmarked(self, webtoon_name: str) -> bool:
         return bool(self._get_scalar(webtoon_name, "bookmarked", default=0))
+
+    def get_remote_update_count(self, webtoon_name: str) -> int:
+        return int(self._get_scalar(webtoon_name, "remote_update_count", default=0, coerce=int) or 0)
 
     def set_hide_filler(self, webtoon_name: str, value: bool):
         self._set_scalar(webtoon_name, "hide_filler", int(value), log_message="Setting hide_filler for %s to %s")
@@ -281,6 +321,43 @@ class WebtoonSettingsStore:
     def clear_latest_new_chapter(self, webtoon_name: str):
         self._clear_scalar(webtoon_name, "latest_new_chapter", log_message="Clearing latest new chapter for %s")
 
+    def set_remote_update_count(self, webtoon_name: str, count: int):
+        self._set_scalar(
+            webtoon_name,
+            "remote_update_count",
+            max(0, int(count)),
+            log_message="Setting remote update count for %s to %s",
+        )
+
+    def save_remote_update_counts(self, counts_by_name: dict[str, int], *, clear_missing_names: list[str] | None = None):
+        conn = get_connection()
+        normalized_counts = {
+            str(name).strip(): max(0, int(count))
+            for name, count in (counts_by_name or {}).items()
+            if str(name).strip()
+        }
+        clear_names = {
+            str(name).strip()
+            for name in (clear_missing_names or [])
+            if str(name).strip()
+        }
+        clear_names.difference_update(normalized_counts.keys())
+
+        for webtoon_name in normalized_counts:
+            self._ensure_row(conn, webtoon_name)
+
+        if normalized_counts:
+            conn.executemany(
+                "UPDATE webtoon_settings SET remote_update_count = ? WHERE webtoon_name = ?",
+                [(count, webtoon_name) for webtoon_name, count in normalized_counts.items()],
+            )
+        if clear_names:
+            conn.executemany(
+                "UPDATE webtoon_settings SET remote_update_count = 0 WHERE webtoon_name = ?",
+                [(webtoon_name,) for webtoon_name in clear_names],
+            )
+        conn.commit()
+
     def get(self, webtoon_name: str) -> str | None:
         return self._get_scalar(webtoon_name, "custom_thumbnail", default=None)
 
@@ -349,8 +426,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -366,6 +443,7 @@ class WebtoonSettingsStore:
                 row["bookmarked_chapters"],
                 row["last_update_at"],
                 row["latest_new_chapter"],
+                row["remote_update_count"],
             ),
         )
         conn.execute(
@@ -375,20 +453,43 @@ class WebtoonSettingsStore:
         conn.commit()
 
     def delete_webtoon(self, webtoon_name: str):
-        logger.info("Deleting settings for %s", webtoon_name)
-        self.clear(webtoon_name)
+        self.delete_webtoons([webtoon_name])
 
-        auto_thumb = _auto_thumb_path(webtoon_name)
-        if auto_thumb.exists():
-            try:
-                auto_thumb.unlink()
-            except OSError as e:
-                logger.warning("Could not delete auto thumbnail for %s", webtoon_name, exc_info=e)
+    def delete_webtoons(self, webtoon_names: list[str]):
+        names = []
+        seen = set()
+        for webtoon_name in webtoon_names:
+            normalized = str(webtoon_name or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            names.append(normalized)
+        if not names:
+            return
+
+        logger.info("Deleting settings for %d webtoons", len(names))
+        rows = self.get_rows(names, columns=("custom_thumbnail",))
+        for webtoon_name in names:
+            custom_path = rows.get(webtoon_name, {}).get("custom_thumbnail")
+            if custom_path:
+                custom_thumb = Path(str(custom_path))
+                if custom_thumb.exists():
+                    try:
+                        custom_thumb.unlink()
+                    except OSError as e:
+                        logger.warning("Could not delete cached thumbnail for %s", webtoon_name, exc_info=e)
+
+            auto_thumb = _auto_thumb_path(webtoon_name)
+            if auto_thumb.exists():
+                try:
+                    auto_thumb.unlink()
+                except OSError as e:
+                    logger.warning("Could not delete auto thumbnail for %s", webtoon_name, exc_info=e)
 
         conn = get_connection()
-        conn.execute(
+        conn.executemany(
             "DELETE FROM webtoon_settings WHERE webtoon_name = ?",
-            (webtoon_name,),
+            [(webtoon_name,) for webtoon_name in names],
         )
         conn.commit()
 

@@ -24,7 +24,15 @@ from gui.common.styles import (
 from gui.library.library_page import LibraryPage
 from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
-from gui.settings.settings_page import SettingsPage
+from gui.settings.settings_page import (
+    SettingsPage,
+    LIBRARY_UPDATE_INTERVAL_MINUTES_KEY,
+    LIBRARY_UPDATE_LAST_CHECK_AT_KEY,
+    LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY,
+    LIBRARY_UPDATE_LAST_RESULT_KEY,
+    load_setting,
+    save_setting,
+)
 from gui.discovery.site_browser_page import SiteBrowserPage
 from gui.discovery.detail_page import DiscoveryDetailPage
 from gui.common.site_auth_dialog import SiteAuthDialog
@@ -187,10 +195,16 @@ class MainWindow(QMainWindow):
         self._connect_download_sidebar_signals(self.updates.service, "updates")
         self.viewer.chapter_loading_started.connect(self._on_viewer_chapter_loading_started)
         self.viewer.chapter_loading_finished.connect(self._on_viewer_chapter_loading_finished)
+        self.updates.check_cycle_finished.connect(self._on_library_update_check_finished)
+        self._library_update_schedule_timer = QTimer(self)
+        self._library_update_schedule_timer.setSingleShot(False)
+        self._library_update_schedule_timer.timeout.connect(self._run_interval_library_update_check)
         self._refresh_download_sidebar_indicator()
         self._refresh_sidebar_nav_state()
         self._apply_sidebar_button_layout()
+        self.refresh_library_update_schedule()
         QTimer.singleShot(1500, self.settings.schedule_startup_update_check)
+        QTimer.singleShot(2500, self._run_startup_library_update_check_if_due)
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)
@@ -333,10 +347,82 @@ class MainWindow(QMainWindow):
     def open_updates(self):
         logger.info("Opening updates page")
         self._hide_chapter_loading_overlay()
-        self.updates.refresh_entries()
+        self.updates.refresh_entries(reason="open")
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.updates)
         self._set_sidebar_target("updates")
+
+    def refresh_library_update_schedule(self):
+        interval_minutes = int(load_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60) or 0)
+        if interval_minutes <= 0:
+            self._library_update_schedule_timer.stop()
+            return
+
+        interval_ms = max(60_000, interval_minutes * 60 * 1000)
+        self._library_update_schedule_timer.start(interval_ms)
+
+    def run_library_update_check(self, reason: str = "scheduled") -> bool:
+        if self.updates.service.is_busy():
+            logger.info("Skipping library update check because update downloads are active")
+            return False
+        return self.updates.run_background_check(reason=reason)
+
+    def _library_update_check_due(self, allow_zero_interval: bool = False) -> bool:
+        interval_minutes = int(load_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60) or 0)
+        if interval_minutes <= 0:
+            return bool(allow_zero_interval)
+
+        last_checked_at = int(load_setting(LIBRARY_UPDATE_LAST_CHECK_AT_KEY, 0) or 0)
+        if last_checked_at <= 0:
+            return True
+
+        return (int(time.time()) - last_checked_at) >= (interval_minutes * 60)
+
+    def _run_startup_library_update_check_if_due(self):
+        self.run_library_update_check(reason="auto_startup")
+
+    def _run_interval_library_update_check(self):
+        if not self._library_update_check_due():
+            return
+        self.run_library_update_check(reason="auto_interval")
+
+    def _library_update_result_text(self, count: int, errors: int) -> str:
+        if count <= 0:
+            summary = "No updates found."
+        elif count == 1:
+            summary = "1 title has updates."
+        else:
+            summary = f"{count} titles have updates."
+
+        if errors <= 0:
+            return summary
+        if errors == 1:
+            return f"{summary} 1 title could not be checked."
+        return f"{summary} {errors} titles could not be checked."
+
+    def _on_library_update_check_finished(self, reason: str, count: int, errors: int):
+        checked_at = int(time.time())
+        result_text = self._library_update_result_text(int(count), int(errors))
+        save_setting(LIBRARY_UPDATE_LAST_CHECK_AT_KEY, checked_at)
+        save_setting(LIBRARY_UPDATE_LAST_RESULT_KEY, result_text)
+        self.settings.refresh_library_update_status()
+        self.library.refresh_dynamic_state()
+
+        if reason == "settings_manual":
+            self.settings._set_settings_status("Library update check completed.")
+
+        if reason not in {"auto_startup", "auto_interval"}:
+            return
+
+        signature = self.updates.available_update_signature() if count > 0 else ""
+        last_notified_signature = str(load_setting(LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY, "") or "")
+        if not signature:
+            save_setting(LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY, "")
+            return
+        if signature == last_notified_signature:
+            return
+
+        save_setting(LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY, signature)
 
     def _position_chapter_loading_overlay(self):
         self._chapter_loading_overlay.setGeometry(self.stack.rect())

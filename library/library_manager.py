@@ -29,9 +29,20 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
         logger.warning("Library path does not exist: %s", library_path)
         return []
 
+    library_entries = sorted(os.listdir(library_path))
+    settings_rows = settings_store.get_rows(
+        library_entries,
+        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter"),
+    )
+
     webtoons = []
-    for webtoon_name in sorted(os.listdir(library_path)):
-        webtoon = build_webtoon_from_folder(library_path, webtoon_name, settings_store)
+    for webtoon_name in library_entries:
+        webtoon = build_webtoon_from_folder(
+            library_path,
+            webtoon_name,
+            settings_store,
+            settings_row=settings_rows.get(webtoon_name),
+        )
         if webtoon is not None:
             webtoons.append(webtoon)
 
@@ -47,8 +58,10 @@ SCAN_MAX_Y = 3000
 BLANK_THRESHOLD = 12
 
 
-def preferred_thumbnail_path(webtoon_name: str, settings_store) -> str | None:
-    custom = settings_store.get(webtoon_name)
+def preferred_thumbnail_path(webtoon_name: str, settings_store, settings_row: dict | None = None) -> str | None:
+    custom = (settings_row or {}).get("custom_thumbnail")
+    if custom is None:
+        custom = settings_store.get(webtoon_name)
     if custom and os.path.exists(custom):
         return custom
 
@@ -66,7 +79,12 @@ def get_or_create_auto_thumbnail(image_path: str, webtoon_name: str) -> str:
     return _generate_auto_thumbnail(image_path, str(thumb_path))
 
 
-def build_webtoon_from_folder(library_path: str, webtoon_name: str, settings_store) -> Webtoon | None:
+def build_webtoon_from_folder(
+    library_path: str,
+    webtoon_name: str,
+    settings_store,
+    settings_row: dict | None = None,
+) -> Webtoon | None:
     webtoon_path = os.path.join(library_path, webtoon_name)
     if not os.path.isdir(webtoon_path):
         return None
@@ -83,18 +101,19 @@ def build_webtoon_from_folder(library_path: str, webtoon_name: str, settings_sto
     if not first_image:
         return None
 
-    thumbnail = preferred_thumbnail_path(webtoon_name, settings_store)
+    thumbnail = preferred_thumbnail_path(webtoon_name, settings_store, settings_row=settings_row)
     if not thumbnail:
         thumbnail = get_or_create_auto_thumbnail(first_image, webtoon_name)
 
+    settings_row = settings_row or {}
     return Webtoon(
         webtoon_name,
         webtoon_path,
         chapters,
         thumbnail,
-        settings_store.get_category(webtoon_name),
-        is_bookmarked=settings_store.get_bookmarked(webtoon_name),
-        has_new_chapter=bool(settings_store.get_latest_new_chapter(webtoon_name)),
+        settings_row.get("category"),
+        is_bookmarked=bool(settings_row.get("bookmarked", 0)),
+        has_new_chapter=bool(settings_row.get("latest_new_chapter")),
     )
 
 
