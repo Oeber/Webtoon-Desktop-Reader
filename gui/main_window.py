@@ -26,6 +26,7 @@ from gui.library.detail_page import DetailPage
 from gui.viewer.viewer_page import ViewerPage
 from gui.settings.settings_page import (
     SettingsPage,
+    LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY,
     LIBRARY_UPDATE_INTERVAL_MINUTES_KEY,
     LIBRARY_UPDATE_LAST_CHECK_AT_KEY,
     LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY,
@@ -379,6 +380,10 @@ class MainWindow(QMainWindow):
         return (int(time.time()) - last_checked_at) >= (interval_minutes * 60)
 
     def _run_startup_library_update_check_if_due(self):
+        if not load_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False):
+            return
+        if not self._library_update_check_due(allow_zero_interval=True):
+            return
         self.run_library_update_check(reason="auto_startup")
 
     def _run_interval_library_update_check(self):
