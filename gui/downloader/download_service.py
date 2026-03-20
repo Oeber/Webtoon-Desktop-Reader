@@ -28,6 +28,8 @@ from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 logger = get_logger(__name__)
 
+MAX_CONCURRENT_DOWNLOAD_JOBS = 3
+
 
 class DownloadCancelled(Exception):
     pass
@@ -71,47 +73,70 @@ class DownloadJob:
 
 class GlobalDownloadQueue:
 
-    def __init__(self):
+    def __init__(self, max_active_jobs: int = MAX_CONCURRENT_DOWNLOAD_JOBS):
         self._lock = threading.Lock()
-        self._active_job: DownloadJob | None = None
+        self._max_active_jobs = max(1, int(max_active_jobs))
+        self._active_jobs: list[DownloadJob] = []
         self._pending_jobs: deque[DownloadJob] = deque()
 
     def enqueue(self, job: DownloadJob) -> bool:
         with self._lock:
-            if self._active_job is None:
-                self._active_job = job
+            if len(self._active_jobs) < self._max_active_jobs:
+                self._active_jobs.append(job)
                 return True
             self._pending_jobs.append(job)
             return False
 
-    def remove(self, job: DownloadJob) -> tuple[bool, DownloadJob | None]:
+    def remove(self, job: DownloadJob) -> tuple[bool, list[DownloadJob]]:
         with self._lock:
-            if self._active_job is job:
-                self._active_job = None
+            if job in self._active_jobs:
+                self._active_jobs = [item for item in self._active_jobs if item is not job]
                 return True, self._advance_locked()
 
             remaining = deque(item for item in self._pending_jobs if item is not job)
             removed = len(remaining) != len(self._pending_jobs)
             self._pending_jobs = remaining
-            return removed, None
+            return removed, []
 
-    def finish(self, job: DownloadJob) -> DownloadJob | None:
+    def finish(self, job: DownloadJob) -> list[DownloadJob]:
         with self._lock:
-            if self._active_job is job:
-                self._active_job = None
+            if job in self._active_jobs:
+                self._active_jobs = [item for item in self._active_jobs if item is not job]
             else:
                 self._pending_jobs = deque(item for item in self._pending_jobs if item is not job)
-                return None
+                return []
             return self._advance_locked()
 
-    def _advance_locked(self) -> DownloadJob | None:
-        while self._pending_jobs:
+    def has_conflict(self, *, source_url: str = "", name: str = "", exclude_job: DownloadJob | None = None) -> bool:
+        normalized_source_url = (source_url or "").strip()
+        normalized_name = sanitize_webtoon_name(name or "")
+        with self._lock:
+            jobs = [*self._active_jobs, *self._pending_jobs]
+
+        for existing in jobs:
+            if existing is exclude_job:
+                continue
+            if normalized_source_url and existing.source_url == normalized_source_url:
+                return True
+            if normalized_name:
+                existing_names = {
+                    sanitize_webtoon_name(existing.initial_name),
+                    sanitize_webtoon_name(existing.active_name),
+                    sanitize_webtoon_name(existing.preferred_name),
+                }
+                if normalized_name in existing_names:
+                    return True
+        return False
+
+    def _advance_locked(self) -> list[DownloadJob]:
+        ready_jobs: list[DownloadJob] = []
+        while self._pending_jobs and len(self._active_jobs) < self._max_active_jobs:
             next_job = self._pending_jobs.popleft()
             if next_job.cancel_requested:
                 continue
-            self._active_job = next_job
-            return next_job
-        return None
+            self._active_jobs.append(next_job)
+            ready_jobs.append(next_job)
+        return ready_jobs
 
 
 _global_download_queue = GlobalDownloadQueue()
@@ -163,19 +188,23 @@ class DownloadService(QObject):
         if not url:
             return "Please enter a URL."
 
+        normalized_source_url = self._normalized_source_url(url)
         initial_name = (
             sanitize_webtoon_name(job_name)
             or sanitize_webtoon_name(preferred_name)
             or sanitize_webtoon_name(url.rstrip("/").split("/")[-1])
             or "download"
         )
-        if self.has_active_download(initial_name):
+        if _global_download_queue.has_conflict(source_url=normalized_source_url):
+            resolved_name = sanitize_webtoon_name(preferred_name) or initial_name
+            return f"'{resolved_name}' is already downloading."
+        if _global_download_queue.has_conflict(name=initial_name):
             return f"'{initial_name}' is already downloading."
 
         logger.info("Starting download url=%s preferred_name=%s output=%s", url, preferred_name, output_path)
         job = DownloadJob(
             initial_name,
-            self._normalized_source_url(url),
+            normalized_source_url,
             service=self,
             history_kind=self.history_kind,
             url=url,
@@ -274,7 +303,7 @@ class DownloadService(QObject):
         thread.start()
 
     def _finalize_queued_cancellation(self, job: DownloadJob):
-        removed, next_job = _global_download_queue.remove(job)
+        removed, next_jobs = _global_download_queue.remove(job)
         if not removed:
             return
         self._close_job_sessions(job)
@@ -285,7 +314,7 @@ class DownloadService(QObject):
         self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Cancelled", job.source_url)
         self.status_changed.emit(job.active_name or job.initial_name, "Cancelled")
         self.download_finished.emit(job.active_name or job.initial_name, "Cancelled")
-        if next_job is not None:
+        for next_job in next_jobs:
             next_job_service = getattr(next_job, "service", None)
             if next_job_service is not None:
                 next_job_service._begin_job(next_job)
@@ -302,10 +331,12 @@ class DownloadService(QObject):
             os.makedirs(job.temp_dir, exist_ok=True)
 
             if preferred_name:
+                self._ensure_job_name_available(job, name)
                 self.history_store.rename(job.history_kind, job.initial_name, name, job.source_url, "Downloading")
                 self.name_resolved.emit(job.initial_name, name)
             else:
                 name = self._resolve_name(url)
+                self._ensure_job_name_available(job, name)
                 self.history_store.rename(job.history_kind, job.initial_name, name, job.source_url, "Downloading")
                 self.name_resolved.emit(job.initial_name, name)
 
@@ -370,11 +401,18 @@ class DownloadService(QObject):
             logger.info("Download finished for %s with status=%s", job.active_name or name, status)
             self.status_changed.emit(job.active_name or name, status)
             self.download_finished.emit(job.active_name or name, status)
-            next_job = _global_download_queue.finish(job)
-            if next_job is not None:
+            next_jobs = _global_download_queue.finish(job)
+            for next_job in next_jobs:
                 next_job_service = getattr(next_job, "service", None)
                 if next_job_service is not None:
                     next_job_service._begin_job(next_job)
+
+    def _ensure_job_name_available(self, job: DownloadJob, name: str):
+        normalized_name = sanitize_webtoon_name(name or "")
+        if not normalized_name:
+            return
+        if _global_download_queue.has_conflict(name=normalized_name, exclude_job=job):
+            raise ScraperError(f"'{normalized_name}' is already downloading.")
 
     def _format_chapter_number(self, chapter_number: float | None) -> str | None:
         if chapter_number is None:
