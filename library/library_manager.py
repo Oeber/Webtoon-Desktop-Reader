@@ -101,9 +101,12 @@ def build_webtoon_from_folder(
     if not first_image:
         return None
 
-    thumbnail = preferred_thumbnail_path(webtoon_name, settings_store, settings_row=settings_row)
-    if not thumbnail:
-        thumbnail = get_or_create_auto_thumbnail(first_image, webtoon_name)
+    thumbnail = resolve_thumbnail_path(
+        webtoon_name,
+        first_image,
+        settings_store,
+        settings_row=settings_row,
+    )
 
     settings_row = settings_row or {}
     return Webtoon(
@@ -115,6 +118,18 @@ def build_webtoon_from_folder(
         is_bookmarked=bool(settings_row.get("bookmarked", 0)),
         has_new_chapter=bool(settings_row.get("latest_new_chapter")),
     )
+
+
+def resolve_thumbnail_path(
+    webtoon_name: str,
+    fallback_image_path: str,
+    settings_store,
+    settings_row: dict | None = None,
+) -> str:
+    thumbnail = preferred_thumbnail_path(webtoon_name, settings_store, settings_row=settings_row)
+    if thumbnail:
+        return thumbnail
+    return fallback_image_path
 
 
 def _generate_auto_thumbnail(image_path: str, thumb_path: str) -> str:

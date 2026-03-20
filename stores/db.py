@@ -35,15 +35,18 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
-def prewarm_connection_async():
+def prewarm_connection() -> None:
     if getattr(_thread_state, "connection", None) is not None:
         return
+    get_connection()
 
+
+def prewarm_connection_async():
     def _worker():
         try:
-            get_connection()
+            _ensure_initialized()
         except Exception:
-            logger.exception("Failed to prewarm SQLite connection")
+            logger.exception("Failed to prewarm SQLite schema")
 
     threading.Thread(
         target=_worker,

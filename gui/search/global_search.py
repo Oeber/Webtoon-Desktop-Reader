@@ -1,6 +1,6 @@
 import re
 
-from PySide6.QtCore import QEvent, Qt
+from PySide6.QtCore import QEvent, QTimer, Qt
 from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
@@ -9,6 +9,7 @@ from gui.common.styles import INPUT_STYLE
 from rapidfuzz import fuzz
 
 logger = get_logger(__name__)
+SEARCH_DEBOUNCE_MS = 120
 
 ITEM_ACTION_ROLE = Qt.UserRole
 ITEM_WEBTOON_ROLE = Qt.UserRole + 1
@@ -130,7 +131,13 @@ class GlobalSearchDialog(QDialog):
         self.results.setSpacing(6)
         layout.addWidget(self.results)
 
-        self.input.textChanged.connect(self._update_results)
+        self._update_timer = QTimer(self)
+        self._update_timer.setSingleShot(True)
+        self._update_timer.setInterval(SEARCH_DEBOUNCE_MS)
+        self._update_timer.timeout.connect(self._run_pending_update)
+        self._pending_update_text = ""
+
+        self.input.textChanged.connect(self._schedule_results_update)
         self.input.returnPressed.connect(self._activate_from_input)
         self.results.itemClicked.connect(self._activate_item)
         self.results.itemActivated.connect(self._activate_item)
@@ -152,11 +159,24 @@ class GlobalSearchDialog(QDialog):
     def open_dialog(self):
         logger.info("Opening global search dialog")
         self.input.clear()
+        self._update_timer.stop()
         self._update_results("")
         self.show()
         self.raise_()
         self.activateWindow()
         self.input.setFocus()
+
+    def _schedule_results_update(self, text: str):
+        self._pending_update_text = text or ""
+        self._update_timer.start()
+
+    def _run_pending_update(self):
+        self._update_results(self._pending_update_text)
+
+    def _flush_pending_update(self):
+        if self._update_timer.isActive():
+            self._update_timer.stop()
+            self._update_results(self._pending_update_text)
 
     def _update_results(self, text: str):
         query = (text or "").strip()
@@ -539,6 +559,7 @@ class GlobalSearchDialog(QDialog):
         self.results.addItem(item)
 
     def _activate_from_input(self):
+        self._flush_pending_update()
         item = self.results.currentItem()
         if item is None and self.results.count() > 0:
             item = self.results.item(0)
@@ -546,6 +567,7 @@ class GlobalSearchDialog(QDialog):
             self._activate_item(item)
 
     def _handle_tab_completion(self, backward: bool) -> None:
+        self._flush_pending_update()
         text = self.input.text()
         command_name, has_space, remainder = self._split_command_query(text)
         if not command_name:
