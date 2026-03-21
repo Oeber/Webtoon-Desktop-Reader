@@ -3,10 +3,11 @@ from collections import deque
 
 from gui.downloader.helpers import sanitize_webtoon_name
 
+MAX_CONCURRENT_DOWNLOAD_JOBS = 8
 
 class GlobalDownloadQueue:
 
-    def __init__(self, max_active_jobs: int = 3):
+    def __init__(self, max_active_jobs: int = MAX_CONCURRENT_DOWNLOAD_JOBS):
         self._lock = threading.Lock()
         self._max_active_jobs = max(1, int(max_active_jobs))
         self._active_jobs = []
