@@ -136,6 +136,7 @@ def _create_schema(conn: sqlite3.Connection):
             name           TEXT NOT NULL,
             source_url     TEXT NOT NULL DEFAULT '',
             status         TEXT NOT NULL DEFAULT 'Ready',
+            resume_payload TEXT,
             created_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             PRIMARY KEY (kind, name)
@@ -161,6 +162,7 @@ def _create_schema(conn: sqlite3.Connection):
     _ensure_column(conn, "app_settings", "updated_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
     _ensure_column(conn, "download_history", "source_url", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "download_history", "status", "TEXT NOT NULL DEFAULT 'Ready'")
+    _ensure_column(conn, "download_history", "resume_payload", "TEXT")
     _ensure_column(conn, "download_history", "created_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
     _ensure_column(conn, "download_history", "updated_at", "INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))")
     conn.commit()
@@ -176,3 +178,4 @@ def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, 
 
     logger.info("Adding missing column %s.%s", table_name, column_name)
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
+

@@ -71,6 +71,7 @@ class DownloadJob:
         self.session_local = threading.local()
         self.sessions: list[requests.Session] = []
         self.sessions_lock = threading.Lock()
+        self.resume_after_restart = False
 
 
 class GlobalDownloadQueue:
@@ -161,6 +162,7 @@ class DownloadService(QObject):
         self.history_kind = history_kind
         self._jobs: dict[str, DownloadJob] = {}
         self._jobs_lock = threading.Lock()
+        self._restored_pending_jobs = False
 
         temp_root = data_path("_download_temp")
         if os.path.exists(temp_root):
@@ -216,10 +218,16 @@ class DownloadService(QObject):
         )
         with self._jobs_lock:
             self._jobs[job.initial_name] = job
+        self.history_store.upsert(job.history_kind, job.initial_name, "Queued", job.source_url)
+        self.history_store.set_resume_payload(
+            job.history_kind,
+            job.initial_name,
+            self._resume_payload_for_job(job),
+            job.source_url,
+        )
         if _global_download_queue.enqueue(job):
             self._begin_job(job)
         else:
-            self.history_store.upsert(job.history_kind, job.initial_name, "Queued", job.source_url)
             self.status_changed.emit(job.initial_name, "Queued")
         return None
 
@@ -244,6 +252,16 @@ class DownloadService(QObject):
     def shutdown(self, wait_timeout: float = 5.0):
         logger.info("Shutting down DownloadService")
         self._save_active_source_urls()
+        with self._jobs_lock:
+            jobs = list(self._jobs.values())
+        for job in jobs:
+            job.resume_after_restart = True
+            self.history_store.set_resume_payload(
+                job.history_kind,
+                job.active_name or job.initial_name,
+                self._resume_payload_for_job(job),
+                job.source_url,
+            )
         self.cancel_download()
 
         with self._jobs_lock:
@@ -287,6 +305,47 @@ class DownloadService(QObject):
                     return str(job.state or "")
         return ""
 
+    def restore_pending_jobs(self) -> list[dict]:
+        if self._restored_pending_jobs:
+            return []
+        self._restored_pending_jobs = True
+
+        restored = []
+        for entry in self.history_store.list_resumable_entries(self.history_kind):
+            payload = entry.get("resume_payload") or {}
+            url = str(payload.get("url") or "").strip()
+            output_path = str(payload.get("output_path") or "").strip()
+            if not url or not output_path:
+                logger.warning("Discarding invalid persisted download job for %s", entry.get("name", ""))
+                self.history_store.clear_resume_payload(self.history_kind, entry.get("name", ""))
+                continue
+
+            restored_name = sanitize_webtoon_name(entry.get("name") or payload.get("job_name") or "")
+            preferred_name = payload.get("preferred_name")
+            if restored_name and not preferred_name:
+                preferred_name = restored_name
+
+            error = self.start_download(
+                url,
+                output_path,
+                preferred_name=preferred_name or None,
+                job_name=restored_name or None,
+                chapter_urls=list(payload.get("chapter_urls") or []),
+            )
+            if error:
+                logger.warning("Failed to restore persisted job %s: %s", entry.get("name", ""), error)
+                continue
+
+            active_name = restored_name or sanitize_webtoon_name(preferred_name or "") or sanitize_webtoon_name(url.rstrip("/").split("/")[-1]) or "download"
+            restored.append(
+                {
+                    "name": active_name,
+                    "source_url": entry.get("source_url", ""),
+                    "status": self.get_status(active_name) or "Queued",
+                }
+            )
+        return restored
+
     def _begin_job(self, job: DownloadJob):
         job.state = "Downloading"
         self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Downloading", job.source_url)
@@ -308,10 +367,23 @@ class DownloadService(QObject):
         shutil.rmtree(job.temp_dir, ignore_errors=True)
         with self._jobs_lock:
             self._jobs.pop(job.initial_name, None)
-        job.state = "Cancelled"
-        self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Cancelled", job.source_url)
-        self.status_changed.emit(job.active_name or job.initial_name, "Cancelled")
-        self.download_finished.emit(job.active_name or job.initial_name, "Cancelled")
+        if job.resume_after_restart:
+            job.state = "Queued"
+            self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Queued", job.source_url)
+            self.history_store.set_resume_payload(
+                job.history_kind,
+                job.active_name or job.initial_name,
+                self._resume_payload_for_job(job),
+                job.source_url,
+            )
+            final_status = "Queued"
+        else:
+            job.state = "Cancelled"
+            self.history_store.upsert(job.history_kind, job.active_name or job.initial_name, "Cancelled", job.source_url)
+            self._clear_resume_payload(job, job.active_name or job.initial_name)
+            final_status = "Cancelled"
+        self.status_changed.emit(job.active_name or job.initial_name, final_status)
+        self.download_finished.emit(job.active_name or job.initial_name, final_status)
         for next_job in next_jobs:
             next_job_service = getattr(next_job, "service", None)
             if next_job_service is not None:
@@ -395,11 +467,22 @@ class DownloadService(QObject):
             shutil.rmtree(job.temp_dir, ignore_errors=True)
             with self._jobs_lock:
                 self._jobs.pop(job.initial_name, None)
-            job.state = status
-            self.history_store.upsert(job.history_kind, job.active_name or name, status, job.source_url)
-            logger.info("Download finished for %s with status=%s", job.active_name or name, status)
-            self.status_changed.emit(job.active_name or name, status)
-            self.download_finished.emit(job.active_name or name, status)
+            final_name = job.active_name or name
+            final_status = "Queued" if status == "Cancelled" and job.resume_after_restart else status
+            job.state = final_status
+            self.history_store.upsert(job.history_kind, final_name, final_status, job.source_url)
+            if final_status == "Queued":
+                self.history_store.set_resume_payload(
+                    job.history_kind,
+                    final_name,
+                    self._resume_payload_for_job(job),
+                    job.source_url,
+                )
+            else:
+                self._clear_resume_payload(job, final_name)
+            logger.info("Download finished for %s with status=%s", final_name, final_status)
+            self.status_changed.emit(final_name, final_status)
+            self.download_finished.emit(final_name, final_status)
             next_jobs = _global_download_queue.finish(job)
             for next_job in next_jobs:
                 next_job_service = getattr(next_job, "service", None)
@@ -570,6 +653,21 @@ class DownloadService(QObject):
             executor.shutdown(wait=wait, cancel_futures=cancel_futures)
         except Exception as e:
             logger.warning("Failed to stop executor for %s", job.active_name, exc_info=e)
+
+    def _resume_payload_for_job(self, job: DownloadJob) -> dict:
+        return {
+            "url": str(job.url or ""),
+            "output_path": str(job.output_path or ""),
+            "preferred_name": str(job.preferred_name or job.active_name or ""),
+            "chapter_urls": [str(chapter_url) for chapter_url in (job.chapter_urls or []) if chapter_url],
+            "job_name": str(job.active_name or job.initial_name or ""),
+        }
+
+    def _clear_resume_payload(self, job: DownloadJob, final_name: str):
+        self.history_store.clear_resume_payload(job.history_kind, final_name)
+        initial_name = str(job.initial_name or "").strip()
+        if initial_name and initial_name != final_name:
+            self.history_store.clear_resume_payload(job.history_kind, initial_name)
 
     def _save_source_url(self, webtoon_name: str, source_url: str):
         if not webtoon_name or not source_url:

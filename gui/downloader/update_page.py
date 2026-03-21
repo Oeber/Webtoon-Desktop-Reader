@@ -644,6 +644,7 @@ class UpdatePage(DownloadHistoryPageBase):
 
         self._checker = UpdateAvailabilityLoader(self)
         self._checker.checked.connect(self._on_candidate_checked)
+        self.service.restore_pending_jobs()
 
     def _rebuild_page_shell(self):
         root_layout = self.layout()
@@ -1125,3 +1126,4 @@ class UpdatePage(DownloadHistoryPageBase):
             row = index // columns
             column = index % columns
             self._cards_layout.addWidget(widget, row, column, Qt.AlignTop | Qt.AlignLeft)
+

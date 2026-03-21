@@ -63,6 +63,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         self._activity_refresh_timer.setSingleShot(True)
         self._activity_refresh_timer.timeout.connect(self._flush_recent_activity_refresh)
         self._activity_refresh_pending = True
+        self._restore_pending_downloads()
         self._sync_controls()
 
     def showEvent(self, event):
@@ -76,6 +77,26 @@ class DownloaderPage(DownloadHistoryPageBase):
                 return
         self._activity_refresh_pending = True
         self._activity_refresh_timer.start(0)
+
+    def _restore_pending_downloads(self):
+        for restored in self.service.restore_pending_jobs():
+            name = restored.get("name", "")
+            if not name or self._entry_for(name) is not None:
+                continue
+            entry = CancellableDownloadEntry(
+                name,
+                on_open=self._open_downloaded_webtoon_detail,
+                on_cancel=self._cancel_entry_download,
+            )
+            self.history_layout.insertWidget(0, entry)
+            self._register_entry(entry)
+            entry.set_status(restored.get("status", "Queued"))
+            current, total = self.service.get_progress(name)
+            if total > 0:
+                entry.set_progress(current, total)
+            thumb_path = self.service.preferred_thumbnail_for(name)
+            if thumb_path:
+                entry.set_thumbnail(thumb_path)
 
     def _start_download(self):
         url = self.url_input.text()
@@ -214,3 +235,4 @@ class DownloaderPage(DownloadHistoryPageBase):
             if thumb_path:
                 entry.set_thumbnail(thumb_path)
             self.activity_list.addWidget(entry)
+

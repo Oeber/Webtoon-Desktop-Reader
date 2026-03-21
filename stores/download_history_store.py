@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 
@@ -27,7 +28,7 @@ class DownloadHistoryStore:
         with self._lock:
             rows = get_connection().execute(
                 """
-                SELECT kind, name, source_url, status, created_at, updated_at
+                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
                 FROM download_history
                 ORDER BY updated_at DESC
                 LIMIT ?
@@ -46,7 +47,7 @@ class DownloadHistoryStore:
             conn = get_connection()
             existing = conn.execute(
                 """
-                SELECT created_at, source_url
+                SELECT created_at, source_url, resume_payload
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -54,16 +55,101 @@ class DownloadHistoryStore:
             ).fetchone()
             created_at = timestamp if existing is None else int(existing["created_at"] or timestamp)
             next_source_url = source_url or (existing["source_url"] if existing is not None else "") or ""
+            next_resume_payload = existing["resume_payload"] if existing is not None else None
             conn.execute(
                 """
                 INSERT OR REPLACE INTO download_history
-                (kind, name, source_url, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (kind, name, source_url, status, resume_payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, name, next_source_url, status, created_at, timestamp),
+                (kind, name, next_source_url, status, next_resume_payload, created_at, timestamp),
             )
             self._trim_entries(conn)
             conn.commit()
+
+    def set_resume_payload(self, kind: str, name: str, payload: dict | None, source_url: str = ""):
+        name = (name or "").strip()
+        if not kind or not name:
+            return
+
+        timestamp = int(time.time())
+        payload_text = None
+        if payload:
+            try:
+                payload_text = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
+            except Exception:
+                logger.exception("Failed to serialize resume payload for %s/%s", kind, name)
+                payload_text = None
+
+        with self._lock:
+            conn = get_connection()
+            existing = conn.execute(
+                """
+                SELECT created_at, source_url, status
+                FROM download_history
+                WHERE kind = ? AND name = ?
+                """,
+                (kind, name),
+            ).fetchone()
+            created_at = timestamp if existing is None else int(existing["created_at"] or timestamp)
+            next_source_url = source_url or (existing["source_url"] if existing is not None else "") or ""
+            next_status = existing["status"] if existing is not None else "Ready"
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO download_history
+                (kind, name, source_url, status, resume_payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (kind, name, next_source_url, next_status, payload_text, created_at, timestamp),
+            )
+            self._trim_entries(conn)
+            conn.commit()
+
+    def clear_resume_payload(self, kind: str, name: str):
+        name = (name or "").strip()
+        if not kind or not name:
+            return
+
+        with self._lock:
+            conn = get_connection()
+            conn.execute(
+                """
+                UPDATE download_history
+                SET resume_payload = NULL
+                WHERE kind = ? AND name = ?
+                """,
+                (kind, name),
+            )
+            conn.commit()
+
+    def list_resumable_entries(self, kind: str) -> list[dict]:
+        if not kind:
+            return []
+
+        with self._lock:
+            rows = get_connection().execute(
+                """
+                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
+                FROM download_history
+                WHERE kind = ?
+                  AND COALESCE(TRIM(resume_payload), '') <> ''
+                ORDER BY created_at ASC, updated_at ASC
+                """,
+                (kind,),
+            ).fetchall()
+
+        entries = []
+        for row in rows:
+            payload = row["resume_payload"]
+            try:
+                parsed_payload = json.loads(payload) if payload else {}
+            except (TypeError, ValueError):
+                logger.warning("Ignoring invalid resume payload for %s/%s", row["kind"], row["name"])
+                parsed_payload = {}
+            entry = dict(row)
+            entry["resume_payload"] = parsed_payload
+            entries.append(entry)
+        return entries
 
     def rename(self, kind: str, old_name: str, new_name: str, source_url: str = "", status: str | None = None):
         old_name = (old_name or "").strip()
@@ -76,7 +162,7 @@ class DownloadHistoryStore:
             conn = get_connection()
             current = conn.execute(
                 """
-                SELECT kind, name, source_url, status, created_at, updated_at
+                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -84,7 +170,7 @@ class DownloadHistoryStore:
             ).fetchone()
             target = conn.execute(
                 """
-                SELECT kind, name, source_url, status, created_at, updated_at
+                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -101,6 +187,7 @@ class DownloadHistoryStore:
 
             next_status = status or source_row["status"] or "Ready"
             next_source_url = source_url or source_row["source_url"] or ""
+            next_resume_payload = source_row["resume_payload"]
             created_at = int(source_row["created_at"] or timestamp)
 
             conn.execute(
@@ -116,10 +203,10 @@ class DownloadHistoryStore:
             conn.execute(
                 """
                 INSERT INTO download_history
-                (kind, name, source_url, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (kind, name, source_url, status, resume_payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, new_name, next_source_url, next_status, created_at, timestamp),
+                (kind, new_name, next_source_url, next_status, next_resume_payload, created_at, timestamp),
             )
             self._trim_entries(conn)
             conn.commit()
@@ -137,3 +224,4 @@ class DownloadHistoryStore:
             """,
             (self._max_entries,),
         )
+
