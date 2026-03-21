@@ -154,6 +154,27 @@ INPUT_STYLE = f"""
         font-size: 13px;
     }}
     QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
+    QComboBox {{
+        background: #181212;
+        border: 1px solid {BORDER};
+        border-radius: 6px;
+        padding: 6px 10px;
+        color: {TEXT};
+    }}
+    QComboBox:focus {{ border: 1px solid {ACCENT}; }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 24px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {SURFACE};
+        color: {TEXT};
+        border: 1px solid {BORDER};
+        outline: none;
+        padding: 4px;
+        selection-background-color: #2b1c1b;
+        selection-color: {TEXT};
+    }}
 """
 
 SEARCH_INPUT_STYLE = f"""
@@ -569,7 +590,6 @@ DISCOVERY_COMBO_STYLE = f"""
         border-radius: 6px;
         padding: 6px 10px;
         color: {TEXT};
-        font-size: 13px;
         min-width: 180px;
     }}
     QComboBox::drop-down {{

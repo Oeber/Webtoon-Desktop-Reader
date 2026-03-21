@@ -4,7 +4,7 @@ import re
 import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QTextCursor
+from PySide6.QtGui import QDesktopServices, QFont, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QListView,
     QScrollArea,
     QSlider,
     QTabWidget,
@@ -42,8 +43,16 @@ from core.app_update import (
 from core.app_logging import archived_log_paths, current_log_path, get_logger
 from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
 from scrapers.registry import get_all_scrapers_including_disabled
-from scrapers.site_availability import is_site_enabled, save_disabled_sites
-from scrapers.site_reliability import badge_for_site, load_site_reliability, record_site_check
+from scrapers.site_availability import (
+    MODE_ALL_DISABLED,
+    MODE_DISCOVERY_DISABLED,
+    MODE_ENABLED,
+    get_site_availability_mode,
+    is_download_enabled,
+    save_site_availability,
+    set_site_availability_mode,
+)
+from scrapers.site_reliability import badge_for_site, record_site_check
 from core.site_session import site_base_url
 from stores.settings_store import (
     APP_UPDATE_CHECK_ON_STARTUP_KEY,
@@ -305,7 +314,7 @@ class SettingsPage(QWidget):
         self._last_log_path = None
         self._last_log_size = 0
         self._logs_loaded = False
-        self._source_checkboxes = {}
+        self._source_mode_boxes = {}
         self._source_reliability_widgets = {}
         self._reliability_test_workers = {}
         self._pending_reliability_popup_site = ""
@@ -534,6 +543,10 @@ class SettingsPage(QWidget):
 
         self.library_update_interval_combo = QComboBox()
         self.library_update_interval_combo.setStyleSheet(INPUT_STYLE)
+        self.library_update_interval_combo.setFont(QFont("Segoe UI", 10))
+        interval_view = QListView(self.library_update_interval_combo)
+        interval_view.setFont(QFont("Segoe UI", 10))
+        self.library_update_interval_combo.setView(interval_view)
         for minutes, label in LIBRARY_UPDATE_INTERVAL_OPTIONS:
             self.library_update_interval_combo.addItem(label, minutes)
         self._set_library_update_interval_selection(
@@ -658,7 +671,7 @@ class SettingsPage(QWidget):
         sources_header.addStretch()
         sources_layout.addLayout(sources_header)
 
-        sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover. Click a source status badge to test it and view details.")
+        sources_help = QLabel("Choose whether each source stays fully on, is hidden from Discover only, or is disabled for discovery and downloads. Click a source status badge to test it and view details.")
         sources_help.setWordWrap(True)
         sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         sources_layout.addWidget(sources_help)
@@ -761,7 +774,7 @@ class SettingsPage(QWidget):
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True)
         save_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False)
         save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60)
-        save_disabled_sites([])
+        save_site_availability({})
 
         self.auto_skip_checkbox.blockSignals(True)
         self.auto_skip_checkbox.setChecked(True)
@@ -956,7 +969,7 @@ class SettingsPage(QWidget):
         return sorted(rows_by_site.values(), key=lambda row: row["label"].casefold())
 
     def _build_source_checkboxes(self, layout: QVBoxLayout):
-        self._source_checkboxes = {}
+        self._source_mode_boxes = {}
         self._source_reliability_widgets = {}
         badge_buttons = []
         for row in self._source_rows():
@@ -968,13 +981,29 @@ class SettingsPage(QWidget):
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(10)
 
-            checkbox = QCheckBox(self._source_checkbox_label(row))
-            checkbox.setStyleSheet(CHECKBOX_STYLE)
-            checkbox.setChecked(is_site_enabled(site_name))
-            checkbox.toggled.connect(
-                lambda checked, site_name=site_name: self._on_source_toggled(site_name, checked)
+            label = QLabel(self._source_checkbox_label(row))
+            label.setStyleSheet(TEXT_MUTED_BODY_STYLE)
+            row_layout.addWidget(label, 1)
+
+            mode_box = QComboBox()
+            mode_box.setStyleSheet(INPUT_STYLE)
+            mode_box.setMinimumWidth(190)
+            mode_box.setFont(QFont("Segoe UI", 10))
+            mode_view = QListView(mode_box)
+            mode_view.setFont(QFont("Segoe UI", 10))
+            mode_box.setView(mode_view)
+            for text, mode in self._source_availability_options(row):
+                mode_box.addItem(text, mode)
+            mode_box.setCurrentIndex(
+                max(0, mode_box.findData(self._source_mode_for_row(site_name, row)))
             )
-            row_layout.addWidget(checkbox, 1)
+            mode_box.currentIndexChanged.connect(
+                lambda _index, site_name=site_name, combo=mode_box: self._on_source_mode_changed(
+                    site_name,
+                    str(combo.currentData() or MODE_ENABLED),
+                )
+            )
+            row_layout.addWidget(mode_box, 0, Qt.AlignVCenter)
 
             badge_btn = QPushButton("Unknown")
             badge_btn.clicked.connect(
@@ -983,7 +1012,10 @@ class SettingsPage(QWidget):
             row_layout.addWidget(badge_btn, 0, Qt.AlignVCenter)
             badge_buttons.append(badge_btn)
 
-            self._source_checkboxes[site_name] = checkbox
+            self._source_mode_boxes[site_name] = {
+                "combo": mode_box,
+                "row": dict(row),
+            }
             self._source_reliability_widgets[site_name] = {
                 "badge": badge_btn,
                 "name": row["label"],
@@ -1005,7 +1037,7 @@ class SettingsPage(QWidget):
                 widgets["badge"].setToolTip("Running live status test...")
                 continue
 
-            widgets["badge"].setEnabled(is_site_enabled(site_name))
+            widgets["badge"].setEnabled(is_download_enabled(site_name))
             widgets["badge"].setText(badge["label"])
             widgets["badge"].setStyleSheet(
                 reliability_badge_button_style(badge["color"], badge["background"], badge["border"])
@@ -1112,19 +1144,45 @@ class SettingsPage(QWidget):
         return f"{row['label']}{suffix}"
 
     def _refresh_source_checkboxes(self):
-        for site_name, checkbox in self._source_checkboxes.items():
-            checkbox.blockSignals(True)
-            checkbox.setChecked(is_site_enabled(site_name))
-            checkbox.blockSignals(False)
+        for site_name, widgets in self._source_mode_boxes.items():
+            combo = widgets["combo"]
+            row = widgets["row"]
+            target_mode = self._source_mode_for_row(site_name, row)
+            index = combo.findData(target_mode)
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, index))
+            combo.blockSignals(False)
 
-    def _on_source_toggled(self, site_name: str, checked: bool):
-        disabled_sites = {
-            name for name, checkbox in self._source_checkboxes.items()
-            if not (checked if name == site_name else checkbox.isChecked())
-        }
-        save_disabled_sites(disabled_sites)
-        logger.info("Scraper site availability changed for %s enabled=%s", site_name, checked)
+    def _source_availability_options(self, row: dict) -> list[tuple[str, str]]:
+        download = bool(row.get("download"))
+        discover = bool(row.get("discover"))
+        if discover and download:
+            return [
+                ("On", MODE_ENABLED),
+                ("Disable Discovery", MODE_DISCOVERY_DISABLED),
+                ("Disable Discovery + Download", MODE_ALL_DISABLED),
+            ]
+        if discover:
+            return [
+                ("On", MODE_ENABLED),
+                ("Disable Discovery", MODE_ALL_DISABLED),
+            ]
+        return [
+            ("On", MODE_ENABLED),
+            ("Disable Download", MODE_ALL_DISABLED),
+        ]
+
+    def _source_mode_for_row(self, site_name: str, row: dict) -> str:
+        mode = get_site_availability_mode(site_name)
+        if mode == MODE_DISCOVERY_DISABLED and not bool(row.get("discover")):
+            return MODE_ENABLED
+        return mode
+
+    def _on_source_mode_changed(self, site_name: str, mode: str):
+        set_site_availability_mode(site_name, mode)
+        logger.info("Scraper site availability changed for %s mode=%s", site_name, mode)
         self._set_settings_status("Source settings saved.")
+        self._refresh_source_checkboxes()
         self.refresh_scraper_reliability()
         self.main_window.reload_scraper_availability()
 

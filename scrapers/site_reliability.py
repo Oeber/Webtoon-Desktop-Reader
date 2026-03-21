@@ -1,7 +1,11 @@
 import json
 import time
 
-from scrapers.site_availability import is_site_enabled
+from scrapers.site_availability import (
+    MODE_ALL_DISABLED,
+    MODE_DISCOVERY_DISABLED,
+    get_site_availability_mode,
+)
 from stores.app_settings_store import get_instance as get_app_settings_store
 
 
@@ -40,6 +44,12 @@ _BADGE_STYLES = {
         "color": "#b18b84",
         "background": "rgba(35, 24, 23, 0.45)",
         "border": "#5a423e",
+    },
+    "discovery_disabled": {
+        "label": "Discover Off",
+        "color": "#d7b1aa",
+        "background": "rgba(49, 31, 29, 0.45)",
+        "border": "#6f5450",
     },
 }
 
@@ -165,14 +175,24 @@ def badge_for_site(site_name: str) -> dict[str, str]:
     }
     if not key:
         return base
-    if not is_site_enabled(key):
+    availability_mode = get_site_availability_mode(key)
+    if availability_mode == MODE_ALL_DISABLED:
         return {
             "status": "disabled",
             "label": _BADGE_STYLES["disabled"]["label"],
             "color": _BADGE_STYLES["disabled"]["color"],
             "background": _BADGE_STYLES["disabled"]["background"],
             "border": _BADGE_STYLES["disabled"]["border"],
-            "tooltip": f"{site_display_name(key)} is disabled in Settings.",
+            "tooltip": f"{site_display_name(key)} is disabled for discovery and downloads.",
+        }
+    if availability_mode == MODE_DISCOVERY_DISABLED:
+        return {
+            "status": "discovery_disabled",
+            "label": _BADGE_STYLES["discovery_disabled"]["label"],
+            "color": _BADGE_STYLES["discovery_disabled"]["color"],
+            "background": _BADGE_STYLES["discovery_disabled"]["background"],
+            "border": _BADGE_STYLES["discovery_disabled"]["border"],
+            "tooltip": f"{site_display_name(key)} is hidden from Discover but still available for downloads.",
         }
 
     snapshot = load_site_reliability().get(key)

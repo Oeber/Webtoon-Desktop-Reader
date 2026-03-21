@@ -315,7 +315,10 @@ class CategorySection(QFrame):
         count_text = self.header_btn.text().rsplit("(", 1)[-1].rstrip(")") if "(" in self.header_btn.text() else ""
         subtitle = f"{title} ({count_text})" if count_text else title
         font = QFont(self.header_btn.font())
-        font.setPointSize(max(font.pointSize(), 11))
+        point_size = font.pointSize()
+        if point_size <= 0:
+            point_size = max(font.pointSizeF(), 11.0)
+        font.setPointSizeF(max(point_size, 11.0))
         font.setBold(True)
         metrics = QFontMetrics(font)
         width = min(320, max(180, metrics.horizontalAdvance(subtitle) + 34))

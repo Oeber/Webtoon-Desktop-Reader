@@ -8,7 +8,7 @@ from pathlib import Path
 from core.app_logging import get_logger
 from core.app_paths import external_scrapers_path
 from .base import BaseScraper, ScraperDisabledError
-from .site_availability import is_site_enabled
+from .site_availability import is_download_enabled
 
 logger = get_logger(__name__)
 _BUILTIN_SCRAPER_CLASSES: tuple[type[BaseScraper], ...] | None = None
@@ -132,7 +132,7 @@ def _iter_scraper_classes(include_disabled: bool = False):
         if key in seen:
             continue
         seen.add(key)
-        if not include_disabled and not is_site_enabled(getattr(scraper_cls, "site_name", "")):
+        if not include_disabled and not is_download_enabled(getattr(scraper_cls, "site_name", "")):
             continue
         yield scraper_cls
 
@@ -141,7 +141,7 @@ def _iter_scraper_classes(include_disabled: bool = False):
         if key in seen:
             continue
         seen.add(key)
-        if not include_disabled and not is_site_enabled(getattr(scraper_cls, "site_name", "")):
+        if not include_disabled and not is_download_enabled(getattr(scraper_cls, "site_name", "")):
             continue
         yield scraper_cls
 
@@ -151,7 +151,7 @@ def get_scraper(url: str):
     for scraper_cls in _iter_scraper_classes(include_disabled=True):
         if scraper_cls.can_handle(url):
             site_name = getattr(scraper_cls, "site_name", "") or ""
-            if not is_site_enabled(site_name):
+            if not is_download_enabled(site_name):
                 disabled_matches.add(site_name or scraper_cls.__name__)
                 continue
             logger.info("Matched scraper %s for %s", scraper_cls.__name__, url)
@@ -160,7 +160,7 @@ def get_scraper(url: str):
     if disabled_matches:
         site_name = sorted(disabled_matches)[0]
         logger.warning("Scraper for disabled site %s requested for %s", site_name, url)
-        raise ScraperDisabledError(f"{site_name.replace('_', ' ').title()} is disabled in Settings.")
+        raise ScraperDisabledError(f"{site_name.replace('_', ' ').title()} is disabled for downloads.")
 
     logger.warning("No scraper available for %s", url)
     raise ValueError(f"No scraper available for URL: {url}")
@@ -190,6 +190,6 @@ def is_scraper_enabled_for_url(url: str) -> bool:
         if not scraper_cls.can_handle(url):
             continue
         saw_match = True
-        if is_site_enabled(getattr(scraper_cls, "site_name", "")):
+        if is_download_enabled(getattr(scraper_cls, "site_name", "")):
             return True
     return not saw_match

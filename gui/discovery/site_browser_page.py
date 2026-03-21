@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListView,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
@@ -391,6 +392,10 @@ class SiteBrowserPage(QWidget):
 
         self.site_combo = QComboBox()
         self.site_combo.setStyleSheet(DISCOVERY_COMBO_STYLE)
+        self.site_combo.setFont(QFont("Segoe UI", 10))
+        site_combo_view = QListView(self.site_combo)
+        site_combo_view.setFont(QFont("Segoe UI", 10))
+        self.site_combo.setView(site_combo_view)
         self.site_combo.currentIndexChanged.connect(self._on_site_changed)
         controls.addWidget(self.site_combo)
 

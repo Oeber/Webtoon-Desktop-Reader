@@ -9,7 +9,7 @@ from core.app_logging import get_logger
 from core.app_paths import app_root
 
 from .discovery_base import BaseDiscoveryProvider
-from .site_availability import is_site_enabled
+from .site_availability import is_discovery_enabled
 
 logger = get_logger(__name__)
 
@@ -97,7 +97,7 @@ def _iter_provider_classes(include_disabled: bool = False):
         if key in seen:
             continue
         seen.add(key)
-        if not include_disabled and not is_site_enabled(getattr(provider_cls, "site_name", "")):
+        if not include_disabled and not is_discovery_enabled(getattr(provider_cls, "site_name", "")):
             continue
         yield provider_cls
 
@@ -106,7 +106,7 @@ def _iter_provider_classes(include_disabled: bool = False):
         if key in seen:
             continue
         seen.add(key)
-        if not include_disabled and not is_site_enabled(getattr(provider_cls, "site_name", "")):
+        if not include_disabled and not is_discovery_enabled(getattr(provider_cls, "site_name", "")):
             continue
         yield provider_cls
 

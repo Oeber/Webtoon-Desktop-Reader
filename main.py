@@ -1,6 +1,6 @@
 import sys
 import ctypes
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from core.app_logging import setup_logging, get_logger
@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("QApplication created")
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setFont(QFont("Segoe UI", 10))
 
     app_icon_path = resource_path("imgs", "logo.png")
     icon = None
