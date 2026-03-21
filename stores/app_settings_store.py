@@ -29,15 +29,23 @@ class AppSettingsStore:
         return self._coerce_value(raw_value, default)
 
     def set(self, key: str, value):
-        key = self._normalize_key(key)
+        self.set_many({key: value})
+
+    def set_many(self, values: dict):
+        items = [
+            (self._normalize_key(key), self._serialize_value(value))
+            for key, value in dict(values or {}).items()
+        ]
+        if not items:
+            return
         conn = get_connection()
-        conn.execute(
+        conn.executemany(
             """INSERT INTO app_settings (key, value, updated_at)
                VALUES (?, ?, strftime('%s', 'now'))
                ON CONFLICT(key) DO UPDATE SET
                    value = excluded.value,
                    updated_at = excluded.updated_at""",
-            (key, self._serialize_value(value)),
+            items,
         )
         conn.commit()
 

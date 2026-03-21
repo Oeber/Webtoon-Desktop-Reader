@@ -52,3 +52,7 @@ def load_setting(key: str, default):
 
 def save_setting(key: str, value):
     _app_settings.set(key, value)
+
+
+def save_settings(values: dict):
+    _app_settings.set_many(values)

@@ -656,6 +656,42 @@ def status_text_style(color: str) -> str:
     return f"color: {color}; font-size: 12px; background: transparent; border: none;"
 
 
+def reliability_badge_style(color: str, background: str, border: str) -> str:
+    return f"""
+        QLabel {{
+            color: {color};
+            background: {background};
+            border: 1px solid {border};
+            border-radius: 7px;
+            padding: 1px 8px;
+            font-size: 10px;
+            font-weight: 700;
+        }}
+    """
+
+
+def reliability_badge_button_style(color: str, background: str, border: str) -> str:
+    return f"""
+        QPushButton {{
+            color: {color};
+            background: {background};
+            border: 1px solid {border};
+            border-radius: 7px;
+            padding: 3px 10px;
+            font-size: 10px;
+            font-weight: 700;
+            text-align: center;
+        }}
+        QPushButton:hover {{
+            border-color: {color};
+        }}
+        QPushButton:disabled {{
+            color: #8e706a;
+            border-color: #5a423e;
+        }}
+    """
+
+
 EDIT_DIALOG_STYLE = """
     QDialog { background: #120e0e; color: #ffe7e2; }
     QLabel { background: transparent; }

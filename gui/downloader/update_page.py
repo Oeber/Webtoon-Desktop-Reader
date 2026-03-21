@@ -50,8 +50,9 @@ from gui.search.global_search import rank_webtoons
 from stores.settings_store import load_library_path
 from library.library_manager import scan_library
 from scrapers.base import ScraperDisabledError, ScraperError
-from scrapers.registry import get_scraper, is_scraper_enabled_for_url
+from scrapers.registry import get_scraper, get_scraper_site_name, is_scraper_enabled_for_url
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
+from scrapers.site_reliability import record_site_batch, site_display_name
 
 
 logger = get_logger(__name__)
@@ -79,7 +80,7 @@ UPDATE_STATUS_COLORS = {
 
 class UpdateAvailabilityLoader(QObject):
 
-    checked = Signal(int, object, object, str)
+    checked = Signal(int, object, object, str, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -95,27 +96,33 @@ class UpdateAvailabilityLoader(QObject):
         cached_result = self._cached_result(candidate)
         if cached_result is not None:
             result, error = cached_result
-            self.checked.emit(request_id, candidate, result, error)
+            self.checked.emit(request_id, candidate, result, error, -1)
             return
 
         def worker():
+            started_at = time.perf_counter()
             try:
                 result = self._check_candidate(candidate)
                 self._store_result_cache(candidate, result)
-                self.checked.emit(request_id, candidate, result, "")
+                duration_ms = int((time.perf_counter() - started_at) * 1000.0)
+                self.checked.emit(request_id, candidate, result, "", duration_ms)
             except ScraperDisabledError as e:
                 logger.info("Skipping disabled scraper update check for %s: %s", candidate.get("name"), e)
-                self.checked.emit(request_id, candidate, None, DISABLED_CHECK_ERROR)
+                duration_ms = int((time.perf_counter() - started_at) * 1000.0)
+                self.checked.emit(request_id, candidate, None, DISABLED_CHECK_ERROR, duration_ms)
             except ValueError as e:
                 logger.info("Skipping unsupported scraper update check for %s: %s", candidate.get("name"), e)
-                self.checked.emit(request_id, candidate, None, UNSUPPORTED_CHECK_ERROR)
+                duration_ms = int((time.perf_counter() - started_at) * 1000.0)
+                self.checked.emit(request_id, candidate, None, UNSUPPORTED_CHECK_ERROR, duration_ms)
             except ScraperError as e:
                 self._store_error_cache(candidate, str(e))
-                self.checked.emit(request_id, candidate, None, str(e))
+                duration_ms = int((time.perf_counter() - started_at) * 1000.0)
+                self.checked.emit(request_id, candidate, None, str(e), duration_ms)
             except Exception as e:
                 logger.exception("Unexpected update check failure for %s", candidate.get("name"))
                 self._store_error_cache(candidate, str(e))
-                self.checked.emit(request_id, candidate, None, str(e))
+                duration_ms = int((time.perf_counter() - started_at) * 1000.0)
+                self.checked.emit(request_id, candidate, None, str(e), duration_ms)
 
         self._executor.submit(worker)
 
@@ -149,6 +156,7 @@ class UpdateAvailabilityLoader(QObject):
         return {
             "name": candidate.get("name") or "",
             "source_url": series_url,
+            "site_name": candidate.get("site_name") or getattr(scraper, "site_name", "") or "",
             "webtoon": candidate.get("webtoon"),
             "last_update_at": candidate.get("last_update_at"),
             "local_chapters": int(candidate.get("local_chapters", 0) or 0),
@@ -176,6 +184,7 @@ class UpdateAvailabilityLoader(QObject):
         return {
             "name": candidate.get("name") or "",
             "source_url": series_url,
+            "site_name": candidate.get("site_name") or getattr(scraper, "site_name", "") or "",
             "webtoon": candidate.get("webtoon"),
             "last_update_at": candidate.get("last_update_at"),
             "local_chapters": int(candidate.get("local_chapters", 0) or 0),
@@ -273,6 +282,7 @@ class UpdateAvailabilityLoader(QObject):
         return {
             "name": candidate.get("name") or "",
             "source_url": payload.get("source_url") or "",
+            "site_name": candidate.get("site_name") or "",
             "webtoon": candidate.get("webtoon"),
             "last_update_at": candidate.get("last_update_at"),
             "local_chapters": int(payload.get("local_chapters", 0) or 0),
@@ -287,6 +297,7 @@ class UpdateCard(QFrame):
         *,
         webtoon,
         source_url: str,
+        site_name: str,
         last_update_at: int | None,
         new_chapters: int,
         remote_chapters: int,
@@ -296,6 +307,7 @@ class UpdateCard(QFrame):
         self.webtoon = webtoon
         self.name = webtoon.name
         self.source_url = source_url
+        self.site_name = str(site_name or "").strip()
         self.last_update_at = last_update_at
         self.new_chapters = max(0, int(new_chapters))
         self.remote_chapters = max(0, int(remote_chapters))
@@ -503,7 +515,7 @@ class UpdateCard(QFrame):
         return f"{self.new_chapters} New"
 
     def _summary_text(self) -> str:
-        return ""
+        return site_display_name(self.site_name)
 
     def _meta_text(self) -> str:
         if self.last_update_at is None:
@@ -565,6 +577,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self._current_check_reason = "manual"
         self._last_check_counts_by_name = {}
         self._results_refresh_pending = False
+        self._site_check_stats = {}
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search titles with updates...")
@@ -688,6 +701,7 @@ class UpdatePage(DownloadHistoryPageBase):
                 continue
             candidates.append(
                 {
+                    "site_name": get_scraper_site_name(source_url),
                     "name": webtoon.name,
                     "webtoon": webtoon,
                     "source_url": source_url,
@@ -706,6 +720,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self._check_errors = 0
         self._results_refresh_pending = False
         self._results_refresh_timer.stop()
+        self._site_check_stats = {}
         self._empty_message = (
             "Checking saved titles for updates..."
             if candidates else
@@ -773,6 +788,7 @@ class UpdatePage(DownloadHistoryPageBase):
             card = UpdateCard(
                 webtoon=update["webtoon"],
                 source_url=update["source_url"],
+                site_name=update.get("site_name", ""),
                 last_update_at=update["last_update_at"],
                 new_chapters=update["new_chapters"],
                 remote_chapters=update["remote_chapters"],
@@ -815,6 +831,38 @@ class UpdatePage(DownloadHistoryPageBase):
         self._results_refresh_pending = True
         if self.isVisible():
             self._results_refresh_timer.start(max(0, int(delay_ms)))
+
+    def _track_site_check_result(self, candidate: dict, error: str, duration_ms: int):
+        if duration_ms < 0:
+            return
+        site_name = str(candidate.get("site_name") or "").strip()
+        if not site_name:
+            return
+        stats = self._site_check_stats.setdefault(
+            site_name,
+            {"successes": 0, "failures": 0, "duration_ms": 0, "last_error": ""},
+        )
+        stats["duration_ms"] = max(int(duration_ms), int(stats.get("duration_ms", 0) or 0))
+        if error in {DISABLED_CHECK_ERROR, UNSUPPORTED_CHECK_ERROR}:
+            return
+        if error:
+            stats["failures"] += 1
+            stats["last_error"] = str(error or "")
+            return
+        stats["successes"] += 1
+        if stats["failures"] <= 0:
+            stats["last_error"] = ""
+
+    def _commit_site_reliability_updates(self):
+        for site_name, stats in self._site_check_stats.items():
+            record_site_batch(
+                site_name,
+                source="updates",
+                successes=int(stats.get("successes", 0) or 0),
+                failures=int(stats.get("failures", 0) or 0),
+                duration_ms=int(stats.get("duration_ms", 0) or 0),
+                error=str(stats.get("last_error") or ""),
+            )
 
     def _flush_results_refresh(self):
         if not self._results_refresh_pending and not self.isVisible():
@@ -967,20 +1015,22 @@ class UpdatePage(DownloadHistoryPageBase):
             self._refresh_timer.stop()
             self._refresh_timer.start(0)
 
-    def _on_candidate_checked(self, request_id: int, candidate: dict, result: dict | None, error: str):
+    def _on_candidate_checked(self, request_id: int, candidate: dict, result: dict | None, error: str, duration_ms: int):
         if request_id != self._check_request_id:
             return
 
         self._completed_checks += 1
+        self._track_site_check_result(candidate, error, duration_ms)
         if error in {DISABLED_CHECK_ERROR, UNSUPPORTED_CHECK_ERROR}:
             pass
         elif error:
             self._check_errors += 1
             logger.warning("Update check failed for %s: %s", candidate.get("name"), error)
-        elif result is not None:
-            self._available_updates.append(result)
-            self._last_check_counts_by_name[str(candidate.get("name") or "")] = int(result.get("new_chapters", 0) or 0)
-            self._available_updates.sort(key=lambda item: item["webtoon"].name.lower())
+        else:
+            if result is not None:
+                self._available_updates.append(result)
+                self._last_check_counts_by_name[str(candidate.get("name") or "")] = int(result.get("new_chapters", 0) or 0)
+                self._available_updates.sort(key=lambda item: item["webtoon"].name.lower())
             self._schedule_results_refresh()
 
         if self._pending_checks > 0:
@@ -1010,10 +1060,12 @@ class UpdatePage(DownloadHistoryPageBase):
             self._last_check_counts_by_name,
             clear_missing_names=[item["name"] for item in self._candidates],
         )
+        self._commit_site_reliability_updates()
         self._empty_message = "No updates found right now."
         self._results_refresh_pending = False
         self._results_refresh_timer.stop()
         self._apply_filter()
+        self._site_check_stats = {}
         self.check_cycle_finished.emit(
             self._current_check_reason,
             count,

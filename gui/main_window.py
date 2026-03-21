@@ -38,7 +38,6 @@ from stores.settings_store import (
 )
 from gui.discovery.site_browser_page import SiteBrowserPage
 from gui.discovery.detail_page import DiscoveryDetailPage
-from gui.common.site_auth_dialog import SiteAuthDialog
 from gui.downloader.downloader_page import DownloaderPage
 from gui.downloader.update_page import UpdatePage
 from gui.downloader.download_widgets import SpinnerCircle
@@ -192,6 +191,7 @@ class MainWindow(QMainWindow):
         self.global_search_shortcut.activated.connect(self.global_search.open_dialog)
         self._shutdown_done = False
         self._site_auth_dialog_open = False
+        self._site_auth_launch_pending = False
         self._download_sidebar_jobs = {}
         self._download_sidebar_icon_state = None
         self._download_sidebar_spin = qta.Spin(self.btn_downloader)
@@ -208,8 +208,8 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar_nav_state()
         self._apply_sidebar_button_layout()
         self.refresh_library_update_schedule()
-        QTimer.singleShot(1500, self.settings.schedule_startup_update_check)
-        QTimer.singleShot(2500, self._run_startup_library_update_check_if_due)
+        QTimer.singleShot(10000, self.settings.schedule_startup_update_check)
+        QTimer.singleShot(12000, self._run_startup_library_update_check_if_due)
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)
@@ -244,6 +244,7 @@ class MainWindow(QMainWindow):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.discovery)
+        self.discovery.ensure_initial_catalog_loaded()
         self._set_sidebar_target("discovery")
 
     def open_discovery_search(self, query: str = "", scraper: str = "") -> bool:
@@ -259,32 +260,44 @@ class MainWindow(QMainWindow):
         self._set_sidebar_target("discovery")
 
     def open_site_authorization(self, site_name: str, url: str = "") -> bool:
-        if self._site_auth_dialog_open:
+        if self._site_auth_dialog_open or self._site_auth_launch_pending:
             logger.info("Ignoring duplicate site authorization request for %s", site_name)
             return False
 
-        prior_state = self.windowState()
-        dialog = SiteAuthDialog(site_name, url=url, parent=None)
-        dialog.setWindowModality(Qt.ApplicationModal)
-        self._site_auth_dialog_open = True
+        self._site_auth_launch_pending = True
+        dialog = None
         try:
+            from gui.common.site_auth_dialog import SiteAuthDialog
+
+            dialog = SiteAuthDialog(site_name, url=url, parent=None)
+            dialog.setAttribute(Qt.WA_DeleteOnClose, True)
+            dialog.setModal(True)
+            self._site_auth_dialog_open = True
+            self._site_auth_launch_pending = False
             result = bool(dialog.exec())
+        except Exception as exc:
+            self._site_auth_launch_pending = False
+            logger.exception("Failed to open site authorization dialog for %s", site_name)
+            QMessageBox.warning(
+                self,
+                "Source Authorization",
+                f"Could not open the authorization window for {site_name}: {exc}",
+            )
+            return False
         finally:
             self._site_auth_dialog_open = False
-        if self.windowState() != prior_state:
-            self.setWindowState(prior_state)
-        self.raise_()
-        self.activateWindow()
         return result
 
     def open_settings(self):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
+        self.settings.refresh_scraper_reliability()
         self.stack.setCurrentWidget(self.settings)
         self._set_sidebar_target("settings")
 
     def reload_scraper_availability(self):
         logger.info("Reloading scrapers across the UI")
+        self.settings.refresh_scraper_reliability()
         self.discovery.reload_providers(load_catalog=True)
         if self.detail.webtoon is not None:
             self.detail.refresh_remote_state()

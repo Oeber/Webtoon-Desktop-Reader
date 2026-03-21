@@ -174,6 +174,16 @@ def get_all_scrapers_including_disabled():
     return [scraper_cls() for scraper_cls in _iter_scraper_classes(include_disabled=True)]
 
 
+def get_scraper_site_name(url: str) -> str:
+    for scraper_cls in _iter_scraper_classes(include_disabled=True):
+        try:
+            if scraper_cls.can_handle(url):
+                return getattr(scraper_cls, "site_name", "") or ""
+        except Exception:
+            continue
+    return ""
+
+
 def is_scraper_enabled_for_url(url: str) -> bool:
     saw_match = False
     for scraper_cls in _iter_scraper_classes(include_disabled=True):

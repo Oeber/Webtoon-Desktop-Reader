@@ -1,6 +1,7 @@
 import html
 import os
 import re
+import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices, QTextCursor
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -41,6 +43,8 @@ from core.app_logging import archived_log_paths, current_log_path, get_logger
 from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
 from scrapers.registry import get_all_scrapers_including_disabled
 from scrapers.site_availability import is_site_enabled, save_disabled_sites
+from scrapers.site_reliability import badge_for_site, load_site_reliability, record_site_check
+from core.site_session import site_base_url
 from stores.settings_store import (
     APP_UPDATE_CHECK_ON_STARTUP_KEY,
     APP_UPDATE_LAST_ASSET_URL_KEY,
@@ -66,6 +70,7 @@ from stores.settings_store import (
     load_setting,
     save_library_path,
     save_setting,
+    save_settings,
 )
 from gui.common.styles import (
     APP_UPDATE_PROGRESS_STYLE,
@@ -85,6 +90,7 @@ from gui.common.styles import (
     STARTUP_UPDATE_DIALOG_STYLE,
     STATUS_LABEL_STYLE,
     SURFACE_PANEL_STYLE,
+    reliability_badge_button_style,
     TAB_STYLE,
     TEXT_MUTED_BODY_STYLE,
     TEXT_MUTED_LABEL_STYLE,
@@ -122,6 +128,34 @@ class _AppUpdateInstallWorker(QThread):
 
     def _emit_progress(self, current: int, total: int):
         self.progress_changed.emit(int(current), int(total))
+
+
+class _SiteReliabilityTestWorker(QThread):
+    result_ready = Signal(str, bool, str, int)
+
+    def __init__(self, site_name: str):
+        super().__init__()
+        self._site_name = str(site_name or "").strip()
+
+    def run(self):
+        started_at = time.perf_counter()
+        ok = False
+        error = "No self-test available for this source yet."
+        try:
+            provider = None
+            for current in get_all_discovery_providers_including_disabled():
+                if getattr(current, "site_name", "") == self._site_name:
+                    provider = current
+                    break
+            if provider is None:
+                raise RuntimeError(error)
+            provider.get_catalog_page(page=1)
+            ok = True
+            error = ""
+        except Exception as exc:
+            error = str(exc) or error
+        duration_ms = int((time.perf_counter() - started_at) * 1000.0)
+        self.result_ready.emit(self._site_name, ok, error, duration_ms)
 
 
 class _StartupUpdateDialog(QDialog):
@@ -272,6 +306,10 @@ class SettingsPage(QWidget):
         self._last_log_size = 0
         self._logs_loaded = False
         self._source_checkboxes = {}
+        self._source_reliability_widgets = {}
+        self._reliability_test_workers = {}
+        self._pending_reliability_popup_site = ""
+        self._pending_source_authorization = None
         self._update_worker = None
         self._update_install_worker = None
         self._latest_update_result = None
@@ -612,7 +650,7 @@ class SettingsPage(QWidget):
         sources_header.addStretch()
         sources_layout.addLayout(sources_header)
 
-        sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover.")
+        sources_help = QLabel("Enable or disable supported scraper sites for downloads, updates, and Discover. Click a source status badge to test it and view details.")
         sources_help.setWordWrap(True)
         sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         sources_layout.addWidget(sources_help)
@@ -746,6 +784,7 @@ class SettingsPage(QWidget):
         self.library_update_interval_combo.blockSignals(False)
 
         self._refresh_source_checkboxes()
+        self.refresh_scraper_reliability()
         self.refresh_library_update_status()
 
         self.zoom_slider.blockSignals(True)
@@ -909,15 +948,151 @@ class SettingsPage(QWidget):
         return sorted(rows_by_site.values(), key=lambda row: row["label"].casefold())
 
     def _build_source_checkboxes(self, layout: QVBoxLayout):
+        self._source_checkboxes = {}
+        self._source_reliability_widgets = {}
+        badge_buttons = []
         for row in self._source_rows():
+            site_name = row["site_name"]
+
+            row_widget = QWidget()
+            row_widget.setStyleSheet(TRANSPARENT_BG_STYLE)
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(10)
+
             checkbox = QCheckBox(self._source_checkbox_label(row))
             checkbox.setStyleSheet(CHECKBOX_STYLE)
-            checkbox.setChecked(is_site_enabled(row["site_name"]))
+            checkbox.setChecked(is_site_enabled(site_name))
             checkbox.toggled.connect(
-                lambda checked, site_name=row["site_name"]: self._on_source_toggled(site_name, checked)
+                lambda checked, site_name=site_name: self._on_source_toggled(site_name, checked)
             )
-            self._source_checkboxes[row["site_name"]] = checkbox
-            layout.addWidget(checkbox)
+            row_layout.addWidget(checkbox, 1)
+
+            badge_btn = QPushButton("Unknown")
+            badge_btn.clicked.connect(
+                lambda checked=False, name=site_name: self._start_source_reliability_test_with_popup(name)
+            )
+            row_layout.addWidget(badge_btn, 0, Qt.AlignVCenter)
+            badge_buttons.append(badge_btn)
+
+            self._source_checkboxes[site_name] = checkbox
+            self._source_reliability_widgets[site_name] = {
+                "badge": badge_btn,
+                "name": row["label"],
+            }
+            layout.addWidget(row_widget)
+
+        if badge_buttons:
+            max_badge_width = max(button.sizeHint().width() for button in badge_buttons)
+            max_badge_width = max(max_badge_width, 120)
+            for button in badge_buttons:
+                button.setFixedWidth(max_badge_width)
+
+    def refresh_scraper_reliability(self):
+        for site_name, widgets in self._source_reliability_widgets.items():
+            badge = badge_for_site(site_name)
+            if site_name in self._reliability_test_workers:
+                widgets["badge"].setText("Testing...")
+                widgets["badge"].setEnabled(False)
+                widgets["badge"].setToolTip("Running live status test...")
+                continue
+
+            widgets["badge"].setEnabled(is_site_enabled(site_name))
+            widgets["badge"].setText(badge["label"])
+            widgets["badge"].setStyleSheet(
+                reliability_badge_button_style(badge["color"], badge["background"], badge["border"])
+            )
+            widgets["badge"].setToolTip(
+                f"{badge['tooltip']}\n\nClick to test this source and view details."
+            )
+
+    def _start_source_reliability_test_with_popup(self, site_name: str):
+        self._pending_reliability_popup_site = str(site_name or "").strip()
+        self._test_source_reliability(site_name)
+
+    def _test_source_reliability(self, site_name: str):
+        site_name = str(site_name or "").strip()
+        if not site_name or site_name in self._reliability_test_workers:
+            return
+        worker = _SiteReliabilityTestWorker(site_name)
+        worker.result_ready.connect(self._on_source_reliability_test_finished)
+        worker.finished.connect(worker.deleteLater)
+        self._reliability_test_workers[site_name] = worker
+        self.refresh_scraper_reliability()
+        worker.start()
+
+    def _looks_like_access_block(self, error: str) -> bool:
+        text = " ".join(str(error or "").casefold().split())
+        return "cloudflare" in text or "anti-bot" in text or "just a moment" in text
+
+    def _on_source_reliability_test_finished(self, site_name: str, succeeded: bool, error: str, duration_ms: int):
+        self._reliability_test_workers.pop(str(site_name or "").strip(), None)
+        record_site_check(
+            site_name,
+            source="settings_test",
+            succeeded=bool(succeeded),
+            duration_ms=int(duration_ms),
+            error=str(error or ""),
+        )
+        if succeeded:
+            self._pending_reliability_popup_site = ""
+            self._set_settings_status("Source status test completed.")
+            self.refresh_scraper_reliability()
+            return
+
+        self._set_settings_status(f"Source status test failed: {error}")
+        self.refresh_scraper_reliability()
+
+        if self._looks_like_access_block(error):
+            self._pending_reliability_popup_site = ""
+            url = site_base_url(site_name)
+            self._queue_source_authorization(site_name, url)
+            return
+
+        self._maybe_show_source_reliability_popup(site_name)
+
+    def _maybe_show_source_reliability_popup(self, site_name: str):
+        site_name = str(site_name or "").strip()
+        if self._pending_reliability_popup_site != site_name:
+            return
+        self._pending_reliability_popup_site = ""
+        badge = badge_for_site(site_name)
+        title = self._source_reliability_widgets.get(site_name, {}).get("name", "Source")
+        QMessageBox.information(self, f"{title} Status", badge["tooltip"])
+
+    def _queue_source_authorization(self, site_name: str, url: str):
+        site_name = str(site_name or "").strip()
+        if not site_name:
+            return
+        if self._pending_source_authorization == (site_name, url):
+            return
+        self._pending_source_authorization = (site_name, str(url or "").strip())
+        self._set_settings_status("Opening source authorization window...")
+        QTimer.singleShot(150, self._run_pending_source_authorization)
+
+    def _run_pending_source_authorization(self):
+        pending = self._pending_source_authorization
+        self._pending_source_authorization = None
+        if not pending:
+            return
+        site_name, url = pending
+        self._open_source_authorization_and_retest(site_name, url)
+
+    def _open_source_authorization_and_retest(self, site_name: str, url: str):
+        if not self.isVisible():
+            self._set_settings_status("Open Settings again to continue the source authorization flow.")
+            return
+        try:
+            accepted = self.main_window.open_site_authorization(site_name, url=url)
+        except Exception as exc:
+            logger.exception("Failed to open source authorization dialog for %s", site_name)
+            self._set_settings_status(f"Could not open source authorization: {exc}")
+            return
+        if accepted:
+            self._set_settings_status("Source authorization saved. Retesting...")
+            self._test_source_reliability(site_name)
+        else:
+            self._set_settings_status("Source authorization was cancelled.")
 
     def _source_checkbox_label(self, row: dict) -> str:
         capabilities = []
@@ -942,9 +1117,12 @@ class SettingsPage(QWidget):
         save_disabled_sites(disabled_sites)
         logger.info("Scraper site availability changed for %s enabled=%s", site_name, checked)
         self._set_settings_status("Source settings saved.")
+        self.refresh_scraper_reliability()
         self.main_window.reload_scraper_availability()
 
     def _on_tab_changed(self, index: int):
+        if self.tabs.tabText(index) == "Scrapers":
+            self.refresh_scraper_reliability()
         if self.tabs.tabText(index) == "Logs":
             if not self._logs_loaded:
                 QTimer.singleShot(0, lambda: self._refresh_logs(force=True))
@@ -1204,21 +1382,26 @@ class SettingsPage(QWidget):
             self.status_label.setText("You are on the latest app release.")
 
     def _save_update_result(self, result: UpdateCheckResult):
-        save_setting(APP_UPDATE_LAST_CHECK_AT_KEY, result.checked_at)
+        values = {
+            APP_UPDATE_LAST_CHECK_AT_KEY: result.checked_at,
+        }
         if result.error_message:
-            save_setting(APP_UPDATE_LAST_STATUS_KEY, "error")
-            save_setting(APP_UPDATE_LAST_ERROR_KEY, result.error_message)
+            values.update({
+                APP_UPDATE_LAST_STATUS_KEY: "error",
+                APP_UPDATE_LAST_ERROR_KEY: result.error_message,
+            })
+            save_settings(values)
             return
 
         release = result.latest_release
-        save_setting(APP_UPDATE_LAST_STATUS_KEY, "ok")
-        save_setting(APP_UPDATE_LAST_ERROR_KEY, "")
-        save_setting(APP_UPDATE_LAST_VERSION_KEY, release.version if release else "")
-        save_setting(APP_UPDATE_LAST_URL_KEY, release.html_url if release else GITHUB_RELEASES_URL)
-        save_setting(
-            APP_UPDATE_LAST_ASSET_URL_KEY,
-            release.asset.download_url if release and release.asset else "",
-        )
+        values.update({
+            APP_UPDATE_LAST_STATUS_KEY: "ok",
+            APP_UPDATE_LAST_ERROR_KEY: "",
+            APP_UPDATE_LAST_VERSION_KEY: release.version if release else "",
+            APP_UPDATE_LAST_URL_KEY: release.html_url if release else GITHUB_RELEASES_URL,
+            APP_UPDATE_LAST_ASSET_URL_KEY: release.asset.download_url if release and release.asset else "",
+        })
+        save_settings(values)
 
     def _apply_update_result(self, result: UpdateCheckResult):
         self._latest_release_url = GITHUB_RELEASES_URL

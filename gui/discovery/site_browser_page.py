@@ -1,4 +1,5 @@
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QByteArray, QBuffer, QEvent, QIODevice, QObject, QPoint, QSize, Qt, Signal, QTimer
@@ -44,6 +45,7 @@ from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.discovery_support import build_discovery_library_snapshot
 from scrapers.models import CatalogSeries
+from scrapers.site_reliability import record_site_check
 
 logger = get_logger(__name__)
 DISCOVERY_CARD_SPACING = 16
@@ -331,6 +333,7 @@ class SiteBrowserPage(QWidget):
         self._catalog_request_id = 0
         self._catalog_loading = False
         self._inflight_catalog_signature = None
+        self._catalog_request_started_at = 0.0
         self._last_catalog_signature = None
         self._pending_catalog_request = None
         self._library_titles = {}
@@ -364,6 +367,7 @@ class SiteBrowserPage(QWidget):
         self._cover_request_timer.timeout.connect(self._request_visible_covers_now)
         self._auto_scroll_direction = 0
         self._auth_in_progress = False
+        self._startup_catalog_pending = True
         self._auto_scroll_cursors = {
             -1: self._build_auto_scroll_cursor(-1),
             0: self._build_auto_scroll_cursor(0),
@@ -460,9 +464,19 @@ class SiteBrowserPage(QWidget):
         super().showEvent(event)
         if self.site_combo.count() == 0:
             self._reload_scrapers(load_catalog=False)
-        if not self._loaded_once and self.site_combo.count() > 0:
-            self._loaded_once = True
-            self.refresh_catalog(reset=True)
+        self.ensure_initial_catalog_loaded()
+
+    def ensure_initial_catalog_loaded(self):
+        if self._loaded_once or not self._startup_catalog_pending:
+            return
+        stack = getattr(self.main_window, "stack", None)
+        if stack is not None and stack.currentWidget() is not self:
+            return
+        if self.site_combo.count() <= 0:
+            return
+        self._startup_catalog_pending = False
+        self._loaded_once = True
+        self.refresh_catalog(reset=True)
 
     def reload_providers(self, load_catalog: bool = True):
         self._reload_scrapers(load_catalog=load_catalog)
@@ -526,6 +540,7 @@ class SiteBrowserPage(QWidget):
         self._set_controls_enabled(False)
         self._set_loading_more_visible(not reset and not self.downloaded_only_btn.isChecked() and not search_query)
         self._catalog_request_id += 1
+        self._catalog_request_started_at = time.perf_counter()
         self._catalog_loader.load(self._catalog_request_id, provider, requested_page, reset, search_query)
 
     def _reload_scrapers(self, load_catalog: bool = True):
@@ -1000,9 +1015,13 @@ class SiteBrowserPage(QWidget):
             logger.info("Ignoring stale discovery catalog response for %s page %d", provider_key, page_number)
             return
 
+        duration_ms = 0
+        if self._catalog_request_started_at > 0:
+            duration_ms = int((time.perf_counter() - self._catalog_request_started_at) * 1000.0)
         completed_signature = self._inflight_catalog_signature
         self._catalog_loading = False
         self._inflight_catalog_signature = None
+        self._catalog_request_started_at = 0.0
         self._set_controls_enabled(True)
 
         current_provider = self._current_provider()
@@ -1019,6 +1038,7 @@ class SiteBrowserPage(QWidget):
                     return
             else:
                 logger.warning("Catalog loading failed for %s page %d: %s", provider_key, page_number, error)
+            record_site_check(provider_key, source="discover", succeeded=False, duration_ms=duration_ms, error=error)
             self._show_message(error, is_error=True)
             if reset:
                 self._set_entries([])
@@ -1028,6 +1048,7 @@ class SiteBrowserPage(QWidget):
             self._run_pending_catalog_request(completed_signature)
             return
 
+        record_site_check(provider_key, source="discover", succeeded=True, duration_ms=duration_ms)
         self._set_loading_more_visible(False)
         self._has_next_page = bool(getattr(page, "has_next_page", False))
         logger.info(
