@@ -119,6 +119,21 @@ class ManhuaTopScraper(BaseScraper):
         text = str(getattr(response, "text", "") or "").casefold()
         return "just a moment" in text and "cloudflare" in text
 
+    def fetch_cover(self, url: str, headers: dict[str, str] | None = None) -> bytes | None:
+        try:
+            r = cffi_requests.get(
+                url,
+                headers=self._request_headers(url),
+                cookies=self._site_cookies(),
+                impersonate=self.IMPERSONATE,
+                timeout=20,
+            )
+            if r.status_code == 200:
+                return r.content
+        except Exception:
+            pass
+        return None
+
     def _get(self, url: str, session=None) -> cffi_requests.Response:
         # ManhuaTop requires TLS fingerprint impersonation — plain requests
         # is rejected with 403 even with valid cf_clearance cookies because

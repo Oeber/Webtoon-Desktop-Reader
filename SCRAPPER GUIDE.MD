@@ -552,6 +552,8 @@ def download_asset(self, url: str, dest_path: str) -> bool:
 
 **Rule:** if your scraper uses `curl_cffi` for page fetches, it almost certainly needs `download_asset()` too. The image host is usually under the same Cloudflare zone.
 
+The same pattern often applies to series covers. If your scraper returns `SeriesInfo.cover_url` for a protected host, implement `fetch_cover()` with the same cookie and TLS impersonation strategy. The downloader now passes that fetcher into thumbnail persistence so library/detail/download views can reuse the protected cover instead of falling back to a plain request.
+
 ## Error Handling Rules
 
 Use `ScraperError` when the scraper cannot do its job.

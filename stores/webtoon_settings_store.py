@@ -1,11 +1,10 @@
 import io
 import json
 from pathlib import Path
-import urllib.error
-import urllib.request
 from urllib.parse import urlparse
 
 from core.app_logging import get_logger
+from core.http_client import get as http_get
 from core.app_paths import data_path
 from core.site_session import load_site_user_agent, site_base_url, site_cookie_header, site_name_for_url
 from stores.db import get_connection
@@ -53,21 +52,28 @@ def _copy_local_image(src: str, dest: Path) -> bool:
         return False
 
 
-def _download_url_image(url: str, dest: Path) -> bool:
+def _download_url_image(
+    url: str,
+    dest: Path,
+    *,
+    headers: dict[str, str] | None = None,
+    fetcher=None,
+) -> bool:
     try:
         from PIL import Image
 
-        headers = _thumbnail_request_headers(url)
-        req = urllib.request.Request(url, headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as response:
-            data = response.read()
+        request_headers = dict(headers or _thumbnail_request_headers(url))
+        data = None
+        if callable(fetcher):
+            data = fetcher(url, request_headers)
+        if not data:
+            response = http_get(url, headers=request_headers, timeout=15, log_label="thumbnail-download")
+            response.raise_for_status()
+            data = response.content
 
         with Image.open(io.BytesIO(data)) as img:
             img.convert("RGB").save(dest, "JPEG", quality=92)
         return True
-    except urllib.error.URLError as e:
-        logger.error("Network error downloading thumbnail from '%s'", url, exc_info=e)
-        return False
     except Exception as e:
         logger.error("Failed to download or convert image from '%s'", url, exc_info=e)
         return False
@@ -374,12 +380,19 @@ class WebtoonSettingsStore:
         self._persist_custom_thumbnail(webtoon_name, internal_path)
         return internal_path
 
-    def set_from_url(self, webtoon_name: str, url: str) -> tuple[bool, str]:
+    def set_from_url(
+        self,
+        webtoon_name: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        fetcher=None,
+    ) -> tuple[bool, str]:
         logger.info("Downloading custom thumbnail for %s from %s", webtoon_name, url)
         _ensure_thumbnails_dir()
         dest = _custom_thumb_path(webtoon_name)
 
-        if _download_url_image(url, dest):
+        if _download_url_image(url, dest, headers=headers, fetcher=fetcher):
             self._persist_custom_thumbnail(webtoon_name, str(dest))
             return True, str(dest)
         return False, "Could not download or decode the image. Check the URL and try again."

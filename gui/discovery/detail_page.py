@@ -51,6 +51,7 @@ from gui.common.styles import (
 from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.discovery.cover_loader import DiscoveryCoverLoader
 from scrapers.base import ScraperError
+from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.models import CatalogSeries
 from scrapers.registry import get_scraper
 
@@ -91,6 +92,7 @@ class DiscoveryDetailPage(QWidget):
         self._series_loader.loaded.connect(self._on_series_loaded)
         self._cover_loader = DiscoveryCoverLoader(self)
         self._cover_loader.loaded.connect(self._on_cover_loaded)
+        self._providers_by_site = {provider.site_name: provider for provider in get_all_discovery_providers()}
 
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -245,7 +247,8 @@ class DiscoveryDetailPage(QWidget):
         self.thumb_label.setPixmap(QPixmap())
         self.thumb_label.setText("No Cover")
         if getattr(entry, "cover_url", ""):
-            self._cover_loader.load(self, entry.cover_url, getattr(entry, "cover_headers", {}) or {})
+            provider = self._providers_by_site.get(str(getattr(entry, "site", "") or "").strip())
+            self._cover_loader.load(self, entry.cover_url, getattr(entry, "cover_headers", {}) or {}, provider)
         self._rebuild_chapter_list()
         self._series_loader.load(self._request_id, entry)
 

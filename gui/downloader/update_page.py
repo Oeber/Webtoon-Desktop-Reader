@@ -5,6 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 import requests
+
+from core.http_client import create_session
 from core.app_logging import get_logger
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics
@@ -207,7 +209,7 @@ class UpdateAvailabilityLoader(QObject):
     def _get_thread_session(self):
         session = getattr(self._thread_local, "session", None)
         if session is None:
-            session = requests.Session()
+            session = create_session()
             self._thread_local.session = session
         return session
 

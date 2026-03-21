@@ -3,6 +3,8 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
+
+from core.http_client import create_session, get as http_get
 from PySide6.QtCore import QObject, Signal
 
 
@@ -46,13 +48,7 @@ class DiscoveryCoverLoader(QObject):
         if session is not None:
             return session
 
-        session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=self._MAX_WORKERS,
-            pool_maxsize=self._MAX_WORKERS,
-        )
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
+        session = create_session(pool_connections=self._MAX_WORKERS, pool_maxsize=self._MAX_WORKERS)
         self._session_local.session = session
         return session
 
@@ -65,12 +61,12 @@ class DiscoveryCoverLoader(QObject):
                 data = provider.fetch_cover(url, headers)
             if data is None:
                 session = self._get_session()
-                response = session.get(url, headers=headers, timeout=20)
+                response = http_get(url, session=session, headers=headers, timeout=20, log_label="discovery-cover")
                 response.raise_for_status()
                 data = response.content
         except Exception as e:
-            error = str(e) 
-            
+            error = str(e)
+
         with self._lock:
             waiting_widgets = self._inflight.pop(key, [])
             self._cache[key] = (data, error)

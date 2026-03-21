@@ -12,6 +12,8 @@ from pathlib import Path
 
 import requests
 
+from core.http_client import create_session, get as http_get
+
 from core.app_logging import get_logger
 from core.app_paths import app_root, data_path, resource_path
 
@@ -138,10 +140,11 @@ def fetch_latest_release(timeout: int = REQUEST_TIMEOUT_SECONDS) -> UpdateCheckR
     logger.info("Checking latest GitHub release current_version=%s url=%s", APP_VERSION, GITHUB_LATEST_RELEASE_API_URL)
 
     try:
-        response = requests.get(
+        response = http_get(
             GITHUB_LATEST_RELEASE_API_URL,
             headers=headers,
             timeout=timeout,
+            log_label="github-release-check",
         )
         response.raise_for_status()
         payload = response.json()
@@ -293,17 +296,21 @@ def download_release_asset(
                     if callable(progress_callback):
                         progress_callback(written, total)
         else:
-            with requests.get(asset.download_url, headers=headers, timeout=timeout, stream=True) as response:
-                response.raise_for_status()
-                total = int(response.headers.get("Content-Length") or asset.size or 0)
-                with target_path.open("wb") as handle:
-                    for chunk in response.iter_content(chunk_size=UPDATE_DOWNLOAD_CHUNK_SIZE):
-                        if not chunk:
-                            continue
-                        handle.write(chunk)
-                        written += len(chunk)
-                        if callable(progress_callback):
-                            progress_callback(written, total)
+            session = create_session(headers=headers)
+            try:
+                with http_get(asset.download_url, session=session, timeout=timeout, stream=True, log_label="release-asset-download") as response:
+                    response.raise_for_status()
+                    total = int(response.headers.get("Content-Length") or asset.size or 0)
+                    with target_path.open("wb") as handle:
+                        for chunk in response.iter_content(chunk_size=UPDATE_DOWNLOAD_CHUNK_SIZE):
+                            if not chunk:
+                                continue
+                            handle.write(chunk)
+                            written += len(chunk)
+                            if callable(progress_callback):
+                                progress_callback(written, total)
+            finally:
+                session.close()
         logger.info(
             "Finished release asset download asset=%s written=%s total=%s target=%s",
             asset.name,

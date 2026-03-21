@@ -733,7 +733,9 @@ def fetch_cover(self, url: str, headers: dict[str, str]) -> bytes | None:
 
 **Rule:** if your provider uses `curl_cffi` for catalog requests, it almost certainly needs `fetch_cover()` too. The cover image host is usually under the same Cloudflare zone as the main domain.
 
-Note: for `fetch_cover()` to be called, `cover_loader.py` must pass the provider through to `_fetch_cover()`, and `site_browser_page.py` must pass the provider when creating entry widgets. Both of these changes are required in the GUI layer when adding a TLS-impersonating provider for the first time.
+`fetch_cover()` must work for both discovery card covers and the discovery detail hero cover. The shared GUI now passes the provider into `DiscoveryCoverLoader` from both `site_browser_page.py` and `detail_page.py`, so one provider implementation is reused in both places.
+
+If the provider does not implement `fetch_cover()`, both views fall back to the generic shared HTTP session and only `cover_headers` are used.
 
 ### Protected site never loads in discovery
 

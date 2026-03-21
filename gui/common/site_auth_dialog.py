@@ -8,6 +8,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QVBoxLayout
 
 from core.app_logging import get_logger
+from core.http_client import create_session, get as http_get
 from core.site_session import (
     has_required_site_cookies,
     matching_session_cookie_names,
@@ -237,7 +238,7 @@ class SiteAuthDialog(QDialog):
             self._validated_session_ready = False
             self._last_validation_error = "No captured cookies yet."
             return False
-        session = requests.Session()
+        session = create_session()
         try:
             for cookie in cookies:
                 kwargs = {
@@ -249,10 +250,12 @@ class SiteAuthDialog(QDialog):
                 if domain:
                     kwargs["domain"] = domain
                 session.cookies.set(**kwargs)
-            response = session.get(
+            response = http_get(
                 self.site_home_url,
+                session=session,
                 headers=self._validation_headers(),
                 timeout=10,
+                log_label="site-session-validate",
             )
             if response.status_code == 200 and not self._looks_like_block_page(response):
                 self._validated_session_ready = True

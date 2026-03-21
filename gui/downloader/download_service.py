@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from PySide6.QtCore import QObject, Signal
 
 from core.app_logging import get_logger
+from core.http_client import create_session, get as http_get
 from core.app_paths import data_path
 from stores.download_history_store import get_instance as get_download_history
 from gui.downloader.download_queue import get_global_download_queue
@@ -379,7 +380,7 @@ class DownloadService(QObject):
 
         try:
             headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(url, headers=headers, timeout=10)
+            response = http_get(url, headers=headers, timeout=10, log_label="download-name-resolve")
             if self._looks_like_block_page(response):
                 raise ScraperError("Blocked by anti-bot challenge")
             soup = BeautifulSoup(response.text, "html.parser")
@@ -412,7 +413,7 @@ class DownloadService(QObject):
                 raise DownloadCancelled()
             try:
                 session = self._get_job_session(job)
-                with session.get(url, headers=headers, stream=True, timeout=30) as response:
+                with http_get(url, session=session, headers=headers, stream=True, timeout=30, log_label="download-asset") as response:
                     response.raise_for_status()
                     with open(dest_path, "wb") as handle:
                         for chunk in response.iter_content(chunk_size=1024 * 64):
@@ -455,10 +456,7 @@ class DownloadService(QObject):
         if session is not None:
             return session
 
-        session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=8, pool_maxsize=8)
-        session.mount("http://", adapter)
-        session.mount("https://", adapter)
+        session = create_session(pool_connections=8, pool_maxsize=8)
 
         with job.sessions_lock:
             job.sessions.append(session)
@@ -565,7 +563,14 @@ class DownloadService(QObject):
         logger.info("Custom scraper resolved series name %s", series_name)
 
         if getattr(series, "cover_url", None):
-            ok, result = self.settings_store.set_from_url(series_name, series.cover_url)
+            cover_fetcher = getattr(scraper, "fetch_cover", None)
+            fetcher = cover_fetcher if callable(cover_fetcher) else None
+            ok, result = self.settings_store.set_from_url(
+                series_name,
+                series.cover_url,
+                headers=headers,
+                fetcher=fetcher,
+            )
             if ok:
                 self.thumbnail_resolved.emit(series_name, result)
         self._tracking.save_series_source_metadata(series_name, series, job.source_url)
@@ -835,7 +840,7 @@ class DownloadService(QObject):
     def _guess_gallery_dl_last_chapter(self, url: str) -> int | None:
         try:
             headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(url, headers=headers, timeout=15)
+            response = http_get(url, headers=headers, timeout=15, log_label="gallery-last-chapter")
             response.raise_for_status()
             html = response.text
 
