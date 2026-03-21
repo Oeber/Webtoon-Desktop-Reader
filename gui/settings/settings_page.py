@@ -168,7 +168,14 @@ class _SiteReliabilityTestWorker(QThread):
 
 
 class _StartupUpdateDialog(QDialog):
-    def __init__(self, release_version: str, current_version: str, can_install: bool, parent=None):
+    def __init__(
+        self,
+        release_version: str,
+        current_version: str,
+        can_install: bool,
+        release_notes: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self._install_started = False
         self._can_install = bool(can_install)
@@ -223,6 +230,17 @@ class _StartupUpdateDialog(QDialog):
         self.message_label.setStyleSheet(TEXT_MUTED_BODY_STYLE)
         panel_layout.addWidget(self.message_label)
 
+        patch_notes_label = QLabel("Patch Notes")
+        patch_notes_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        panel_layout.addWidget(patch_notes_label)
+
+        self.patch_notes_view = QTextEdit()
+        self.patch_notes_view.setReadOnly(True)
+        self.patch_notes_view.setStyleSheet(LOG_VIEW_STYLE)
+        self.patch_notes_view.setMinimumHeight(220)
+        self.patch_notes_view.setMarkdown(self._normalize_release_notes(release_notes))
+        panel_layout.addWidget(self.patch_notes_view)
+
         self.progress_label = QLabel("")
         self.progress_label.setWordWrap(True)
         self.progress_label.setStyleSheet(STATUS_LABEL_STYLE)
@@ -252,6 +270,13 @@ class _StartupUpdateDialog(QDialog):
         actions.addWidget(self.install_btn)
 
         panel_layout.addLayout(actions)
+
+    @staticmethod
+    def _normalize_release_notes(release_notes: str) -> str:
+        text = str(release_notes or "").strip()
+        if not text:
+            return "No patch notes were included with this release."
+        return text
 
     def begin_install(self):
         self._install_started = True
@@ -1519,6 +1544,7 @@ class SettingsPage(QWidget):
             release.version,
             APP_VERSION,
             can_self_update(release),
+            release.body,
             self,
         )
         dialog.install_btn.clicked.connect(lambda: self._trigger_app_update(startup_dialog=dialog))
