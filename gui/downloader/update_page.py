@@ -557,6 +557,7 @@ class UpdateCard(QFrame):
 
 class UpdatePage(DownloadHistoryPageBase):
     check_cycle_finished = Signal(str, int, int)
+    OPEN_REFRESH_THROTTLE_MS = 5000
 
     def __init__(self, main_window):
         super().__init__(main_window, "Updates", "Series with new chapters", history_kind="update")
@@ -578,6 +579,8 @@ class UpdatePage(DownloadHistoryPageBase):
         self._last_check_counts_by_name = {}
         self._results_refresh_pending = False
         self._site_check_stats = {}
+        self._last_refresh_started_at = 0.0
+        self._open_refresh_pending_reason = ""
 
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search titles with updates...")
@@ -627,6 +630,10 @@ class UpdatePage(DownloadHistoryPageBase):
         self._refresh_timer.setSingleShot(True)
         self._refresh_timer.timeout.connect(self.refresh_entries)
 
+        self._open_refresh_timer = QTimer(self)
+        self._open_refresh_timer.setSingleShot(True)
+        self._open_refresh_timer.timeout.connect(self._run_scheduled_open_refresh)
+
         self._results_refresh_timer = QTimer(self)
         self._results_refresh_timer.setSingleShot(True)
         self._results_refresh_timer.timeout.connect(self._flush_results_refresh)
@@ -667,10 +674,25 @@ class UpdatePage(DownloadHistoryPageBase):
         super().showEvent(event)
         if not self._has_loaded_once:
             self._has_loaded_once = True
-            self.refresh_entries(reason="open")
+            self.schedule_open_refresh(reason="open", force=True)
             return
         if self._results_refresh_pending:
             self._flush_results_refresh()
+
+    def schedule_open_refresh(self, reason: str = "open", force: bool = False):
+        self._open_refresh_pending_reason = str(reason or "open")
+        if self.is_check_in_progress():
+            return
+        if not force and self._has_loaded_once:
+            age_ms = (time.monotonic() - self._last_refresh_started_at) * 1000.0
+            if age_ms < self.OPEN_REFRESH_THROTTLE_MS:
+                return
+        self._open_refresh_timer.start(0)
+
+    def _run_scheduled_open_refresh(self):
+        reason = self._open_refresh_pending_reason or "open"
+        self._open_refresh_pending_reason = ""
+        self.refresh_entries(reason=reason)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -685,6 +707,7 @@ class UpdatePage(DownloadHistoryPageBase):
             return False
 
         logger.info("Refreshing update entries reason=%s", reason)
+        self._last_refresh_started_at = time.monotonic()
         self._current_check_reason = str(reason or "manual")
         webtoons = scan_library(load_library_path(), self.settings_store)
         settings_rows = self.settings_store.get_rows(

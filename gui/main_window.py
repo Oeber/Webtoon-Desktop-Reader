@@ -238,6 +238,7 @@ class MainWindow(QMainWindow):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.downloader)
+        self.downloader.schedule_open_refresh()
         self._set_sidebar_target("downloader")
 
     def open_discovery(self):
@@ -291,8 +292,8 @@ class MainWindow(QMainWindow):
     def open_settings(self):
         self._hide_chapter_loading_overlay()
         self.set_window_context_title()
-        self.settings.refresh_scraper_reliability()
         self.stack.setCurrentWidget(self.settings)
+        self.settings.schedule_open_refresh()
         self._set_sidebar_target("settings")
 
     def reload_scraper_availability(self):
@@ -371,9 +372,9 @@ class MainWindow(QMainWindow):
     def open_updates(self):
         logger.info("Opening updates page")
         self._hide_chapter_loading_overlay()
-        self.updates.refresh_entries(reason="open")
         self.set_window_context_title()
         self.stack.setCurrentWidget(self.updates)
+        self.updates.schedule_open_refresh(reason="open")
         self._set_sidebar_target("updates")
 
     def refresh_library_update_schedule(self):

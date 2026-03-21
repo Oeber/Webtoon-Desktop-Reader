@@ -317,6 +317,9 @@ class SettingsPage(QWidget):
         self._latest_asset_url = ""
         self._pending_update_check_mode = "manual"
         self._startup_update_dialog = None
+        self._open_refresh_timer = QTimer(self)
+        self._open_refresh_timer.setSingleShot(True)
+        self._open_refresh_timer.timeout.connect(self._run_open_refresh)
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -337,12 +340,17 @@ class SettingsPage(QWidget):
         self.tabs.addTab(self._build_logs_tab(), "Logs")
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
-
         self._log_refresh_timer = QTimer(self)
         self._log_refresh_timer.timeout.connect(self._refresh_logs_if_changed)
         self._log_refresh_timer.start(1500)
         self._load_saved_update_state()
         self.refresh_library_update_status()
+
+    def schedule_open_refresh(self):
+        self._open_refresh_timer.start(0)
+
+    def _run_open_refresh(self):
+        self.refresh_scraper_reliability()
 
     def open_logs_tab(self):
         self.tabs.setCurrentWidget(self.logs_tab)

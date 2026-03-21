@@ -1,3 +1,5 @@
+import time
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
@@ -12,12 +14,14 @@ logger = get_logger(__name__)
 
 
 class DownloaderPage(DownloadHistoryPageBase):
+    OPEN_REFRESH_THROTTLE_MS = 3000
 
     def __init__(self, main_window):
         super().__init__(main_window, "Downloader", "History", history_kind="download")
         self.history_store = get_download_history()
         self._auth_retry_in_progress = False
         self._activity_refresh_pending = False
+        self._last_activity_refresh_at = 0.0
 
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -58,12 +62,20 @@ class DownloaderPage(DownloadHistoryPageBase):
         self._activity_refresh_timer = QTimer(self)
         self._activity_refresh_timer.setSingleShot(True)
         self._activity_refresh_timer.timeout.connect(self._flush_recent_activity_refresh)
-        self.refresh_recent_activity()
+        self._activity_refresh_pending = True
         self._sync_controls()
 
     def showEvent(self, event):
         super().showEvent(event)
-        self._flush_recent_activity_refresh()
+        self.schedule_open_refresh()
+
+    def schedule_open_refresh(self, force: bool = False):
+        if not force:
+            age_ms = (time.monotonic() - self._last_activity_refresh_at) * 1000.0
+            if age_ms < self.OPEN_REFRESH_THROTTLE_MS and not self._activity_refresh_pending:
+                return
+        self._activity_refresh_pending = True
+        self._activity_refresh_timer.start(0)
 
     def _start_download(self):
         url = self.url_input.text()
@@ -177,6 +189,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.refresh_recent_activity()
 
     def refresh_recent_activity(self):
+        self._last_activity_refresh_at = time.monotonic()
         while self.activity_list.count():
             item = self.activity_list.takeAt(0)
             widget = item.widget()
