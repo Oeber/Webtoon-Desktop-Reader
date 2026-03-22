@@ -47,6 +47,10 @@ from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from stores.settings_store import (
     VIEWER_AUTO_SKIP_KEY,
+    VIEWER_CHROME_VISIBLE_KEY,
+    VIEWER_FOCUS_MODE_KEY,
+    VIEWER_MINIMAP_VISIBLE_KEY,
+    VIEWER_SCENE_ANCHORS_VISIBLE_KEY,
     VIEWER_ZOOM_KEY,
     load_setting,
     save_setting,
@@ -122,8 +126,13 @@ class ViewerPage(QWidget):
 
         self._zoom = load_setting(VIEWER_ZOOM_KEY, 0.5)
         self.auto_skip_enabled = load_setting(VIEWER_AUTO_SKIP_KEY, True)
+        self._focus_mode_enabled = bool(load_setting(VIEWER_FOCUS_MODE_KEY, False))
+        self._chrome_visible = bool(load_setting(VIEWER_CHROME_VISIBLE_KEY, True))
+        self._minimap_visible = bool(load_setting(VIEWER_MINIMAP_VISIBLE_KEY, True))
+        self._scene_anchors_visible = bool(load_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, True))
         self.skip_specials_enabled = False
         self._zoom_override_active = False  # True when this webtoon has a saved override
+        self._chapter_scene_marks: list[dict] = []
         # Maps selector combo index to real webtoon.chapters index (used when skip_specials is on)
         self._chapter_index_map: list[int] = []
 
@@ -131,8 +140,10 @@ class ViewerPage(QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        top_bar = QHBoxLayout()
+        self.top_bar_widget = QWidget(self)
+        top_bar = QHBoxLayout(self.top_bar_widget)
         top_bar.setContentsMargins(6, 6, 6, 6)
+        top_bar.setSpacing(6)
 
         self.back_button = QPushButton("Back")
         self.back_button.setFocusPolicy(Qt.NoFocus)
@@ -168,6 +179,34 @@ class ViewerPage(QWidget):
         self.scene_list_btn.setFocusPolicy(Qt.NoFocus)
         self.scene_list_btn.setToolTip("Open saved scenes for this chapter")
         self.scene_list_btn.clicked.connect(self._open_scene_bookmarks)
+
+        self.focus_mode_btn = QPushButton("Focus")
+        self.focus_mode_btn.setCheckable(True)
+        self.focus_mode_btn.setChecked(self._focus_mode_enabled)
+        self.focus_mode_btn.setFocusPolicy(Qt.NoFocus)
+        self.focus_mode_btn.setToolTip("Focused reading mode")
+        self.focus_mode_btn.clicked.connect(self._toggle_focus_mode)
+
+        self.chrome_btn = QPushButton("Hide UI")
+        self.chrome_btn.setCheckable(True)
+        self.chrome_btn.setChecked(self._chrome_visible)
+        self.chrome_btn.setFocusPolicy(Qt.NoFocus)
+        self.chrome_btn.setToolTip("Show or hide the reader toolbar")
+        self.chrome_btn.clicked.connect(self._toggle_chrome)
+
+        self.minimap_btn = QPushButton("Mini-map")
+        self.minimap_btn.setCheckable(True)
+        self.minimap_btn.setChecked(self._minimap_visible)
+        self.minimap_btn.setFocusPolicy(Qt.NoFocus)
+        self.minimap_btn.setToolTip("Show or hide the reading mini-map")
+        self.minimap_btn.clicked.connect(self._toggle_minimap)
+
+        self.anchors_btn = QPushButton("Anchors")
+        self.anchors_btn.setCheckable(True)
+        self.anchors_btn.setChecked(self._scene_anchors_visible)
+        self.anchors_btn.setFocusPolicy(Qt.NoFocus)
+        self.anchors_btn.setToolTip("Show or hide saved scene anchors on the mini-map")
+        self.anchors_btn.clicked.connect(self._toggle_scene_anchors)
 
         zoom_out_btn = QPushButton("-")
         zoom_out_btn.setFixedWidth(28)
@@ -209,6 +248,10 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.nav_toggle)
         top_bar.addWidget(self.save_scene_btn)
         top_bar.addWidget(self.scene_list_btn)
+        top_bar.addWidget(self.focus_mode_btn)
+        top_bar.addWidget(self.chrome_btn)
+        top_bar.addWidget(self.minimap_btn)
+        top_bar.addWidget(self.anchors_btn)
         top_bar.addStretch()
         top_bar.addWidget(zoom_out_btn)
         top_bar.addWidget(self._zoom_slider)
@@ -216,7 +259,7 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self._zoom_label)
         top_bar.addSpacing(8)
         top_bar.addWidget(self._zoom_reset_btn)
-        main_layout.addLayout(top_bar)
+        main_layout.addWidget(self.top_bar_widget)
 
         content_row = QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
@@ -227,7 +270,7 @@ class ViewerPage(QWidget):
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
-        self.preview = ChapterPreview(self.scroll, metrics_provider=self)
+        self.preview = ChapterPreview(self.scroll, metrics_provider=self, scene_jump_callback=self._jump_to_current_scene_mark)
 
         content_row.addWidget(self.scroll)
         content_row.addWidget(self.preview)
@@ -274,6 +317,7 @@ class ViewerPage(QWidget):
 
         self.scroll.verticalScrollBar().valueChanged.connect(self.check_visible_images)
         self.scroll.verticalScrollBar().valueChanged.connect(self.preview.update)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._update_session_overlay)
 
         self._progress_save_timer = QTimer()
         self._progress_save_timer.setSingleShot(True)
@@ -305,6 +349,20 @@ class ViewerPage(QWidget):
         overlay_layout.addWidget(self.loading_label)
         overlay_layout.addWidget(self.loading_detail_label)
 
+        self.session_overlay = QLabel(self.scroll.viewport())
+        self.session_overlay.hide()
+        self.session_overlay.setWordWrap(True)
+        self.session_overlay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.session_overlay.setStyleSheet(
+            "background-color: rgba(8, 10, 14, 180);"
+            "color: #f4ede8;"
+            "border: 1px solid rgba(255, 255, 255, 32);"
+            "border-radius: 10px;"
+            "padding: 8px 10px;"
+            "font-size: 11px;"
+        )
+        self._apply_reader_session_state(persist=False)
+
     def load_webtoon(self, webtoon, start_chapter: int = 0, start_scroll: float = 0.0):
         logger.info(
             "Viewer loading webtoon=%s chapter_index=%d start_scroll=%.3f",
@@ -319,6 +377,102 @@ class ViewerPage(QWidget):
         self._repopulate_chapter_selector()
         self.current_chapter_index = start_chapter
         self._load_chapter_no_prompt(start_chapter)
+
+    def _apply_reader_session_state(self, *, persist: bool = True):
+        self.top_bar_widget.setVisible(self._chrome_visible)
+        self.preview.setVisible(self._minimap_visible)
+        self.preview.set_scene_marks_visible(self._scene_anchors_visible)
+        self.focus_mode_btn.setChecked(self._focus_mode_enabled)
+        self.focus_mode_btn.setText("Focus On" if self._focus_mode_enabled else "Focus")
+        self.chrome_btn.setChecked(self._chrome_visible)
+        self.chrome_btn.setText("Hide UI" if self._chrome_visible else "Show UI")
+        self.minimap_btn.setChecked(self._minimap_visible)
+        self.minimap_btn.setText("Hide Map" if self._minimap_visible else "Mini-map")
+        self.anchors_btn.setChecked(self._scene_anchors_visible)
+        self.anchors_btn.setText("Hide Anchors" if self._scene_anchors_visible else "Anchors")
+        self.anchors_btn.setEnabled(self._minimap_visible)
+        self._position_session_overlay()
+        self._update_session_overlay()
+        if persist:
+            save_setting(VIEWER_FOCUS_MODE_KEY, self._focus_mode_enabled)
+            save_setting(VIEWER_CHROME_VISIBLE_KEY, self._chrome_visible)
+            save_setting(VIEWER_MINIMAP_VISIBLE_KEY, self._minimap_visible)
+            save_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, self._scene_anchors_visible)
+
+    def _toggle_focus_mode(self, checked: bool):
+        self._focus_mode_enabled = bool(checked)
+        if self._focus_mode_enabled:
+            self._chrome_visible = False
+            self._minimap_visible = True
+        else:
+            self._chrome_visible = True
+        self._apply_reader_session_state()
+        self.setFocus()
+
+    def _toggle_chrome(self, checked: bool):
+        self._chrome_visible = bool(checked)
+        self._apply_reader_session_state()
+        self.setFocus()
+
+    def _toggle_minimap(self, checked: bool):
+        self._minimap_visible = bool(checked)
+        self._apply_reader_session_state()
+        self.setFocus()
+
+    def _toggle_scene_anchors(self, checked: bool):
+        self._scene_anchors_visible = bool(checked)
+        self._apply_reader_session_state()
+        self.setFocus()
+
+    def _position_session_overlay(self):
+        if not hasattr(self, "session_overlay"):
+            return
+        self.session_overlay.adjustSize()
+        margin = 12
+        size = self.session_overlay.sizeHint()
+        self.session_overlay.setGeometry(margin, margin, min(size.width() + 4, 360), size.height() + 4)
+
+    def _update_session_overlay(self):
+        if not hasattr(self, "session_overlay"):
+            return
+        chapter = self.webtoon.chapters[self.current_chapter_index] if self.webtoon and 0 <= self.current_chapter_index < len(self.webtoon.chapters) else ""
+        total = max(1, len(self.image_labels))
+        progress = max(0.0, min(1.0, self._current_packed_position() / total)) if self.image_labels else 0.0
+        scene_count = len(self._chapter_scene_marks)
+        self.session_overlay.setText(
+            f"{chapter} | {int(progress * 100)}%\n"
+            f"Scenes {scene_count} | H UI | M Map | S Save | G List | [ ] Chapter | Esc Exit"
+        )
+        show_overlay = self._focus_mode_enabled or not self._chrome_visible
+        self.session_overlay.setVisible(show_overlay)
+        self._position_session_overlay()
+
+    def _refresh_scene_marks(self):
+        if not self.webtoon or not (0 <= self.current_chapter_index < len(self.webtoon.chapters)):
+            self._chapter_scene_marks = []
+            self.preview.set_scene_marks([])
+            self.scene_list_btn.setText("Scenes")
+            self.scene_list_btn.setEnabled(False)
+            self._update_session_overlay()
+            return
+        chapter = self.webtoon.chapters[self.current_chapter_index]
+        marks = sorted(
+            self.scene_bookmark_store.list_for_chapter(self.webtoon.name, chapter),
+            key=lambda item: float(item.get("packed") or 0.0),
+        )
+        self._chapter_scene_marks = marks
+        self.preview.set_scene_marks(marks)
+        count = len(marks)
+        self.scene_list_btn.setText(f"Scenes ({count})" if count else "Scenes")
+        self.scene_list_btn.setEnabled(True)
+        self._update_session_overlay()
+
+    def _jump_to_current_scene_mark(self, packed: float):
+        if not self.webtoon:
+            return
+        chapter = self.webtoon.chapters[self.current_chapter_index]
+        self._jump_to_saved_scene(chapter, packed)
+        self.setFocus()
 
     def open_chapter_with_prompt(self, webtoon, chapter_index: int) -> bool:
         logger.info("Viewer opening chapter with prompt for %s index=%d", webtoon.name, chapter_index)
@@ -418,6 +572,19 @@ class ViewerPage(QWidget):
             cumulative += h
         return len(self.image_labels) - 1
 
+    def packed_to_content_offset(self, packed: float) -> int:
+        if not self.image_labels:
+            return 0
+        total = len(self.image_labels)
+        packed = max(0.0, float(packed))
+        if packed >= total:
+            return self.total_content_height()
+        idx = max(0, min(total - 1, int(packed)))
+        frac = max(0.0, min(1.0, packed - int(packed)))
+        base = self.cumulative_height_before(idx)
+        height = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx])
+        return base + int(height * frac)
+
     def _save_progress(self):
         if not self.webtoon or not self.image_labels:
             return
@@ -473,7 +640,7 @@ class ViewerPage(QWidget):
             note,
             thumbnail_path=thumbnail_path,
         )
-        self.main_window.statusBar().showMessage(f"Saved scene for {chapter}.", 3000)
+        self._refresh_scene_marks()
         self.setFocus()
 
     def _save_scene_thumbnail(self, index: int, offset_frac: float) -> str:
@@ -542,6 +709,7 @@ class ViewerPage(QWidget):
             parent=self,
         )
         dialog.exec()
+        self._refresh_scene_marks()
         self.setFocus()
 
     def _jump_to_saved_scene(self, chapter: str, packed: float):
@@ -721,6 +889,7 @@ class ViewerPage(QWidget):
         self.chapter_selector.blockSignals(False)
 
         self._load_chapter_images(chapter)
+        self._refresh_scene_marks()
         self.update_nav_buttons()
 
         if self._restore_image_index is None:
@@ -755,6 +924,11 @@ class ViewerPage(QWidget):
         self._reset_layout_metrics()
 
         self.preview.set_image_labels([])
+        self.preview.set_scene_marks([])
+        self._chapter_scene_marks = []
+        self.scene_list_btn.setText("Scenes")
+        self.scene_list_btn.setEnabled(False)
+        self._update_session_overlay()
 
         self._panel_ranges = []
         self._panel_ranges_dirty = True
@@ -801,6 +975,7 @@ class ViewerPage(QWidget):
         if not hasattr(self, "loading_overlay"):
             return
         self.loading_overlay.setGeometry(self.scroll.viewport().rect())
+        self._position_session_overlay()
 
     def _acquire_image_label(self) -> QLabel:
         if self._label_pool:
@@ -1230,18 +1405,41 @@ class ViewerPage(QWidget):
 
     def keyPressEvent(self, event):
         key = event.key()
+        modifiers = event.modifiers()
+        move_down = key in (Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown) or (
+            key == Qt.Key_Space and not bool(modifiers & Qt.ShiftModifier)
+        )
+        move_up = key in (Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp) or (
+            key == Qt.Key_Space and bool(modifiers & Qt.ShiftModifier)
+        )
+        chapter_forward = key in (Qt.Key_Right, Qt.Key_BracketRight)
+        chapter_back = key in (Qt.Key_Left, Qt.Key_BracketLeft)
+        session_keys = {
+            Qt.Key_H,
+            Qt.Key_M,
+            Qt.Key_A,
+            Qt.Key_F,
+            Qt.Key_S,
+            Qt.Key_G,
+            Qt.Key_Home,
+            Qt.Key_End,
+            Qt.Key_Escape,
+        }
+
         if self._restore_image_index is not None and not self._applying_restore:
-            if key in (Qt.Key_Down, Qt.Key_Up, Qt.Key_Left, Qt.Key_Right, Qt.Key_PageDown, Qt.Key_PageUp, Qt.Key_Space):
+            if move_down or move_up or chapter_forward or chapter_back or key in session_keys:
                 self._clear_pending_restore()
+
         bar = self.scroll.verticalScrollBar()
         view_h = self.scroll.viewport().height()
         pos = bar.value()
         center = pos + view_h / 2
 
-        if key in (Qt.Key_Down, Qt.Key_Up):
+        if move_down or move_up:
+            direction_key = Qt.Key_Down if move_down else Qt.Key_Up
 
             if not self.auto_skip_enabled:
-                if key == Qt.Key_Down:
+                if direction_key == Qt.Key_Down:
                     bar.setValue(pos + int(view_h * 0.9))
                 else:
                     bar.setValue(max(0, pos - int(view_h * 0.9)))
@@ -1250,7 +1448,7 @@ class ViewerPage(QWidget):
             targets = self._get_skip_targets()
 
             if not targets:
-                if key == Qt.Key_Down:
+                if direction_key == Qt.Key_Down:
                     bar.setValue(pos + int(view_h * 0.9))
                 else:
                     bar.setValue(max(0, pos - int(view_h * 0.9)))
@@ -1259,7 +1457,7 @@ class ViewerPage(QWidget):
             SNAP = max(32, int(view_h * 0.07))
             MIN_MOVE = max(80, int(view_h * 0.16))
 
-            if key == Qt.Key_Down:
+            if direction_key == Qt.Key_Down:
                 panels = self._get_panel_ranges()
                 carryover_panel = bottom_carryover_panel(panels, pos, view_h) if panels else None
                 if carryover_panel is not None:
@@ -1412,7 +1610,7 @@ class ViewerPage(QWidget):
                     )
                     bar.setValue(pos + int(view_h * 0.9))
 
-            else:  # Qt.Key_Up
+            else:
                 prev_target = next(
                     (t for t in reversed(targets) if (t + view_h / 2) < center - SNAP),
                     None
@@ -1430,7 +1628,7 @@ class ViewerPage(QWidget):
                 else:
                     bar.setValue(max(0, pos - int(view_h * 0.9)))
 
-        elif key == Qt.Key_Right:
+        elif chapter_forward:
             next_idx = self._next_chapter_index(self.current_chapter_index)
             if next_idx is not None:
                 self._progress_save_timer.stop()
@@ -1439,7 +1637,7 @@ class ViewerPage(QWidget):
                 if self._load_chapter_with_prompt(next_idx):
                     self.setFocus()
 
-        elif key == Qt.Key_Left:
+        elif chapter_back:
             prev_idx = self._prev_chapter_index(self.current_chapter_index)
             if prev_idx is not None:
                 self._progress_save_timer.stop()
@@ -1447,6 +1645,41 @@ class ViewerPage(QWidget):
                 self._restore_image_index = None
                 if self._load_chapter_with_prompt(prev_idx):
                     self.setFocus()
+
+        elif key == Qt.Key_Home:
+            bar.setValue(0)
+
+        elif key == Qt.Key_End:
+            bar.setValue(bar.maximum())
+
+        elif key == Qt.Key_S:
+            self._save_scene_bookmark()
+
+        elif key == Qt.Key_G:
+            self._open_scene_bookmarks()
+
+        elif key == Qt.Key_H:
+            self._toggle_chrome(not self._chrome_visible)
+
+        elif key == Qt.Key_M:
+            self._toggle_minimap(not self._minimap_visible)
+
+        elif key == Qt.Key_A:
+            self._toggle_scene_anchors(not self._scene_anchors_visible)
+
+        elif key == Qt.Key_F:
+            self._toggle_focus_mode(not self._focus_mode_enabled)
+
+        elif key == Qt.Key_Escape:
+            if self.auto_scroll:
+                self._set_auto_scroll_enabled(False)
+                self.scroll.viewport().update()
+            elif self._focus_mode_enabled:
+                self._toggle_focus_mode(False)
+            elif not self._chrome_visible:
+                self._toggle_chrome(True)
+            else:
+                super().keyPressEvent(event)
 
         else:
             super().keyPressEvent(event)

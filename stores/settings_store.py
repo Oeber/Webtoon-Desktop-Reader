@@ -37,6 +37,10 @@ LIBRARY_UPDATE_INTERVAL_OPTIONS = [
 
 VIEWER_AUTO_SKIP_KEY = "viewer_auto_skip"
 VIEWER_ZOOM_KEY = "viewer_zoom"
+VIEWER_FOCUS_MODE_KEY = "viewer_focus_mode"
+VIEWER_CHROME_VISIBLE_KEY = "viewer_chrome_visible"
+VIEWER_MINIMAP_VISIBLE_KEY = "viewer_minimap_visible"
+VIEWER_SCENE_ANCHORS_VISIBLE_KEY = "viewer_scene_anchors_visible"
 LIBRARY_PATH_KEY = "library_path"
 
 _app_settings = get_app_settings_store()

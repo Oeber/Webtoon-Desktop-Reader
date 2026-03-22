@@ -636,10 +636,6 @@ class DetailPage(QWidget):
 
         scene_count = int(self.scene_bookmark_counts.get(chapter, 0) or 0)
         if scene_count > 0:
-            scene_chip = QLabel(f"{scene_count} scene" if scene_count == 1 else f"{scene_count} scenes")
-            scene_chip.setStyleSheet(SUBTLE_META_LABEL_STYLE)
-            layout.addWidget(scene_chip)
-
             scene_btn = QToolButton(row)
             scene_btn.setText("Scenes")
             scene_btn.setCursor(Qt.PointingHandCursor)
@@ -837,9 +833,6 @@ class DetailPage(QWidget):
             parts.append(f"{hidden_specials} special hidden")
         if self.show_only_bookmarked:
             parts.append(f"{len(self.bookmarked_chapters)} bookmarked")
-        scene_total = sum(int(count or 0) for count in self.scene_bookmark_counts.values())
-        if scene_total > 0:
-            parts.append(f"{scene_total} saved scenes")
         remote_count = len(self._filtered_new_remote_chapters())
         if remote_count > 0:
             parts.append(f"{remote_count} new online")

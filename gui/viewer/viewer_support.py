@@ -317,15 +317,18 @@ class ImageLoader(QObject):
 
 class ChapterPreview(QWidget):
 
-    def __init__(self, scroll_area: QScrollArea, metrics_provider=None, parent=None):
+    def __init__(self, scroll_area: QScrollArea, metrics_provider=None, scene_jump_callback=None, parent=None):
         super().__init__(parent)
         self.scroll_area = scroll_area
         self.metrics_provider = metrics_provider
+        self.scene_jump_callback = scene_jump_callback
         self.image_labels = []
         self.setFixedWidth(PREVIEW_W)
         self.setCursor(Qt.PointingHandCursor)
         self._dragging = False
         self._zoom = 1.0
+        self._scene_marks: list[dict] = []
+        self._scene_marks_visible = True
 
     def set_zoom(self, zoom: float):
         self._zoom = zoom
@@ -333,6 +336,14 @@ class ChapterPreview(QWidget):
 
     def set_image_labels(self, labels: list):
         self.image_labels = labels
+        self.update()
+
+    def set_scene_marks(self, marks: list[dict]):
+        self._scene_marks = list(marks or [])
+        self.update()
+
+    def set_scene_marks_visible(self, visible: bool):
+        self._scene_marks_visible = bool(visible)
         self.update()
 
     def notify_image_loaded(self):
@@ -511,6 +522,68 @@ class ChapterPreview(QWidget):
         pen.setWidth(1)
         painter.setPen(pen)
         painter.drawRect(vp_rect.adjusted(0, 0, -1, -1))
+        self._paint_scene_marks(painter, strip_rect, content_top, content_bot)
+
+    def _paint_scene_marks(self, painter: QPainter, strip_rect: QRect, content_top: float, content_bot: float):
+        if not self._scene_marks_visible or not self._scene_marks or not self.image_labels:
+            return
+
+        left = strip_rect.left() + 4
+        right = strip_rect.right() - 4
+
+        painter.save()
+        for _mark, y in self._scene_mark_positions(strip_rect, content_top, content_bot):
+            painter.setPen(QPen(QColor("#ff5a5f"), 2))
+            painter.drawLine(left, y, right, y)
+            painter.setPen(QPen(QColor("#ffc2c4"), 1))
+            painter.drawLine(left, y - 2, left + 5, y - 2)
+        painter.restore()
+
+    def _scene_mark_positions(self, strip_rect: QRect, content_top: float, content_bot: float) -> list[tuple[dict, int]]:
+        if not self._scene_marks_visible or not self._scene_marks or not self.image_labels:
+            return []
+        total_content_h = self._total_content_height()
+        visible_h = max(1.0, content_bot - content_top)
+        bottom = max(strip_rect.top(), strip_rect.bottom() - 1)
+        positions = []
+        for mark in self._scene_marks:
+            packed = max(0.0, float(mark.get("packed") or 0.0))
+            if self.metrics_provider is not None and hasattr(self.metrics_provider, "packed_to_content_offset"):
+                content_y = float(self.metrics_provider.packed_to_content_offset(packed))
+            else:
+                total = max(1, len(self.image_labels))
+                content_y = max(0.0, min(float(total_content_h), (packed / total) * total_content_h))
+            if content_y < content_top or content_y > content_bot:
+                continue
+            frac = (content_y - content_top) / visible_h
+            y = strip_rect.top() + int(frac * strip_rect.height())
+            y = max(strip_rect.top() + 1, min(bottom, y))
+            positions.append((mark, y))
+        return positions
+
+    def _scene_mark_at(self, pos: QPoint) -> dict | None:
+        if pos.x() < FILMSTRIP_W or not self._scene_marks:
+            return None
+        strip_rect = QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height())
+        total_content_h = self._total_content_height()
+        if total_content_h <= 0:
+            return None
+        view_h = self.scroll_area.viewport().height()
+        coverage, window_top_frac = self._window_fracs(total_content_h, view_h)
+        window_bot_frac = window_top_frac + coverage
+        content_top = window_top_frac * total_content_h
+        content_bot = window_bot_frac * total_content_h
+        tolerance = 7
+        closest = None
+        closest_distance = None
+        for mark, y in self._scene_mark_positions(strip_rect, content_top, content_bot):
+            distance = abs(pos.y() - y)
+            if distance > tolerance:
+                continue
+            if closest_distance is None or distance < closest_distance:
+                closest = mark
+                closest_distance = distance
+        return closest
 
     def _jump_to_image(self, index: int):
         if not self.image_labels or index >= len(self.image_labels):
@@ -559,8 +632,14 @@ class ChapterPreview(QWidget):
             idx = self._tile_index_at(pos)
             if idx is not None:
                 self._jump_to_image(idx)
-        else:
-            self._scrub_strip_to_y(pos.y())
+            return
+
+        scene_mark = self._scene_mark_at(pos)
+        if scene_mark is not None and callable(self.scene_jump_callback):
+            self.scene_jump_callback(float(scene_mark.get("packed") or 0.0))
+            return
+
+        self._scrub_strip_to_y(pos.y())
 
     def resizeEvent(self, event):
         self.update()
