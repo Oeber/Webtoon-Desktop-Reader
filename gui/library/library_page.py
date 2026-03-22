@@ -67,6 +67,7 @@ from library.library_categories import (
 )
 from library.library_manager import build_webtoon_from_folder, scan_library
 from stores.progress_store import get_instance as get_progress_store
+from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from core.update_utils import cooldown_remaining
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
@@ -438,6 +439,7 @@ class LibraryPage(QWidget):
 
         self.main_window = main_window
         self.progress_store = get_progress_store()
+        self.scene_bookmark_store = get_scene_bookmark_store()
         self.settings_store = get_webtoon_settings()
         self._webtoons = []
         self._cards = []
@@ -1519,6 +1521,7 @@ class LibraryPage(QWidget):
         try:
             if deleted_names:
                 self.progress_store.clear_many(deleted_names)
+                self.scene_bookmark_store.clear_many(deleted_names)
                 self.settings_store.delete_webtoons(deleted_names)
             if affected_names or self._pending_deleted_names:
                 self._pending_deleted_names.difference_update(affected_names)

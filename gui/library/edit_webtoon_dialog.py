@@ -46,6 +46,7 @@ from stores.settings_store import (
     load_setting,
 )
 from library.library_categories import load_custom_categories, save_custom_categories
+from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 
 
 CARD_W = 140
@@ -88,6 +89,7 @@ class EditWebtoonDialog(QDialog):
         self.deleted = False
         self._zoom_dirty = False
         self._initial_zoom_value = load_setting(VIEWER_ZOOM_KEY, 0.5)
+        self.scene_bookmark_store = get_scene_bookmark_store()
 
         self.setWindowTitle("Edit Webtoon")
         self.setModal(True)
@@ -332,6 +334,7 @@ class EditWebtoonDialog(QDialog):
                 os.rename(old_path, new_path)
                 self.settings_store.rename_webtoon(old_name, new_name)
                 self.progress_store.rename_webtoon(old_name, new_name)
+                self.scene_bookmark_store.rename_webtoon(old_name, new_name)
                 self.webtoon.name = new_name
                 self.webtoon.path = new_path
                 auto_thumb = os.path.join("data", "thumbnails", f"{new_name}.jpg")
@@ -405,6 +408,7 @@ class EditWebtoonDialog(QDialog):
             if os.path.isdir(self.webtoon.path):
                 shutil.rmtree(self.webtoon.path)
             self.progress_store.clear(self.webtoon.name)
+            self.scene_bookmark_store.clear(self.webtoon.name)
             self.settings_store.delete_webtoon(self.webtoon.name)
         except Exception as e:
             logger.error("Failed to delete webtoon %s", self.webtoon.name, exc_info=e)

@@ -1,15 +1,18 @@
 import os
 import time
+from pathlib import Path
 from bisect import bisect_right
 
 from core.app_logging import get_logger
+from core.app_paths import data_path
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
-    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog
+    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog, QInputDialog
 )
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QImageReader
 from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QSize
 
+from gui.common.scene_bookmark_dialog import SceneBookmarksDialog
 from gui.common.styles import (
     LOADING_DETAIL_LABEL_STYLE,
     LOADING_TITLE_LABEL_STYLE,
@@ -40,6 +43,7 @@ from gui.viewer.viewer_support import (
     VIEWER_AUTO_SCROLL_LINE,
 )
 from stores.progress_store import get_instance as get_progress_store
+from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from stores.settings_store import (
     VIEWER_AUTO_SKIP_KEY,
@@ -69,6 +73,7 @@ class ViewerPage(QWidget):
         self.webtoon = None
         self.current_chapter_index = 0
         self.progress_store = get_progress_store()
+        self.scene_bookmark_store = get_scene_bookmark_store()
         self.settings_store = get_webtoon_settings()
 
         self._restore_image_index = None
@@ -154,6 +159,16 @@ class ViewerPage(QWidget):
         self.nav_toggle.setFocusPolicy(Qt.NoFocus)
         self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
 
+        self.save_scene_btn = QPushButton("Save Scene")
+        self.save_scene_btn.setFocusPolicy(Qt.NoFocus)
+        self.save_scene_btn.setToolTip("Save the current scene with an optional note")
+        self.save_scene_btn.clicked.connect(self._save_scene_bookmark)
+
+        self.scene_list_btn = QPushButton("Scenes")
+        self.scene_list_btn.setFocusPolicy(Qt.NoFocus)
+        self.scene_list_btn.setToolTip("Open saved scenes for this chapter")
+        self.scene_list_btn.clicked.connect(self._open_scene_bookmarks)
+
         zoom_out_btn = QPushButton("-")
         zoom_out_btn.setFixedWidth(28)
         zoom_out_btn.setFocusPolicy(Qt.NoFocus)
@@ -192,6 +207,8 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.next_button)
         top_bar.addWidget(self.chapter_selector)
         top_bar.addWidget(self.nav_toggle)
+        top_bar.addWidget(self.save_scene_btn)
+        top_bar.addWidget(self.scene_list_btn)
         top_bar.addStretch()
         top_bar.addWidget(zoom_out_btn)
         top_bar.addWidget(self._zoom_slider)
@@ -419,6 +436,124 @@ class ViewerPage(QWidget):
             total,
         )
         self.progress_store.save(self.webtoon.name, chapter, packed, total)
+
+    def _current_scene_bookmark_payload(self) -> tuple[str, float, int, float] | None:
+        if not self.webtoon or not self.image_labels:
+            return None
+        chapter = self.webtoon.chapters[self.current_chapter_index]
+        total = len(self.image_labels)
+        bar = self.scroll.verticalScrollBar()
+        if bar.value() >= bar.maximum() and bar.maximum() > 0:
+            packed = float(total)
+            offset_frac = 1.0
+        else:
+            packed = self._current_packed_position()
+            offset_frac = packed - int(packed)
+        image_index = max(0, min(total - 1, int(packed)))
+        return chapter, packed, image_index, max(0.0, min(1.0, offset_frac))
+
+    def _save_scene_bookmark(self):
+        payload = self._current_scene_bookmark_payload()
+        if payload is None:
+            return
+        chapter, packed, image_index, offset_frac = payload
+        note, accepted = QInputDialog.getText(
+            self,
+            "Save Scene",
+            "Optional note for this scene:",
+        )
+        if not accepted:
+            return
+        thumbnail_path = self._save_scene_thumbnail(image_index, offset_frac)
+        self.scene_bookmark_store.save(
+            self.webtoon.name,
+            chapter,
+            packed,
+            image_index + 1,
+            note,
+            thumbnail_path=thumbnail_path,
+        )
+        self.main_window.statusBar().showMessage(f"Saved scene for {chapter}.", 3000)
+        self.setFocus()
+
+    def _save_scene_thumbnail(self, index: int, offset_frac: float) -> str:
+        if index < 0 or index >= len(self.image_labels):
+            return ""
+        label = self.image_labels[index]
+        pixmap = getattr(label, '_source_pixmap', None)
+        if pixmap is None or pixmap.isNull():
+            pixmap = self._load_scene_thumbnail_pixmap(getattr(label, 'img_path', ''))
+        if pixmap is None or pixmap.isNull():
+            return ""
+
+        source = pixmap
+        viewport_h = max(1, self.scroll.viewport().height())
+        display_h = max(1, self._label_heights[index] if index < len(self._label_heights) else self._scaled_label_height(label))
+        visible_ratio = min(1.0, viewport_h / display_h)
+        crop_h = max(120, min(source.height(), int(source.height() * visible_ratio)))
+        top_frac = max(0.0, min(1.0, offset_frac))
+        center_frac = min(1.0, top_frac + (visible_ratio / 2.0))
+        center_y = int(center_frac * source.height())
+        top = max(0, min(source.height() - crop_h, center_y - (crop_h // 2)))
+        cropped = source.copy(0, top, source.width(), crop_h)
+        scaled = cropped.scaled(160, 160, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+
+        thumb_dir = data_path("scene_bookmarks")
+        thumb_dir.mkdir(parents=True, exist_ok=True)
+        chapter = self.webtoon.chapters[self.current_chapter_index] if self.webtoon else "chapter"
+        thumb_path = thumb_dir / self._scene_thumbnail_name(chapter, index)
+        if not scaled.save(str(thumb_path), "JPEG", 88):
+            return ""
+        return str(thumb_path)
+
+    def _load_scene_thumbnail_pixmap(self, image_path: str) -> QPixmap | None:
+        image_path = str(image_path or "").strip()
+        if not image_path:
+            return None
+        reader = QImageReader(image_path)
+        size = reader.size()
+        if size.isValid() and size.width() > 0 and size.height() > 0:
+            target = size.scaled(420, 420, Qt.KeepAspectRatio)
+            reader.setScaledSize(target)
+        pixmap = QPixmap.fromImageReader(reader)
+        if pixmap.isNull():
+            return None
+        return pixmap
+
+    def _scene_thumbnail_name(self, chapter: str, index: int) -> str:
+        return f"{self._safe_scene_name(self.webtoon.name if self.webtoon else 'webtoon')}_{self._safe_scene_name(chapter)}_{index + 1}_{int(time.time() * 1000)}.jpg"
+
+    @staticmethod
+    def _safe_scene_name(value: str) -> str:
+        cleaned = "".join(ch if ch.isalnum() or ch in {'-', '_'} else '_' for ch in str(value or ""))
+        cleaned = cleaned.strip('_')
+        return cleaned or "scene"
+
+    def _open_scene_bookmarks(self):
+        payload = self._current_scene_bookmark_payload()
+        if payload is None:
+            return
+        chapter, _packed, _image_index, _offset_frac = payload
+        dialog = SceneBookmarksDialog(
+            self.webtoon,
+            chapter,
+            self.scene_bookmark_store,
+            lambda packed: self._jump_to_saved_scene(chapter, packed),
+            parent=self,
+        )
+        dialog.exec()
+        self.setFocus()
+
+    def _jump_to_saved_scene(self, chapter: str, packed: float):
+        if not self.webtoon:
+            return
+        current_chapter = self.webtoon.chapters[self.current_chapter_index]
+        if chapter != current_chapter:
+            return
+        self._unpack_restore(float(packed))
+        self._apply_restore()
+        if self._restore_image_index is not None:
+            self._progress_save_timer.start()
 
     def _unpack_restore(self, packed: float):
         if packed < 0.005:

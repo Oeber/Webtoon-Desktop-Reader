@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -260,6 +260,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         5: _migration_5_create_download_history,
         6: _migration_6_expand_download_history,
         7: _migration_7_add_update_modes_and_download_errors,
+        8: _migration_8_create_scene_bookmarks,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -320,6 +321,21 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_download_history_updated_at
             ON download_history(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS scene_bookmarks (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            webtoon_name   TEXT NOT NULL,
+            chapter        TEXT NOT NULL,
+            packed         REAL NOT NULL DEFAULT 0.0,
+            image_index    INTEGER NOT NULL DEFAULT 0,
+            note           TEXT NOT NULL DEFAULT '',
+            thumbnail_path TEXT NOT NULL DEFAULT '',
+            created_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_scene_bookmarks_lookup
+            ON scene_bookmarks(webtoon_name, chapter, updated_at DESC, id DESC);
         """
     )
 
@@ -409,6 +425,27 @@ def _migration_7_add_update_modes_and_download_errors(conn: sqlite3.Connection) 
     _add_column_if_missing(conn, "webtoon_settings", "update_mode", "TEXT NOT NULL DEFAULT 'notify'")
     _add_column_if_missing(conn, "webtoon_settings", "auto_download_limit", "INTEGER NOT NULL DEFAULT 0")
     _add_column_if_missing(conn, "download_history", "last_error", "TEXT NOT NULL DEFAULT ''")
+
+
+def _migration_8_create_scene_bookmarks(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS scene_bookmarks (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            webtoon_name   TEXT NOT NULL,
+            chapter        TEXT NOT NULL,
+            packed         REAL NOT NULL DEFAULT 0.0,
+            image_index    INTEGER NOT NULL DEFAULT 0,
+            note           TEXT NOT NULL DEFAULT '',
+            thumbnail_path TEXT NOT NULL DEFAULT '',
+            created_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_scene_bookmarks_lookup
+            ON scene_bookmarks(webtoon_name, chapter, updated_at DESC, id DESC);
+        """
+    )
 
 
 
