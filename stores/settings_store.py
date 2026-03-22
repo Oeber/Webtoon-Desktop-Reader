@@ -7,6 +7,10 @@ DEFAULT_LIBRARY_PATH = str(default_library_path())
 LIBRARY_USE_CATEGORIES_KEY = "library_use_categories"
 LIBRARY_SHOW_NEW_SECTION_KEY = "library_show_new_section"
 LIBRARY_SHOW_DOWNLOADS_SECTION_KEY = "library_show_downloads_section"
+LIBRARY_SHOW_BOOKMARKED_SECTION_KEY = "library_show_bookmarked_section"
+LIBRARY_SHOW_CONTINUE_SECTION_KEY = "library_show_continue_section"
+LIBRARY_SHOW_UPDATES_SECTION_KEY = "library_show_updates_section"
+LIBRARY_SHOW_COMPLETED_SECTION_KEY = "library_show_completed_section"
 
 APP_UPDATE_CHECK_ON_STARTUP_KEY = "app_update_check_on_startup"
 APP_UPDATE_LAST_CHECK_AT_KEY = "app_update_last_check_at"

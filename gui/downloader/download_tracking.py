@@ -59,10 +59,16 @@ class DownloadTrackingStore:
         self.clear_resume_payload(job, final_name)
         return "Cancelled"
 
-    def finalize_job(self, job, final_name: str, status: str) -> str:
+    def finalize_job(self, job, final_name: str, status: str, error: str = "") -> str:
         final_status = "Queued" if status == "Cancelled" and job.resume_after_restart else status
         job.state = final_status
-        self.history_store.upsert(job.history_kind, final_name, final_status, job.source_url)
+        self.history_store.upsert(
+            job.history_kind,
+            final_name,
+            final_status,
+            job.source_url,
+            last_error=error if final_status == "Failed" else "",
+        )
         if final_status == "Queued":
             self.history_store.set_resume_payload(
                 job.history_kind,

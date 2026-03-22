@@ -201,10 +201,13 @@ BUTTON_STYLE = f"""
     }}
     QPushButton:hover {{ background-color: #2b1c1b; border-color: {ACCENT}; color: {TEXT}; }}
     QPushButton:pressed {{ background-color: #352120; }}
+    QPushButton:disabled {{
+        background-color: #161111;
+        color: #7a625d;
+        border-color: #2a1c1a;
+    }}
 """
-BUTTON_STYLE_DISABLED = BUTTON_STYLE + """
-    QPushButton:disabled { color: #6f5450; border-color: #2d1d1b; }
-"""
+BUTTON_STYLE_DISABLED = BUTTON_STYLE
 EMPTY_STATE_LABEL_STYLE = "color: #9b7670; font-size: 13px; background: transparent;"
 
 TAB_STYLE = f"""
@@ -284,11 +287,13 @@ TOOLBAR_TEXT_BUTTON_STYLE = f"""
         font-size: 14px;
     }}
     QPushButton:hover {{ color: {TEXT}; }}
+    QPushButton:disabled {{ color: #6d5551; }}
 """
 PRIMARY_ACTION_BUTTON_STYLE = f"""
     QPushButton {{ background: {ACCENT}; color: #140d0d; border: none; border-radius: 6px;
                   font-size: 13px; font-weight: 600; }}
     QPushButton:hover {{ background: {ACCENT_HOVER}; }}
+    QPushButton:disabled {{ background: #2a1b19; color: #8c6e68; }}
 """
 SECONDARY_ACTION_BUTTON_STYLE = f"""
     QPushButton {{ background: {SURFACE_SOFT}; color: {TEXT}; border: none; border-radius: 6px;
@@ -308,6 +313,11 @@ MINIMAL_FILTER_BUTTON_STYLE = f"""
     QPushButton:hover {{
         background: #1c1312;
         color: {TEXT};
+    }}
+    QPushButton:disabled {{
+        background: transparent;
+        color: #735955;
+        border-color: #2a1c1a;
     }}
 """
 MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE = MINIMAL_FILTER_BUTTON_STYLE + f"""

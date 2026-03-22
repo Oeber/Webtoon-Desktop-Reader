@@ -149,7 +149,14 @@ class UpdateAvailabilityLoader(QObject):
             if not local_name or local_name in local_chapters or local_name in seen:
                 continue
             seen.add(local_name)
-            new_remote.append(local_name)
+            new_remote.append(
+                {
+                    "dir_name": local_name,
+                    "title": str(getattr(chapter, "title", "") or local_name),
+                    "url": str(getattr(chapter, "url", "") or ""),
+                    "number": getattr(chapter, "number", None),
+                }
+            )
 
         new_chapters = len(new_remote)
         if new_chapters <= 0:
@@ -164,6 +171,7 @@ class UpdateAvailabilityLoader(QObject):
             "local_chapters": int(candidate.get("local_chapters", 0) or 0),
             "remote_chapters": len(getattr(series, "chapters", []) or []),
             "new_chapters": new_chapters,
+            "new_remote_chapters": new_remote,
         }
 
     def _check_candidate_shortcut(self, scraper, series_url: str, candidate: dict, session) -> dict | None:
@@ -963,7 +971,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self.set_error_text("")
         self._sync_update_buttons()
 
-    def start_update_for_webtoon(self, webtoon_name: str) -> str | None:
+    def start_update_for_webtoon(self, webtoon_name: str, chapter_urls: list[str] | None = None) -> str | None:
         if not webtoon_name:
             return "Please choose a title to update."
 
@@ -995,6 +1003,35 @@ class UpdatePage(DownloadHistoryPageBase):
         self._sync_update_buttons()
         return error
 
+    def _chapter_urls_for_update(self, webtoon_name: str) -> list[str]:
+        update = next((item for item in self._available_updates if item["webtoon"].name == webtoon_name), None)
+        if update is None:
+            return []
+        chapter_payloads = list(update.get("new_remote_chapters") or [])
+        if not chapter_payloads:
+            return []
+
+        if self.settings_store.get_hide_filler(webtoon_name):
+            filtered = [payload for payload in chapter_payloads if str(payload.get("dir_name") or "").lower().startswith("chapter ")]
+            if filtered:
+                chapter_payloads = filtered
+
+        limit = self.settings_store.get_auto_download_limit(webtoon_name)
+        if limit > 0:
+            chapter_payloads = chapter_payloads[-limit:]
+
+        return [str(payload.get("url") or "") for payload in chapter_payloads if str(payload.get("url") or "").strip()]
+
+    def start_auto_updates_for_available_titles(self) -> list[str]:
+        started = []
+        for update in list(self._available_updates):
+            webtoon_name = update["webtoon"].name
+            if self.settings_store.get_update_mode(webtoon_name) != "auto_download":
+                continue
+            error = self.start_update_for_webtoon(webtoon_name, chapter_urls=self._chapter_urls_for_update(webtoon_name))
+            if error is None:
+                started.append(webtoon_name)
+        return started
     def _sync_update_buttons(self):
         for widget in self._entries_by_name.values():
             if not isinstance(widget, UpdateCard):
@@ -1128,4 +1165,8 @@ class UpdatePage(DownloadHistoryPageBase):
             row = index // columns
             column = index % columns
             self._cards_layout.addWidget(widget, row, column, Qt.AlignTop | Qt.AlignLeft)
+
+
+
+
 

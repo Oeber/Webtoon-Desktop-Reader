@@ -209,6 +209,26 @@ class DownloaderPage(DownloadHistoryPageBase):
         self._activity_refresh_timer.stop()
         self.refresh_recent_activity()
 
+    def _retry_history_entry(self, entry: HistoryDownloadEntry):
+        if entry.kind == "update":
+            self.main_window.updates.start_update_for_webtoon(entry.name)
+            self.main_window.open_updates()
+            return
+        self.start_download_from_url(entry.source_url, preferred_name=entry.name)
+
+    def _authorize_history_entry(self, entry: HistoryDownloadEntry):
+        if not entry.source_url:
+            return
+        site_name = ""
+        try:
+            from scrapers.registry import get_scraper
+            site_name = getattr(get_scraper(entry.source_url), "site_name", "") or ""
+        except Exception:
+            site_name = ""
+        if not site_name:
+            return
+        if self.main_window.open_site_authorization(site_name, url=entry.source_url):
+            self._retry_history_entry(entry)
     def refresh_recent_activity(self):
         self._last_activity_refresh_at = time.monotonic()
         while self.activity_list.count():
@@ -235,4 +255,5 @@ class DownloaderPage(DownloadHistoryPageBase):
             if thumb_path:
                 entry.set_thumbnail(thumb_path)
             self.activity_list.addWidget(entry)
+
 

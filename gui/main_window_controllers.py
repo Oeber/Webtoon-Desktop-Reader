@@ -574,3 +574,4 @@ class SidebarController:
         else:
             self.btn_downloader.setText("")
         self.refresh_nav_state()
+

@@ -50,6 +50,10 @@ from gui.search.global_search import rank_webtoons
 from stores.settings_store import (
     LIBRARY_SHOW_DOWNLOADS_SECTION_KEY,
     LIBRARY_SHOW_NEW_SECTION_KEY,
+    LIBRARY_SHOW_BOOKMARKED_SECTION_KEY,
+    LIBRARY_SHOW_CONTINUE_SECTION_KEY,
+    LIBRARY_SHOW_UPDATES_SECTION_KEY,
+    LIBRARY_SHOW_COMPLETED_SECTION_KEY,
     LIBRARY_USE_CATEGORIES_KEY,
     load_library_path,
     load_setting,
@@ -77,6 +81,9 @@ SECTION_REORDER_EDGE = 18
 SECTION_DOWNLOADS = "__downloads__"
 SECTION_NEW = "__new__"
 SECTION_BOOKMARKED = "__bookmarked__"
+SECTION_CONTINUE = "__continue__"
+SECTION_UPDATES = "__updates__"
+SECTION_COMPLETED = "__completed__"
 SECTION_LIBRARY = "__library__"
 SECTION_UNCATEGORIZED = "__uncategorized__"
 logger = get_logger(__name__)
@@ -635,15 +642,19 @@ class LibraryPage(QWidget):
         section_changed = False
         settings_rows = self.settings_store.get_rows(
             [webtoon.name for webtoon in self._webtoons],
-            columns=("category", "bookmarked", "latest_new_chapter", "remote_update_count"),
+            columns=("category", "bookmarked", "latest_new_chapter", "remote_update_count", "completed"),
         )
         for webtoon in self._webtoons:
             old_section = self._section_key_for_webtoon(webtoon)
             row = settings_rows.get(webtoon.name, {})
+            latest_progress = self.progress_store.get(webtoon.name)
             webtoon.category = row.get("category")
             webtoon.is_bookmarked = bool(row.get("bookmarked", 0))
             webtoon.has_new_chapter = bool(row.get("latest_new_chapter"))
             webtoon.remote_update_count = int(row.get("remote_update_count", 0) or 0)
+            webtoon.is_completed = bool(row.get("completed", 0))
+            webtoon.has_resume_progress = latest_progress is not None
+            webtoon.has_remote_updates = webtoon.remote_update_count > 0
             new_section = self._section_key_for_webtoon(webtoon)
             section_changed = section_changed or old_section != new_section
             card = self._cards_by_name.get(webtoon.name)
@@ -653,7 +664,6 @@ class LibraryPage(QWidget):
             self._rebuild_sections()
             return
         self._relayout_sections(self._current_cols or self._columns_for_width(self.width()))
-
     def _load_custom_categories(self) -> list[str]:
         return load_custom_categories()
 
@@ -692,6 +702,21 @@ class LibraryPage(QWidget):
             if show_download_section and placeholders:
                 defs.append((SECTION_DOWNLOADS, "Active Downloads", placeholders, None))
 
+        if self._categories_enabled():
+            continue_webtoons = [
+                webtoon for webtoon in self._webtoons
+                if self._section_key_for_webtoon(webtoon) == SECTION_CONTINUE
+            ]
+            if self._show_continue_section():
+                defs.append((SECTION_CONTINUE, "Continue Reading", continue_webtoons, None))
+
+            update_webtoons = [
+                webtoon for webtoon in self._webtoons
+                if self._section_key_for_webtoon(webtoon) == SECTION_UPDATES
+            ]
+            if self._show_updates_section():
+                defs.append((SECTION_UPDATES, "Needs Update", update_webtoons, None))
+
         if self._show_new_section():
             new_webtoons = [
                 webtoon for webtoon in self._webtoons
@@ -699,11 +724,20 @@ class LibraryPage(QWidget):
             ]
             defs.append((SECTION_NEW, "New", new_webtoons, None))
 
-        bookmarked_webtoons = [
-            webtoon for webtoon in self._webtoons
-            if self._section_key_for_webtoon(webtoon) == SECTION_BOOKMARKED
-        ]
-        defs.append((SECTION_BOOKMARKED, "Bookmarked", bookmarked_webtoons, None))
+        if self._show_bookmarked_section():
+            bookmarked_webtoons = [
+                webtoon for webtoon in self._webtoons
+                if self._section_key_for_webtoon(webtoon) == SECTION_BOOKMARKED
+            ]
+            defs.append((SECTION_BOOKMARKED, "Bookmarked", bookmarked_webtoons, None))
+
+        if self._categories_enabled():
+            completed_webtoons = [
+                webtoon for webtoon in self._webtoons
+                if self._section_key_for_webtoon(webtoon) == SECTION_COMPLETED
+            ]
+            if self._show_completed_section():
+                defs.append((SECTION_COMPLETED, "Completed", completed_webtoons, None))
 
         if self._categories_enabled():
             uncategorized = [
@@ -727,19 +761,23 @@ class LibraryPage(QWidget):
                 library_webtoons = [*placeholders, *library_webtoons]
             defs.append((SECTION_LIBRARY, "Library", library_webtoons, None))
         return defs
-
     def _section_key_for_webtoon(self, webtoon) -> str:
         if getattr(webtoon, "_download_placeholder", False):
             return SECTION_DOWNLOADS
+        if self._categories_enabled() and self._show_continue_section() and getattr(webtoon, "has_resume_progress", False) and not getattr(webtoon, "is_completed", False):
+            return SECTION_CONTINUE
+        if self._categories_enabled() and self._show_updates_section() and getattr(webtoon, "has_remote_updates", False) and not getattr(webtoon, "is_completed", False):
+            return SECTION_UPDATES
         if self._show_new_section() and getattr(webtoon, "has_new_chapter", False):
             return SECTION_NEW
-        if getattr(webtoon, "is_bookmarked", False):
+        if self._show_bookmarked_section() and getattr(webtoon, "is_bookmarked", False):
             return SECTION_BOOKMARKED
+        if self._categories_enabled() and self._show_completed_section() and getattr(webtoon, "is_completed", False):
+            return SECTION_COMPLETED
         if not self._categories_enabled():
             return SECTION_LIBRARY
         category = getattr(webtoon, "category", None)
         return category or SECTION_UNCATEGORIZED
-
     def _rebuild_sections(self):
         self._clear_sections()
         self._current_cols = self._columns_for_width(self.width())
@@ -755,8 +793,11 @@ class LibraryPage(QWidget):
                     on_reorder=self._handle_section_reorder,
                     on_menu=self._show_section_menu if section_key not in {
                         SECTION_DOWNLOADS,
+                        SECTION_CONTINUE,
+                        SECTION_UPDATES,
                         SECTION_NEW,
                         SECTION_BOOKMARKED,
+                        SECTION_COMPLETED,
                         SECTION_UNCATEGORIZED,
                     } else None,
                     parent=self.container,
@@ -817,9 +858,17 @@ class LibraryPage(QWidget):
             section_key,
             title,
             on_toggle=self._on_section_toggled,
-            on_drop=self._handle_section_drop if section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED} else None,
+            on_drop=self._handle_section_drop if section_key not in {SECTION_DOWNLOADS, SECTION_CONTINUE, SECTION_UPDATES, SECTION_NEW, SECTION_BOOKMARKED, SECTION_COMPLETED} else None,
             on_reorder=self._handle_section_reorder,
-            on_menu=self._show_section_menu if section_key not in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_UNCATEGORIZED} else None,
+            on_menu=self._show_section_menu if section_key not in {
+                        SECTION_DOWNLOADS,
+                        SECTION_CONTINUE,
+                        SECTION_UPDATES,
+                        SECTION_NEW,
+                        SECTION_BOOKMARKED,
+                        SECTION_COMPLETED,
+                        SECTION_UNCATEGORIZED,
+                    } else None,
             parent=self.container,
         )
         self._section_widgets[section_key] = section
@@ -829,7 +878,7 @@ class LibraryPage(QWidget):
 
     def _remove_empty_custom_sections(self):
         for section_key in list(self._section_widgets.keys()):
-            if section_key in {SECTION_DOWNLOADS, SECTION_NEW, SECTION_BOOKMARKED, SECTION_LIBRARY, SECTION_UNCATEGORIZED}:
+            if section_key in {SECTION_DOWNLOADS, SECTION_CONTINUE, SECTION_UPDATES, SECTION_NEW, SECTION_BOOKMARKED, SECTION_COMPLETED, SECTION_LIBRARY, SECTION_UNCATEGORIZED}:
                 continue
             if self._section_cards.get(section_key):
                 continue
@@ -886,6 +935,9 @@ class LibraryPage(QWidget):
                 SECTION_DOWNLOADS,
                 SECTION_NEW,
                 SECTION_BOOKMARKED,
+                SECTION_CONTINUE,
+                SECTION_UPDATES,
+                SECTION_COMPLETED,
                 SECTION_LIBRARY,
                 SECTION_UNCATEGORIZED,
             }
@@ -898,6 +950,9 @@ class LibraryPage(QWidget):
                     SECTION_DOWNLOADS,
                     SECTION_NEW,
                     SECTION_BOOKMARKED,
+                    SECTION_CONTINUE,
+                    SECTION_UPDATES,
+                    SECTION_COMPLETED,
                     SECTION_LIBRARY,
                     SECTION_UNCATEGORIZED,
                 }
@@ -1079,9 +1134,16 @@ class LibraryPage(QWidget):
         available = []
         if self._show_downloads_section() and self._categories_enabled():
             available.append(SECTION_DOWNLOADS)
+        if self._categories_enabled() and self._show_continue_section():
+            available.append(SECTION_CONTINUE)
+        if self._categories_enabled() and self._show_updates_section():
+            available.append(SECTION_UPDATES)
         if self._show_new_section():
             available.append(SECTION_NEW)
-        available.append(SECTION_BOOKMARKED)
+        if self._show_bookmarked_section():
+            available.append(SECTION_BOOKMARKED)
+        if self._categories_enabled() and self._show_completed_section():
+            available.append(SECTION_COMPLETED)
         if self._categories_enabled():
             available.extend([SECTION_UNCATEGORIZED, *self._category_names])
         else:
@@ -1091,7 +1153,6 @@ class LibraryPage(QWidget):
             if section not in ordered:
                 ordered.append(section)
         return ordered
-
     def _assign_category_to_webtoons(self, names: list[str], category: str | None):
         if not self._categories_enabled():
             return
@@ -1750,6 +1811,9 @@ class LibraryPage(QWidget):
     def _categories_enabled(self) -> bool:
         return bool(load_setting(LIBRARY_USE_CATEGORIES_KEY, True))
 
+    def _show_bookmarked_section(self) -> bool:
+        return bool(load_setting(LIBRARY_SHOW_BOOKMARKED_SECTION_KEY, True))
+
     def _show_new_section(self) -> bool:
         return bool(load_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True))
 
@@ -1757,3 +1821,36 @@ class LibraryPage(QWidget):
         if self._active_manual_downloads:
             return True
         return bool(load_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True))
+
+    def _show_continue_section(self) -> bool:
+        return bool(load_setting(LIBRARY_SHOW_CONTINUE_SECTION_KEY, True))
+
+    def _show_updates_section(self) -> bool:
+        return bool(load_setting(LIBRARY_SHOW_UPDATES_SECTION_KEY, True))
+
+    def _show_completed_section(self) -> bool:
+        return bool(load_setting(LIBRARY_SHOW_COMPLETED_SECTION_KEY, True))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

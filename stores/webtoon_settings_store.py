@@ -150,6 +150,8 @@ class WebtoonSettingsStore:
                 "completed",
                 "source_url",
                 "last_update_at",
+                "update_mode",
+                "auto_download_limit",
             )
 
         conn = get_connection()
@@ -327,6 +329,31 @@ class WebtoonSettingsStore:
     def clear_latest_new_chapter(self, webtoon_name: str):
         self._clear_scalar(webtoon_name, "latest_new_chapter", log_message="Clearing latest new chapter for %s")
 
+    def get_update_mode(self, webtoon_name: str) -> str:
+        valid_modes = {'notify', 'auto_download', 'ignore'}
+        value = str(self._get_scalar(webtoon_name, 'update_mode', default='notify', coerce=str) or 'notify').strip().lower()
+        if value not in valid_modes:
+            return "notify"
+        return value
+
+    def set_update_mode(self, webtoon_name: str, mode: str):
+        valid_modes = {'notify', 'auto_download', 'ignore'}
+        normalized = str(mode or 'notify').strip().lower()
+        if normalized not in valid_modes:
+            normalized = "notify"
+        self._set_scalar(webtoon_name, "update_mode", normalized, log_message="Setting update mode for %s to %s")
+
+    def get_auto_download_limit(self, webtoon_name: str) -> int:
+        return max(0, int(self._get_scalar(webtoon_name, "auto_download_limit", default=0, coerce=int) or 0))
+
+    def set_auto_download_limit(self, webtoon_name: str, limit: int):
+        self._set_scalar(
+            webtoon_name,
+            "auto_download_limit",
+            max(0, int(limit)),
+            log_message="Setting auto-download limit for %s to %s",
+        )
+
     def set_remote_update_count(self, webtoon_name: str, count: int):
         self._set_scalar(
             webtoon_name,
@@ -439,8 +466,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -457,6 +484,8 @@ class WebtoonSettingsStore:
                 row["last_update_at"],
                 row["latest_new_chapter"],
                 row["remote_update_count"],
+                row["update_mode"],
+                row["auto_download_limit"],
             ),
         )
         conn.execute(
@@ -508,3 +537,6 @@ class WebtoonSettingsStore:
 
     def _persist_custom_thumbnail(self, webtoon_name: str, path: str):
         self._set_scalar(webtoon_name, "custom_thumbnail", path)
+
+
+

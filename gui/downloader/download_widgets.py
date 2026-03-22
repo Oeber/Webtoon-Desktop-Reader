@@ -332,26 +332,77 @@ class HistoryDownloadEntry(DownloadEntry):
         status: str,
         updated_at: int | None,
         source_url: str = "",
+        last_error: str = "",
         on_open=None,
+        on_retry=None,
+        on_authorize=None,
     ):
         super().__init__(name, on_open=on_open)
         self.kind = kind
         self.updated_at = updated_at
         self.source_url = source_url or ""
+        self.last_error = str(last_error or "").strip()
+        self._on_retry = on_retry
+        self._on_authorize = on_authorize
         self.sub_label.setWordWrap(True)
+
+        self.retry_btn = QPushButton("Retry")
+        self.retry_btn.setStyleSheet(BTN_STYLE)
+        self.retry_btn.setFixedWidth(90)
+        self.retry_btn.clicked.connect(self._retry)
+
+        self.authorize_btn = QPushButton("Authorize")
+        self.authorize_btn.setStyleSheet(BTN_STYLE)
+        self.authorize_btn.setFixedWidth(90)
+        self.authorize_btn.clicked.connect(self._authorize)
+
+        self.controls = QWidget()
+        self.controls.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        controls_layout = QVBoxLayout(self.controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        controls_layout.addWidget(self.status_label, alignment=Qt.AlignRight)
+        controls_layout.addWidget(self.retry_btn, alignment=Qt.AlignRight)
+        controls_layout.addWidget(self.authorize_btn, alignment=Qt.AlignRight)
+
+        self.layout().removeWidget(self.status_label)
+        self.layout().addWidget(self.controls)
         self._refresh_sub_label()
         self.set_status(status)
 
     def set_status(self, status: str):
         super().set_status(status)
+        self._refresh_actions()
         self._refresh_sub_label()
+
+    def _refresh_actions(self):
+        retry_visible = self.status_label.text() in {"Failed", "Cancelled"} and bool(self.source_url)
+        self.retry_btn.setVisible(retry_visible)
+        self.authorize_btn.setVisible(retry_visible and self._looks_like_auth_error())
+
+    def _looks_like_auth_error(self) -> bool:
+        text = " ".join(self.last_error.casefold().split())
+        if not text:
+            return False
+        markers = ("cloudflare", "blocked", "anti-bot", "authorization")
+        return any(marker in text for marker in markers)
 
     def _refresh_sub_label(self):
         kind_label = "Update" if self.kind == "update" else "Manual download"
         lines = [kind_label, format_last_activity(self.updated_at)]
         if self.source_url:
             lines.insert(1, self.source_url)
+        if self.last_error and self.status_label.text() in {"Failed", "Cancelled"}:
+            lines.append(f"Reason: {self.last_error}")
         if self.status_label.text() == "Completed":
             lines.append("Click to open details")
         self.sub_label.setText("\n".join(lines))
         self.sub_label.show()
+
+    def _retry(self):
+        if callable(self._on_retry):
+            self._on_retry(self)
+
+    def _authorize(self):
+        if callable(self._on_authorize):
+            self._on_authorize(self)

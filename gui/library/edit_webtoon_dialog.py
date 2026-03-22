@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -178,6 +179,19 @@ class EditWebtoonDialog(QDialog):
         self.completed_input = QCheckBox("Mark this webtoon as completed")
         form.addRow(self._form_label("Status"), self._field_row(self.completed_input))
 
+        self.update_mode_input = QComboBox()
+        self.update_mode_input.addItem("Notify only", "notify")
+        self.update_mode_input.addItem("Auto-download", "auto_download")
+        self.update_mode_input.addItem("Ignore update checks", "ignore")
+        self.update_mode_input.setFixedHeight(ROW_H)
+        form.addRow(self._form_label("Updates"), self._field_row(self.update_mode_input))
+
+        self.auto_download_limit_input = QSpinBox()
+        self.auto_download_limit_input.setRange(0, 200)
+        self.auto_download_limit_input.setSpecialValueText("All new chapters")
+        self.auto_download_limit_input.setFixedHeight(ROW_H)
+        form.addRow(self._form_label("Auto limit"), self._field_row(self.auto_download_limit_input))
+
         right.addWidget(form_frame)
 
         delete_box = QFrame()
@@ -229,6 +243,12 @@ class EditWebtoonDialog(QDialog):
         )
         self.completed_input.setChecked(
             self.settings_store.get_completed(self.webtoon.name)
+        )
+        self.update_mode_input.setCurrentIndex(
+            max(0, self.update_mode_input.findData(self.settings_store.get_update_mode(self.webtoon.name)))
+        )
+        self.auto_download_limit_input.setValue(
+            self.settings_store.get_auto_download_limit(self.webtoon.name)
         )
         categories_enabled = bool(load_setting(LIBRARY_USE_CATEGORIES_KEY, True))
         self.category_label.setVisible(categories_enabled)
@@ -332,6 +352,14 @@ class EditWebtoonDialog(QDialog):
                 self.webtoon.name,
                 self.completed_input.isChecked(),
             )
+            self.settings_store.set_update_mode(
+                self.webtoon.name,
+                str(self.update_mode_input.currentData() or "notify"),
+            )
+            self.settings_store.set_auto_download_limit(
+                self.webtoon.name,
+                int(self.auto_download_limit_input.value()),
+            )
 
             if load_setting(LIBRARY_USE_CATEGORIES_KEY, True):
                 category = self.category_input.currentText().strip()
@@ -385,3 +413,8 @@ class EditWebtoonDialog(QDialog):
 
         self.deleted = True
         self.accept()
+
+
+
+
+

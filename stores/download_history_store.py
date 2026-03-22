@@ -28,7 +28,7 @@ class DownloadHistoryStore:
         with self._lock:
             rows = get_connection().execute(
                 """
-                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
+                SELECT kind, name, source_url, status, last_error, resume_payload, created_at, updated_at
                 FROM download_history
                 ORDER BY updated_at DESC
                 LIMIT ?
@@ -37,7 +37,7 @@ class DownloadHistoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def upsert(self, kind: str, name: str, status: str, source_url: str = ""):
+    def upsert(self, kind: str, name: str, status: str, source_url: str = "", last_error: str = ""):
         name = (name or "").strip()
         if not kind or not name:
             return
@@ -47,7 +47,7 @@ class DownloadHistoryStore:
             conn = get_connection()
             existing = conn.execute(
                 """
-                SELECT created_at, source_url, resume_payload
+                SELECT created_at, source_url, resume_payload, last_error
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -56,13 +56,18 @@ class DownloadHistoryStore:
             created_at = timestamp if existing is None else int(existing["created_at"] or timestamp)
             next_source_url = source_url or (existing["source_url"] if existing is not None else "") or ""
             next_resume_payload = existing["resume_payload"] if existing is not None else None
+            next_last_error = str(last_error or "").strip()
+            if not next_last_error and existing is not None:
+                next_last_error = str(existing["last_error"] or "")
+            if status in {"Completed", "Queued", "Downloading", "Ready"}:
+                next_last_error = ""
             conn.execute(
                 """
                 INSERT OR REPLACE INTO download_history
-                (kind, name, source_url, status, resume_payload, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (kind, name, source_url, status, last_error, resume_payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, name, next_source_url, status, next_resume_payload, created_at, timestamp),
+                (kind, name, next_source_url, status, next_last_error, next_resume_payload, created_at, timestamp),
             )
             self._trim_entries(conn)
             conn.commit()
@@ -85,7 +90,7 @@ class DownloadHistoryStore:
             conn = get_connection()
             existing = conn.execute(
                 """
-                SELECT created_at, source_url, status
+                SELECT created_at, source_url, status, last_error
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -94,13 +99,14 @@ class DownloadHistoryStore:
             created_at = timestamp if existing is None else int(existing["created_at"] or timestamp)
             next_source_url = source_url or (existing["source_url"] if existing is not None else "") or ""
             next_status = existing["status"] if existing is not None else "Ready"
+            next_last_error = str(existing["last_error"] or "") if existing is not None else ""
             conn.execute(
                 """
                 INSERT OR REPLACE INTO download_history
-                (kind, name, source_url, status, resume_payload, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (kind, name, source_url, status, last_error, resume_payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, name, next_source_url, next_status, payload_text, created_at, timestamp),
+                (kind, name, next_source_url, next_status, next_last_error, payload_text, created_at, timestamp),
             )
             self._trim_entries(conn)
             conn.commit()
@@ -129,7 +135,7 @@ class DownloadHistoryStore:
         with self._lock:
             rows = get_connection().execute(
                 """
-                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
+                SELECT kind, name, source_url, status, last_error, resume_payload, created_at, updated_at
                 FROM download_history
                 WHERE kind = ?
                   AND COALESCE(TRIM(resume_payload), '') <> ''
@@ -162,7 +168,7 @@ class DownloadHistoryStore:
             conn = get_connection()
             current = conn.execute(
                 """
-                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
+                SELECT kind, name, source_url, status, last_error, resume_payload, created_at, updated_at
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -170,7 +176,7 @@ class DownloadHistoryStore:
             ).fetchone()
             target = conn.execute(
                 """
-                SELECT kind, name, source_url, status, resume_payload, created_at, updated_at
+                SELECT kind, name, source_url, status, last_error, resume_payload, created_at, updated_at
                 FROM download_history
                 WHERE kind = ? AND name = ?
                 """,
@@ -180,11 +186,7 @@ class DownloadHistoryStore:
             if current is None and target is None:
                 return
 
-            if current is None:
-                source_row = target
-            else:
-                source_row = current
-
+            source_row = current if current is not None else target
             next_status = status or source_row["status"] or "Ready"
             next_source_url = source_url or source_row["source_url"] or ""
             next_resume_payload = source_row["resume_payload"]
@@ -203,13 +205,16 @@ class DownloadHistoryStore:
             conn.execute(
                 """
                 INSERT INTO download_history
-                (kind, name, source_url, status, resume_payload, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                (kind, name, source_url, status, last_error, resume_payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (kind, new_name, next_source_url, next_status, next_resume_payload, created_at, timestamp),
+                (kind, new_name, next_source_url, next_status, "", next_resume_payload, created_at, timestamp),
             )
             self._trim_entries(conn)
             conn.commit()
+
+    def set_error(self, kind: str, name: str, error: str, source_url: str = ""):
+        self.upsert(kind, name, "Failed", source_url=source_url, last_error=error)
 
     def _trim_entries(self, conn):
         conn.execute(
@@ -224,4 +229,3 @@ class DownloadHistoryStore:
             """,
             (self._max_entries,),
         )
-

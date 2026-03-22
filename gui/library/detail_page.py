@@ -932,6 +932,8 @@ class DetailPage(QWidget):
             previous_status != self.remote_status_label.text()
             or previous_status_visible != self.remote_status_label.isVisible()
         )
+        if remote_changed and count > 0:
+            self._maybe_auto_download_remote_updates()
         if rebuild_chapter_list and (remote_changed or previous_visible_count != count or status_changed):
             progress = self.progress_store.get(self.webtoon.name) if self.webtoon and self.progress_store else None
             self._build_chapter_list(progress)
@@ -1093,6 +1095,36 @@ class DetailPage(QWidget):
         ]
         self._download_remote_chapters(ordered_urls)
 
+    def _auto_download_remote_urls(self) -> list[str]:
+        chapters = list(self._filtered_new_remote_chapters())
+        if self.webtoon is None:
+            return []
+        if self.hide_specials:
+            filtered = [entry for entry in chapters if str(entry.get("local_name") or "").lower().startswith("chapter ")]
+            if filtered:
+                chapters = filtered
+        limit = self.settings_store.get_auto_download_limit(self.webtoon.name)
+        if limit > 0:
+            chapters = chapters[-limit:]
+        return [entry.get("url", "") for entry in chapters if entry.get("url")]
+
+    def _maybe_auto_download_remote_updates(self):
+        if self.webtoon is None:
+            return
+        if self.settings_store.get_update_mode(self.webtoon.name) != "auto_download":
+            return
+        if self._active_progress_service() is not None:
+            return
+        urls = [url for url in self._auto_download_remote_urls() if url not in self._pending_remote_chapter_urls]
+        if not urls:
+            return
+        error = self.main_window.updates.start_update_for_webtoon(self.webtoon.name, chapter_urls=urls)
+        if error:
+            logger.warning("Detail-page auto-download could not start for %s: %s", self.webtoon.name, error)
+            return
+        self._pending_remote_chapter_urls.update(urls)
+        self.remote_status_label.setText(f"Auto-download started for {len(urls)} new chapter{'s' if len(urls) != 1 else ''}.")
+        self.remote_status_label.show()
     def _download_all_new_chapters(self):
         urls = [entry.get("url", "") for entry in self._filtered_new_remote_chapters() if entry.get("url")]
         self._download_remote_chapters(urls)
@@ -1594,3 +1626,7 @@ class DetailPage(QWidget):
     def _start_from_beginning(self): 
         logger.info("Start from beginning requested for %s", self.webtoon.name if self.webtoon else "<none>")
         self.main_window.open_chapter(self.webtoon, 0)
+
+
+
+

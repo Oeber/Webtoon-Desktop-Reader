@@ -258,6 +258,7 @@ class DownloadService(QObject):
         chapter_urls = list(job.chapter_urls or [])
         name = sanitize_webtoon_name(preferred_name) or job.initial_name or "download"
         status = "Failed"
+        last_error = ""
 
         try:
             os.makedirs(job.temp_dir, exist_ok=True)
@@ -306,6 +307,7 @@ class DownloadService(QObject):
             status = "Cancelled"
         except FileNotFoundError:
             logger.error("Download failed because required file/tool was missing")
+            last_error = "A required download tool was not found."
             status = "Failed"
         except ScraperError as e:
             if self._is_expected_access_block(e):
@@ -319,9 +321,11 @@ class DownloadService(QObject):
                     self.auth_required.emit(site_name, url, preferred_name, list(chapter_urls or []))
             else:
                 logger.error("Download failed for %s: %s", url, e)
+            last_error = str(e) or "Download failed."
             status = "Failed"
         except Exception as e:
             logger.error("Download failed for %s", url, exc_info=e)
+            last_error = str(e) or "Unexpected download failure."
             status = "Failed"
         finally:
             self._shutdown_job_executor(job, wait=not job.cancel_requested, cancel_futures=job.cancel_requested)
@@ -330,7 +334,7 @@ class DownloadService(QObject):
             with self._jobs_lock:
                 self._jobs.pop(job.initial_name, None)
             final_name = job.active_name or name
-            final_status = self._tracking.finalize_job(job, final_name, status)
+            final_status = self._tracking.finalize_job(job, final_name, status, error=last_error)
             logger.info("Download finished for %s with status=%s", final_name, final_status)
             self.status_changed.emit(final_name, final_status)
             self.download_finished.emit(final_name, final_status)
@@ -934,4 +938,7 @@ class DownloadService(QObject):
             except TypeError:
                 pass
         return scraper.get_chapter_pages(chapter_url)
+
+
+
 

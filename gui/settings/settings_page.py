@@ -66,6 +66,10 @@ from stores.settings_store import (
     DEFAULT_LIBRARY_PATH,
     LIBRARY_SHOW_DOWNLOADS_SECTION_KEY,
     LIBRARY_SHOW_NEW_SECTION_KEY,
+    LIBRARY_SHOW_BOOKMARKED_SECTION_KEY,
+    LIBRARY_SHOW_CONTINUE_SECTION_KEY,
+    LIBRARY_SHOW_UPDATES_SECTION_KEY,
+    LIBRARY_SHOW_COMPLETED_SECTION_KEY,
     LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY,
     LIBRARY_UPDATE_INTERVAL_MINUTES_KEY,
     LIBRARY_UPDATE_INTERVAL_OPTIONS,
@@ -81,6 +85,7 @@ from stores.settings_store import (
     save_setting,
     save_settings,
 )
+from gui.settings.library_health_dialog import LibraryHealthDialog
 from gui.common.styles import (
     APP_UPDATE_PROGRESS_STYLE,
     BUTTON_STYLE,
@@ -448,6 +453,30 @@ class SettingsPage(QWidget):
         self.show_downloads_section_checkbox.toggled.connect(self._on_show_downloads_section_changed)
         library_layout.addWidget(self.show_downloads_section_checkbox)
 
+        self.show_bookmarked_section_checkbox = QCheckBox("Show Bookmarked section")
+        self.show_bookmarked_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_BOOKMARKED_SECTION_KEY, True))
+        self.show_bookmarked_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.show_bookmarked_section_checkbox.toggled.connect(self._on_show_bookmarked_section_changed)
+        library_layout.addWidget(self.show_bookmarked_section_checkbox)
+
+        self.show_continue_section_checkbox = QCheckBox("Show Continue Reading section")
+        self.show_continue_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_CONTINUE_SECTION_KEY, True))
+        self.show_continue_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.show_continue_section_checkbox.toggled.connect(self._on_show_continue_section_changed)
+        library_layout.addWidget(self.show_continue_section_checkbox)
+
+        self.show_updates_smart_section_checkbox = QCheckBox("Show Needs Update section")
+        self.show_updates_smart_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_UPDATES_SECTION_KEY, True))
+        self.show_updates_smart_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.show_updates_smart_section_checkbox.toggled.connect(self._on_show_updates_smart_section_changed)
+        library_layout.addWidget(self.show_updates_smart_section_checkbox)
+
+        self.show_completed_section_checkbox = QCheckBox("Show Completed section")
+        self.show_completed_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_COMPLETED_SECTION_KEY, True))
+        self.show_completed_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.show_completed_section_checkbox.toggled.connect(self._on_show_completed_section_changed)
+        library_layout.addWidget(self.show_completed_section_checkbox)
+
         layout.addWidget(library_card)
 
         updates_card, updates_layout = self._build_card()
@@ -594,6 +623,13 @@ class SettingsPage(QWidget):
         self.library_update_meta_label.setWordWrap(True)
         self.library_update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
         library_updates_layout.addWidget(self.library_update_meta_label)
+
+        self.library_health_btn = QPushButton("Library Health Tools")
+        self.library_health_btn.setStyleSheet(BUTTON_STYLE)
+        self.library_health_btn.setMinimumWidth(180)
+        self.library_health_btn.setMinimumHeight(34)
+        self.library_health_btn.clicked.connect(self._open_library_health_report)
+        library_updates_layout.addWidget(self.library_health_btn)
 
         library_update_actions = QHBoxLayout()
         library_update_actions.setSpacing(8)
@@ -796,6 +832,10 @@ class SettingsPage(QWidget):
         save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
+        save_setting(LIBRARY_SHOW_BOOKMARKED_SECTION_KEY, True)
+        save_setting(LIBRARY_SHOW_CONTINUE_SECTION_KEY, True)
+        save_setting(LIBRARY_SHOW_UPDATES_SECTION_KEY, True)
+        save_setting(LIBRARY_SHOW_COMPLETED_SECTION_KEY, True)
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True)
         save_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False)
         save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60)
@@ -816,6 +856,22 @@ class SettingsPage(QWidget):
         self.show_downloads_section_checkbox.blockSignals(True)
         self.show_downloads_section_checkbox.setChecked(True)
         self.show_downloads_section_checkbox.blockSignals(False)
+
+        self.show_bookmarked_section_checkbox.blockSignals(True)
+        self.show_bookmarked_section_checkbox.setChecked(True)
+        self.show_bookmarked_section_checkbox.blockSignals(False)
+
+        self.show_continue_section_checkbox.blockSignals(True)
+        self.show_continue_section_checkbox.setChecked(True)
+        self.show_continue_section_checkbox.blockSignals(False)
+
+        self.show_updates_smart_section_checkbox.blockSignals(True)
+        self.show_updates_smart_section_checkbox.setChecked(True)
+        self.show_updates_smart_section_checkbox.blockSignals(False)
+
+        self.show_completed_section_checkbox.blockSignals(True)
+        self.show_completed_section_checkbox.setChecked(True)
+        self.show_completed_section_checkbox.blockSignals(False)
 
         self.check_updates_on_startup_checkbox.blockSignals(True)
         self.check_updates_on_startup_checkbox.setChecked(True)
@@ -910,6 +966,26 @@ class SettingsPage(QWidget):
         self._set_settings_status("Library settings saved.")
         self.main_window.library.load_library()
 
+    def _on_show_bookmarked_section_changed(self, checked: bool):
+        save_setting(LIBRARY_SHOW_BOOKMARKED_SECTION_KEY, checked)
+        self.main_window.library.load_library()
+        self.status_label.setText("Library sections updated.")
+
+    def _on_show_continue_section_changed(self, checked: bool):
+        save_setting(LIBRARY_SHOW_CONTINUE_SECTION_KEY, checked)
+        self.main_window.library.load_library()
+        self.status_label.setText("Library sections updated.")
+
+    def _on_show_updates_smart_section_changed(self, checked: bool):
+        save_setting(LIBRARY_SHOW_UPDATES_SECTION_KEY, checked)
+        self.main_window.library.load_library()
+        self.status_label.setText("Library sections updated.")
+
+    def _on_show_completed_section_changed(self, checked: bool):
+        save_setting(LIBRARY_SHOW_COMPLETED_SECTION_KEY, checked)
+        self.main_window.library.load_library()
+        self.status_label.setText("Library sections updated.")
+
     def _on_show_downloads_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, checked)
         logger.info("Library Active Downloads section visibility changed: %s", checked)
@@ -950,6 +1026,10 @@ class SettingsPage(QWidget):
         logger.info("Library update interval changed: %s minutes", minutes)
         self._set_settings_status("Library update settings saved.")
         self.main_window.refresh_library_update_schedule()
+
+    def _open_library_health_report(self):
+        dialog = LibraryHealthDialog(self.main_window, self)
+        dialog.exec()
 
     def _check_library_updates_now(self):
         if self.main_window.run_library_update_check(reason="settings_manual"):
@@ -1687,4 +1767,20 @@ class SettingsPage(QWidget):
     def _open_releases_page(self):
         logger.info("Opening releases page url=%s", GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
