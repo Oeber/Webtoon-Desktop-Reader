@@ -41,6 +41,7 @@ VIEWER_FOCUS_MODE_KEY = "viewer_focus_mode"
 VIEWER_CHROME_VISIBLE_KEY = "viewer_chrome_visible"
 VIEWER_MINIMAP_VISIBLE_KEY = "viewer_minimap_visible"
 VIEWER_SCENE_ANCHORS_VISIBLE_KEY = "viewer_scene_anchors_visible"
+DISCOVERY_DEFAULT_PROVIDER_KEY = "discovery_default_provider"
 LIBRARY_PATH_KEY = "library_path"
 
 _app_settings = get_app_settings_store()
@@ -52,6 +53,14 @@ def load_library_path() -> str:
 
 def save_library_path(path: str):
     _app_settings.set(LIBRARY_PATH_KEY, path)
+
+
+def load_default_discovery_provider() -> str:
+    return str(_app_settings.get(DISCOVERY_DEFAULT_PROVIDER_KEY, "") or "").strip()
+
+
+def save_default_discovery_provider(site_name: str):
+    _app_settings.set(DISCOVERY_DEFAULT_PROVIDER_KEY, str(site_name or "").strip())
 
 
 def load_setting(key: str, default):

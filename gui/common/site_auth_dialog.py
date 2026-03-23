@@ -30,6 +30,22 @@ from gui.common.styles import (
 logger = get_logger(__name__)
 
 
+class _QuietAuthWebEnginePage(QWebEnginePage):
+    _IGNORED_CONSOLE_PATTERNS = (
+        "Error with Permissions-Policy header: Unrecognized feature:",
+        "Failed to create WebGPU Context Provider",
+        "%c%d font-size:0;color:transparent NaN",
+    )
+
+    def javaScriptConsoleMessage(self, level, message: str, line_number: int, source_id: str):
+        text = " ".join(str(message or "").split())
+        if any(pattern in text for pattern in self._IGNORED_CONSOLE_PATTERNS):
+            return
+        source = str(source_id or "").strip() or "<inline>"
+        level_name = getattr(level, "name", None) or str(level)
+        logger.debug("Browser JS console [%s] %s (%s:%s)", level_name, text, source, line_number)
+
+
 class SiteAuthDialog(QDialog):
 
     def __init__(self, site_name: str, url: str = "", parent=None):
@@ -74,7 +90,7 @@ class SiteAuthDialog(QDialog):
         self.profile.setPersistentCookiesPolicy(QWebEngineProfile.NoPersistentCookies)
         self.profile.setHttpCacheType(QWebEngineProfile.MemoryHttpCache)
 
-        self.page = QWebEnginePage(self.profile, self)
+        self.page = _QuietAuthWebEnginePage(self.profile, self)
         self.page.loadStarted.connect(self._on_load_started)
         self.page.loadFinished.connect(self._on_load_finished)
         self.page.urlChanged.connect(self._on_url_changed)
@@ -426,11 +442,19 @@ class SiteAuthDialog(QDialog):
 
         if view is not None:
             try:
+                view.stop()
+            except Exception:
+                pass
+            try:
                 view.setPage(None)
             except Exception:
                 pass
 
         if page is not None:
+            try:
+                page.setUrl(QUrl("about:blank"))
+            except Exception:
+                pass
             try:
                 page.deleteLater()
             except Exception:
@@ -445,8 +469,11 @@ class SiteAuthDialog(QDialog):
             self.view = None
 
         if profile is not None:
-            try:
-                profile.deleteLater()
-            except Exception:
-                pass
             self.profile = None
+            QTimer.singleShot(0, lambda profile=profile: self._delete_profile_later(profile))
+
+    def _delete_profile_later(self, profile):
+        try:
+            profile.deleteLater()
+        except Exception:
+            pass

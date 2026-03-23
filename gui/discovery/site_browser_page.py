@@ -41,7 +41,7 @@ from gui.common.styles import (
 from gui.discovery.cover_loader import DiscoveryCoverLoader
 from gui.library.webtoon_card import CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH
 from library.library_manager import scan_library
-from stores.settings_store import load_library_path
+from stores.settings_store import load_default_discovery_provider, load_library_path
 from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.discovery_support import build_discovery_library_snapshot
@@ -550,6 +550,7 @@ class SiteBrowserPage(QWidget):
 
     def _reload_scrapers(self, load_catalog: bool = True):
         current_key = self.site_combo.currentData()
+        preferred_key = load_default_discovery_provider()
         providers = get_all_discovery_providers()
         providers.sort(key=lambda provider: provider.get_display_name().casefold())
         self._providers_by_key = {provider.site_name: provider for provider in providers}
@@ -567,6 +568,8 @@ class SiteBrowserPage(QWidget):
             return
 
         index = self.site_combo.findData(current_key)
+        if index < 0 and preferred_key:
+            index = self.site_combo.findData(preferred_key)
         self.site_combo.blockSignals(True)
         self.site_combo.setCurrentIndex(index if index >= 0 else 0)
         self.site_combo.blockSignals(False)

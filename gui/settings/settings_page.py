@@ -41,7 +41,7 @@ from core.app_update import (
     load_last_update_error,
 )
 from core.app_logging import archived_log_paths, current_log_path, get_logger
-from scrapers.discovery_registry import get_all_discovery_providers_including_disabled
+from scrapers.discovery_registry import get_all_discovery_providers, get_all_discovery_providers_including_disabled
 from scrapers.registry import get_all_scrapers_including_disabled
 from scrapers.site_availability import (
     MODE_ALL_DISABLED,
@@ -79,8 +79,10 @@ from stores.settings_store import (
     LIBRARY_USE_CATEGORIES_KEY,
     VIEWER_AUTO_SKIP_KEY,
     VIEWER_ZOOM_KEY,
+    load_default_discovery_provider,
     load_library_path,
     load_setting,
+    save_default_discovery_provider,
     save_library_path,
     save_setting,
     save_settings,
@@ -346,6 +348,7 @@ class SettingsPage(QWidget):
         self._logs_loaded = False
         self._source_mode_boxes = {}
         self._source_reliability_widgets = {}
+        self._default_discovery_provider_checkboxes = {}
         self._reliability_test_workers = {}
         self._pending_reliability_popup_site = ""
         self._pending_source_authorization = None
@@ -389,6 +392,7 @@ class SettingsPage(QWidget):
         self._open_refresh_timer.start(0)
 
     def _run_open_refresh(self):
+        self._refresh_default_discovery_provider_checkboxes()
         self.refresh_scraper_reliability()
 
     def open_logs_tab(self):
@@ -732,11 +736,12 @@ class SettingsPage(QWidget):
         sources_header.addStretch()
         sources_layout.addLayout(sources_header)
 
-        sources_help = QLabel("Choose whether each source stays fully on, is hidden from Discover only, or is disabled for discovery and downloads. Click a source status badge to test it and view details.")
+        sources_help = QLabel("Choose whether each source stays fully on, is hidden from Discover only, or is disabled for discovery and downloads. Click a source status badge to test it and view details. Mark one Discover source as the default if you want Discover to open there first.")
         sources_help.setWordWrap(True)
         sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         sources_layout.addWidget(sources_help)
         self._build_source_checkboxes(sources_layout)
+        self._refresh_default_discovery_provider_checkboxes()
 
         layout.addWidget(sources_card)
 
@@ -839,6 +844,7 @@ class SettingsPage(QWidget):
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True)
         save_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False)
         save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60)
+        save_default_discovery_provider("")
         save_site_availability({})
 
         self.auto_skip_checkbox.blockSignals(True)
@@ -885,6 +891,7 @@ class SettingsPage(QWidget):
         self._set_library_update_interval_selection(60)
         self.library_update_interval_combo.blockSignals(False)
 
+        self._refresh_default_discovery_provider_checkboxes()
         self._refresh_source_checkboxes()
         self.refresh_scraper_reliability()
         self.refresh_library_update_status()
@@ -1076,6 +1083,7 @@ class SettingsPage(QWidget):
     def _build_source_checkboxes(self, layout: QVBoxLayout):
         self._source_mode_boxes = {}
         self._source_reliability_widgets = {}
+        self._default_discovery_provider_checkboxes = {}
         badge_buttons = []
         for row in self._source_rows():
             site_name = row["site_name"]
@@ -1089,6 +1097,15 @@ class SettingsPage(QWidget):
             label = QLabel(self._source_checkbox_label(row))
             label.setStyleSheet(TEXT_MUTED_BODY_STYLE)
             row_layout.addWidget(label, 1)
+
+            if row.get("discover"):
+                default_checkbox = QCheckBox("Default")
+                default_checkbox.setStyleSheet(CHECKBOX_STYLE)
+                default_checkbox.toggled.connect(
+                    lambda checked, site_name=site_name: self._on_default_discovery_provider_toggled(site_name, checked)
+                )
+                row_layout.addWidget(default_checkbox, 0, Qt.AlignVCenter)
+                self._default_discovery_provider_checkboxes[site_name] = default_checkbox
 
             mode_box = QComboBox()
             mode_box.setStyleSheet(INPUT_STYLE)
@@ -1239,6 +1256,47 @@ class SettingsPage(QWidget):
         else:
             self._set_settings_status("Source authorization was cancelled.")
 
+    def _refresh_default_discovery_provider_checkboxes(self):
+        saved_site_name = load_default_discovery_provider()
+        available_sites = {
+            getattr(provider, "site_name", "")
+            for provider in get_all_discovery_providers()
+            if getattr(provider, "site_name", "")
+        }
+        if saved_site_name and saved_site_name not in available_sites:
+            save_default_discovery_provider("")
+            saved_site_name = ""
+
+        for site_name, checkbox in self._default_discovery_provider_checkboxes.items():
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(saved_site_name) and site_name == saved_site_name)
+            checkbox.setEnabled(site_name in available_sites)
+            checkbox.setToolTip(
+                "Open Discover on this source by default." if site_name in available_sites else "This source is not currently available in Discover."
+            )
+            checkbox.blockSignals(False)
+
+    def _on_default_discovery_provider_toggled(self, site_name: str, checked: bool):
+        normalized_site_name = str(site_name or "").strip()
+        saved_site_name = load_default_discovery_provider()
+        if checked:
+            save_default_discovery_provider(normalized_site_name)
+            logger.info("Default discovery provider changed: %s", normalized_site_name)
+            self._set_settings_status("Source settings saved.")
+            self._refresh_default_discovery_provider_checkboxes()
+            self.main_window.reload_scraper_availability()
+            return
+
+        if saved_site_name != normalized_site_name:
+            self._refresh_default_discovery_provider_checkboxes()
+            return
+
+        save_default_discovery_provider("")
+        logger.info("Default discovery provider changed: <auto>")
+        self._set_settings_status("Source settings saved.")
+        self._refresh_default_discovery_provider_checkboxes()
+        self.main_window.reload_scraper_availability()
+
     def _source_checkbox_label(self, row: dict) -> str:
         capabilities = []
         if row.get("download"):
@@ -1287,6 +1345,7 @@ class SettingsPage(QWidget):
         set_site_availability_mode(site_name, mode)
         logger.info("Scraper site availability changed for %s mode=%s", site_name, mode)
         self._set_settings_status("Source settings saved.")
+        self._refresh_default_discovery_provider_checkboxes()
         self._refresh_source_checkboxes()
         self.refresh_scraper_reliability()
         self.main_window.reload_scraper_availability()
