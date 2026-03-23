@@ -776,6 +776,27 @@ class ViewerPage(QWidget):
 
         return not (bar.value() < target_px - 5)
 
+    def _capture_layout_anchor(self, changed_indexes: list[int]) -> float | None:
+        if (
+            not changed_indexes
+            or not self.image_labels
+            or self._restore_image_index is not None
+            or self._applying_restore
+            or self._resize_packed is not None
+        ):
+            return None
+
+        current_index = self.image_index_at_offset(self.scroll.verticalScrollBar().value())
+        if min(changed_indexes) > current_index:
+            return None
+        return self._current_packed_position()
+
+    def _restore_layout_anchor(self, packed: float | None) -> None:
+        if packed is None or not self.image_labels:
+            return
+        idx = max(0, min(len(self.image_labels) - 1, int(packed)))
+        self._jump_to_packed(idx, packed - int(packed))
+
     def _on_image_ready(self, index: int, pixmap: QPixmap):
         if index >= len(self.image_labels):
             return
@@ -811,6 +832,7 @@ class ViewerPage(QWidget):
         if not self._pending_batch:
             return
 
+        anchor = self._capture_layout_anchor(list(self._pending_batch.keys()))
         self.container.setUpdatesEnabled(False)
         try:
             needs_restore_check = False
@@ -835,6 +857,7 @@ class ViewerPage(QWidget):
         self._invalidate_panel_cache()
         self.check_visible_images()
         self._panel_warm_timer.start()
+        self._restore_layout_anchor(anchor)
 
         if self._resize_packed is not None:
             idx = int(self._resize_packed)
@@ -1394,10 +1417,12 @@ class ViewerPage(QWidget):
         label._natural_width = natural_w
         label._natural_height = natural_h
         if getattr(label, '_source_pixmap', None) is None and natural_w > 0 and natural_h > 0:
+            anchor = self._capture_layout_anchor([index])
             aspect = natural_h / natural_w
             scaled_h = max(100, int(self._image_width() * aspect))
             label.setFixedHeight(scaled_h)
             self._set_label_height_cache(index, scaled_h)
+            self._restore_layout_anchor(anchor)
         self.preview.notify_image_loaded()
 
     def _get_panel_ranges(self) -> list[tuple[int, int]]:
