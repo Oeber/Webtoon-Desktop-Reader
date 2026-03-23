@@ -508,6 +508,62 @@ VIEWER_RESUME_DIALOG_STYLE = f"""
 """
 VIEWER_RESUME_RESTART_BUTTON_STYLE = "QPushButton{background:#231716;color:#ffd7cf;} QPushButton:hover{background:#2c1c1b;}"
 VIEWER_RESUME_CONTINUE_BUTTON_STYLE = "QPushButton{background:#ff8a7a;color:#140d0d;} QPushButton:hover{background:#ff9e90;}"
+VIEWER_TOOLBAR_STYLE = """
+    QWidget#viewerToolbar {
+        background: rgba(17, 12, 12, 236);
+        border: 1px solid rgba(112, 69, 64, 220);
+        border-radius: 12px;
+    }
+"""
+VIEWER_TOOLBAR_BUTTON_STYLE = """
+    QPushButton {
+        background: transparent;
+        color: #d8b7b0;
+        border: 1px solid transparent;
+        border-radius: 8px;
+        padding: 0;
+    }
+    QPushButton:hover {
+        background: rgba(43, 28, 27, 220);
+        color: #fff0ec;
+        border-color: rgba(255, 138, 122, 180);
+    }
+    QPushButton:checked {
+        background: rgba(255, 138, 122, 34);
+        color: #fff0ec;
+        border-color: rgba(255, 138, 122, 220);
+    }
+    QPushButton:disabled {
+        color: #624a46;
+        border-color: transparent;
+    }
+"""
+VIEWER_TOOLBAR_COMBO_STYLE = f"""
+    QComboBox {{
+        background: rgba(24, 18, 18, 236);
+        border: 1px solid {BORDER};
+        border-radius: 8px;
+        padding: 4px 28px 4px 10px;
+        color: {TEXT};
+        min-width: 170px;
+        font-size: 12px;
+    }}
+    QComboBox:hover {{
+        border-color: {ACCENT};
+    }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 24px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: {SURFACE};
+        color: {TEXT};
+        border: 1px solid {BORDER};
+        outline: none;
+        selection-background-color: #2b1c1b;
+        selection-color: {TEXT};
+    }}
+"""
 VIEWER_ZOOM_LABEL_STYLE = "color: #d8b7b0; font-size: 12px;"
 VIEWER_ZOOM_BUTTON_STYLE = """
     QPushButton {

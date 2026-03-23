@@ -3,6 +3,7 @@ import time
 from pathlib import Path
 from bisect import bisect_right
 
+import qtawesome as qta
 from core.app_logging import get_logger
 from core.app_paths import data_path
 from PySide6.QtWidgets import (
@@ -17,6 +18,9 @@ from gui.common.styles import (
     LOADING_DETAIL_LABEL_STYLE,
     LOADING_TITLE_LABEL_STYLE,
     VIEWER_LOADING_OVERLAY_STYLE,
+    VIEWER_TOOLBAR_BUTTON_STYLE,
+    VIEWER_TOOLBAR_COMBO_STYLE,
+    VIEWER_TOOLBAR_STYLE,
     VIEWER_ZOOM_BUTTON_STYLE,
     VIEWER_ZOOM_LABEL_STYLE,
 )
@@ -62,6 +66,9 @@ PREVIEW_EAGER_COUNT = 4
 PREVIEW_BATCH_SIZE = 16
 PREVIEW_BATCH_MS = 24
 SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
+VIEWER_TOOLBAR_ICON_SIZE = QSize(16, 16)
+VIEWER_TOOLBAR_BUTTON_SIZE = 30
+VIEWER_TOOLBAR_TRIGGER_HEIGHT = 96
 logger = get_logger(__name__)
 
 
@@ -135,90 +142,56 @@ class ViewerPage(QWidget):
         self._chapter_scene_marks: list[dict] = []
         # Maps selector combo index to real webtoon.chapters index (used when skip_specials is on)
         self._chapter_index_map: list[int] = []
+        self._toolbar_hover_active = False
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
         self.top_bar_widget = QWidget(self)
+        self.top_bar_widget.setObjectName("viewerToolbar")
+        self.top_bar_widget.setStyleSheet(VIEWER_TOOLBAR_STYLE)
+        self.top_bar_widget.setAttribute(Qt.WA_StyledBackground, True)
+        self.top_bar_widget.setMouseTracking(True)
         top_bar = QHBoxLayout(self.top_bar_widget)
-        top_bar.setContentsMargins(6, 6, 6, 6)
-        top_bar.setSpacing(6)
+        top_bar.setContentsMargins(8, 8, 8, 8)
+        top_bar.setSpacing(4)
 
-        self.back_button = QPushButton("Back")
-        self.back_button.setFocusPolicy(Qt.NoFocus)
-        self.back_button.clicked.connect(self.go_back)
+        self._toolbar_hide_timer = QTimer(self)
+        self._toolbar_hide_timer.setSingleShot(True)
+        self._toolbar_hide_timer.setInterval(180)
+        self._toolbar_hide_timer.timeout.connect(self._hide_toolbar_after_hover)
 
-        self.prev_button = QPushButton("Previous Chapter")
-        self.prev_button.setFocusPolicy(Qt.NoFocus)
-        self.prev_button.clicked.connect(self.prev_chapter)
+        self.setMouseTracking(True)
+        self.installEventFilter(self)
+        self.top_bar_widget.installEventFilter(self)
 
-        self.next_button = QPushButton("Next Chapter")
-        self.next_button.setFocusPolicy(Qt.NoFocus)
-        self.next_button.clicked.connect(self.next_chapter)
+        self.back_button = self._make_toolbar_button("fa5s.arrow-left", "Back to details", self.go_back)
+        self.prev_button = self._make_toolbar_button("fa5s.chevron-left", "Previous chapter", self.prev_chapter)
+        self.next_button = self._make_toolbar_button("fa5s.chevron-right", "Next chapter", self.next_chapter)
 
         self.chapter_selector = QComboBox()
         self.chapter_selector.setFocusPolicy(Qt.NoFocus)
+        self.chapter_selector.setStyleSheet(VIEWER_TOOLBAR_COMBO_STYLE)
+        self.chapter_selector.setMinimumWidth(170)
+        self.chapter_selector.setMaximumWidth(240)
         self.chapter_selector.currentIndexChanged.connect(self.load_selected_chapter)
 
-        self.nav_toggle = QPushButton("Auto Skip")
-        self.nav_toggle.setCheckable(True)
+        self.nav_toggle = self._make_toolbar_button("fa5s.magic", "Auto Skip", self._toggle_navigation_mode, checkable=True)
         self.nav_toggle.setChecked(self.auto_skip_enabled)
 
-        if not self.auto_skip_enabled:
-            self.nav_toggle.setText("Standard")
-        self.nav_toggle.setFocusPolicy(Qt.NoFocus)
-        self.nav_toggle.clicked.connect(self._toggle_navigation_mode)
-
-        self.save_scene_btn = QPushButton("Save Scene")
-        self.save_scene_btn.setFocusPolicy(Qt.NoFocus)
-        self.save_scene_btn.setToolTip("Save the current scene with an optional note")
-        self.save_scene_btn.clicked.connect(self._save_scene_bookmark)
-
-        self.scene_list_btn = QPushButton("Scenes")
-        self.scene_list_btn.setFocusPolicy(Qt.NoFocus)
-        self.scene_list_btn.setToolTip("Open saved scenes for this chapter")
-        self.scene_list_btn.clicked.connect(self._open_scene_bookmarks)
-
-        self.focus_mode_btn = QPushButton("Focus")
-        self.focus_mode_btn.setCheckable(True)
+        self.save_scene_btn = self._make_toolbar_button("fa5s.bookmark", "Save the current scene with an optional note", self._save_scene_bookmark)
+        self.scene_list_btn = self._make_toolbar_button("fa5s.images", "Open saved scenes for this chapter", self._open_scene_bookmarks)
+        self.focus_mode_btn = self._make_toolbar_button("fa5s.bullseye", "Focused reading mode", self._toggle_focus_mode, checkable=True)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
-        self.focus_mode_btn.setFocusPolicy(Qt.NoFocus)
-        self.focus_mode_btn.setToolTip("Focused reading mode")
-        self.focus_mode_btn.clicked.connect(self._toggle_focus_mode)
-
-        self.chrome_btn = QPushButton("Hide UI")
-        self.chrome_btn.setCheckable(True)
+        self.chrome_btn = self._make_toolbar_button("fa5s.window-minimize", "Show or hide the reader toolbar", self._toggle_chrome, checkable=True)
         self.chrome_btn.setChecked(self._chrome_visible)
-        self.chrome_btn.setFocusPolicy(Qt.NoFocus)
-        self.chrome_btn.setToolTip("Show or hide the reader toolbar")
-        self.chrome_btn.clicked.connect(self._toggle_chrome)
-
-        self.minimap_btn = QPushButton("Mini-map")
-        self.minimap_btn.setCheckable(True)
+        self.minimap_btn = self._make_toolbar_button("fa5s.map", "Show or hide the reading mini-map", self._toggle_minimap, checkable=True)
         self.minimap_btn.setChecked(self._minimap_visible)
-        self.minimap_btn.setFocusPolicy(Qt.NoFocus)
-        self.minimap_btn.setToolTip("Show or hide the reading mini-map")
-        self.minimap_btn.clicked.connect(self._toggle_minimap)
-
-        self.anchors_btn = QPushButton("Anchors")
-        self.anchors_btn.setCheckable(True)
+        self.anchors_btn = self._make_toolbar_button("fa5s.map-pin", "Show or hide saved scene anchors on the mini-map", self._toggle_scene_anchors, checkable=True)
         self.anchors_btn.setChecked(self._scene_anchors_visible)
-        self.anchors_btn.setFocusPolicy(Qt.NoFocus)
-        self.anchors_btn.setToolTip("Show or hide saved scene anchors on the mini-map")
-        self.anchors_btn.clicked.connect(self._toggle_scene_anchors)
-
-        zoom_out_btn = QPushButton("-")
-        zoom_out_btn.setFixedWidth(28)
-        zoom_out_btn.setFocusPolicy(Qt.NoFocus)
-        zoom_out_btn.setToolTip("Decrease image width")
-        zoom_out_btn.clicked.connect(self._zoom_out)
-
-        zoom_in_btn = QPushButton("+")
-        zoom_in_btn.setFixedWidth(28)
-        zoom_in_btn.setFocusPolicy(Qt.NoFocus)
-        zoom_in_btn.setToolTip("Increase image width")
-        zoom_in_btn.clicked.connect(self._zoom_in)
+        self.zoom_out_btn = self._make_toolbar_button("fa5s.search-minus", "Decrease image width", self._zoom_out)
+        self.zoom_in_btn = self._make_toolbar_button("fa5s.search-plus", "Increase image width", self._zoom_in)
 
         self._zoom_slider = QSlider(Qt.Horizontal)
         self._zoom_slider.setFixedWidth(100)
@@ -253,13 +226,12 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.minimap_btn)
         top_bar.addWidget(self.anchors_btn)
         top_bar.addStretch()
-        top_bar.addWidget(zoom_out_btn)
+        top_bar.addWidget(self.zoom_out_btn)
         top_bar.addWidget(self._zoom_slider)
-        top_bar.addWidget(zoom_in_btn)
+        top_bar.addWidget(self.zoom_in_btn)
         top_bar.addWidget(self._zoom_label)
-        top_bar.addSpacing(8)
+        top_bar.addSpacing(4)
         top_bar.addWidget(self._zoom_reset_btn)
-        main_layout.addWidget(self.top_bar_widget)
 
         content_row = QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
@@ -363,6 +335,57 @@ class ViewerPage(QWidget):
         )
         self._apply_reader_session_state(persist=False)
 
+    def _make_toolbar_button(self, icon_name: str, tooltip: str, callback, *, checkable: bool = False) -> QPushButton:
+        button = QPushButton()
+        button.setFocusPolicy(Qt.NoFocus)
+        button.setCheckable(checkable)
+        button.setFixedSize(VIEWER_TOOLBAR_BUTTON_SIZE, VIEWER_TOOLBAR_BUTTON_SIZE)
+        button.setIcon(qta.icon(icon_name, color="#ffd7cf"))
+        button.setIconSize(VIEWER_TOOLBAR_ICON_SIZE)
+        button.setToolTip(tooltip)
+        button.setStyleSheet(VIEWER_TOOLBAR_BUTTON_STYLE)
+        button.clicked.connect(callback)
+        return button
+
+    def _position_toolbar(self):
+        if not hasattr(self, "top_bar_widget"):
+            return
+        self.top_bar_widget.adjustSize()
+        hint = self.top_bar_widget.sizeHint()
+        width = min(hint.width(), max(220, self.width() - 24))
+        x = max(12, (self.width() - width) // 2)
+        self.top_bar_widget.setGeometry(x, 12, width, hint.height())
+        self.top_bar_widget.raise_()
+
+    def _set_toolbar_hover_active(self, active: bool):
+        active = bool(active)
+        if self._toolbar_hover_active == active:
+            return
+        self._toolbar_hover_active = active
+        self._apply_toolbar_visibility()
+
+    def _toolbar_popup_open(self) -> bool:
+        selector = getattr(self, "chapter_selector", None)
+        if selector is None:
+            return False
+        view = selector.view()
+        return bool(view is not None and view.isVisible())
+
+    def _hide_toolbar_after_hover(self):
+        if self.top_bar_widget.underMouse() or self._toolbar_popup_open():
+            return
+        self._set_toolbar_hover_active(False)
+
+    def _apply_toolbar_visibility(self):
+        if not hasattr(self, "top_bar_widget"):
+            return
+        should_show = self._chrome_visible and (
+            self._toolbar_hover_active or self.top_bar_widget.underMouse() or self._toolbar_popup_open()
+        )
+        self.top_bar_widget.setVisible(should_show)
+        if should_show:
+            self._position_toolbar()
+
     def load_webtoon(self, webtoon, start_chapter: int = 0, start_scroll: float = 0.0):
         logger.info(
             "Viewer loading webtoon=%s chapter_index=%d start_scroll=%.3f",
@@ -379,17 +402,19 @@ class ViewerPage(QWidget):
         self._load_chapter_no_prompt(start_chapter)
 
     def _apply_reader_session_state(self, *, persist: bool = True):
-        self.top_bar_widget.setVisible(self._chrome_visible)
+        self._apply_toolbar_visibility()
         self.preview.setVisible(self._minimap_visible)
         self.preview.set_scene_marks_visible(self._scene_anchors_visible)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
-        self.focus_mode_btn.setText("Focus On" if self._focus_mode_enabled else "Focus")
         self.chrome_btn.setChecked(self._chrome_visible)
-        self.chrome_btn.setText("Hide UI" if self._chrome_visible else "Show UI")
         self.minimap_btn.setChecked(self._minimap_visible)
-        self.minimap_btn.setText("Hide Map" if self._minimap_visible else "Mini-map")
         self.anchors_btn.setChecked(self._scene_anchors_visible)
-        self.anchors_btn.setText("Hide Anchors" if self._scene_anchors_visible else "Anchors")
+        self.nav_toggle.setChecked(self.auto_skip_enabled)
+        self.nav_toggle.setToolTip("Auto Skip enabled" if self.auto_skip_enabled else "Standard page navigation")
+        self.focus_mode_btn.setToolTip("Focused reading mode on" if self._focus_mode_enabled else "Focused reading mode off")
+        self.chrome_btn.setToolTip("Reader toolbar hover reveal on" if self._chrome_visible else "Reader toolbar hidden")
+        self.minimap_btn.setToolTip("Mini-map visible" if self._minimap_visible else "Mini-map hidden")
+        self.anchors_btn.setToolTip("Scene anchors visible" if self._scene_anchors_visible else "Scene anchors hidden")
         self.anchors_btn.setEnabled(self._minimap_visible)
         self._position_session_overlay()
         self._update_session_overlay()
@@ -451,7 +476,7 @@ class ViewerPage(QWidget):
         if not self.webtoon or not (0 <= self.current_chapter_index < len(self.webtoon.chapters)):
             self._chapter_scene_marks = []
             self.preview.set_scene_marks([])
-            self.scene_list_btn.setText("Scenes")
+            self.scene_list_btn.setToolTip("No saved scenes for this chapter")
             self.scene_list_btn.setEnabled(False)
             self._update_session_overlay()
             return
@@ -463,7 +488,7 @@ class ViewerPage(QWidget):
         self._chapter_scene_marks = marks
         self.preview.set_scene_marks(marks)
         count = len(marks)
-        self.scene_list_btn.setText(f"Scenes ({count})" if count else "Scenes")
+        self.scene_list_btn.setToolTip(f"Open saved scenes for this chapter ({count})" if count else "Open saved scenes for this chapter")
         self.scene_list_btn.setEnabled(True)
         self._update_session_overlay()
 
@@ -926,7 +951,7 @@ class ViewerPage(QWidget):
         self.preview.set_image_labels([])
         self.preview.set_scene_marks([])
         self._chapter_scene_marks = []
-        self.scene_list_btn.setText("Scenes")
+        self.scene_list_btn.setToolTip("No saved scenes for this chapter")
         self.scene_list_btn.setEnabled(False)
         self._update_session_overlay()
 
@@ -1327,6 +1352,7 @@ class ViewerPage(QWidget):
     def resizeEvent(self, event):
         self._resize_timer.start()
         self._position_loading_overlay()
+        self._position_toolbar()
         super().resizeEvent(event)
 
     def _invalidate_panel_cache(self):
@@ -1718,7 +1744,8 @@ class ViewerPage(QWidget):
         return QCursor(pixmap, center, center)
 
     def _set_auto_scroll_direction(self, direction: int) -> None:
-        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        scroll_area = getattr(self, "scroll", None)
+        viewport = scroll_area.viewport() if isinstance(scroll_area, QScrollArea) else None
         if viewport is None or not self.auto_scroll:
             return
         normalized = -1 if direction < 0 else 1 if direction > 0 else 0
@@ -1728,7 +1755,8 @@ class ViewerPage(QWidget):
         viewport.setCursor(self._auto_scroll_cursors[normalized])
 
     def _set_auto_scroll_enabled(self, enabled: bool, *, origin: QPoint | None = None):
-        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        scroll_area = getattr(self, "scroll", None)
+        viewport = scroll_area.viewport() if isinstance(scroll_area, QScrollArea) else None
         if viewport is None:
             return
         self.auto_scroll = enabled
@@ -1746,58 +1774,78 @@ class ViewerPage(QWidget):
             viewport.unsetCursor()
 
     def eventFilter(self, obj, event):
+        if not hasattr(self, "top_bar_widget") or not hasattr(self, "_toolbar_hide_timer"):
+            return super().eventFilter(obj, event)
+
         container = getattr(self, "container", None)
         preview = getattr(self, "preview", None)
-        viewport = self.scroll.viewport() if hasattr(self, "scroll") else None
+        scroll_area = getattr(self, "scroll", None)
+        viewport = scroll_area.viewport() if isinstance(scroll_area, QScrollArea) else None
 
-        watched = tuple(x for x in (viewport, container, preview) if x is not None)
+        if isinstance(obj, QWidget):
+            handles_toolbar_hover = (
+                obj in (self, self.top_bar_widget)
+                or obj == viewport
+                or obj == container
+                or obj == preview
+                or (viewport is not None and viewport.isAncestorOf(obj))
+            )
+            if handles_toolbar_hover:
+                event_type = event.type()
+                if event_type in (QEvent.MouseMove, QEvent.Enter):
+                    local_pos = self.mapFromGlobal(obj.mapToGlobal(event.pos())) if hasattr(event, "pos") else QPoint()
+                    in_trigger_zone = 0 <= local_pos.y() <= VIEWER_TOOLBAR_TRIGGER_HEIGHT
+                    in_toolbar = self.top_bar_widget.geometry().contains(local_pos)
+                    if self._chrome_visible and (in_trigger_zone or in_toolbar or obj == self.top_bar_widget):
+                        self._toolbar_hide_timer.stop()
+                        self._set_toolbar_hover_active(True)
+                    elif obj != self.top_bar_widget and not in_toolbar and not self._toolbar_popup_open():
+                        self._toolbar_hide_timer.start()
+                elif event_type == QEvent.Leave and not self._toolbar_popup_open():
+                    self._toolbar_hide_timer.start()
 
-        if obj in watched:
-            if event.type() == QEvent.MouseButtonPress:
+        if isinstance(obj, QWidget) and (obj == viewport or obj == container or obj == preview or (viewport is not None and viewport.isAncestorOf(obj))):
+            event_type = event.type()
+            if event_type == QEvent.MouseButtonPress:
                 self.setFocus()
 
-            if viewport is not None and isinstance(obj, QWidget):
-                handles_scroll_area_event = obj == viewport or obj == container or obj == preview or viewport.isAncestorOf(obj)
-                if handles_scroll_area_event:
-                    event_type = event.type()
+            if (
+                self._restore_image_index is not None
+                and not self._applying_restore
+                and event_type in (QEvent.Wheel, QEvent.MouseButtonPress)
+            ):
+                self._clear_pending_restore()
 
-                    if (
-                        self._restore_image_index is not None
-                        and not self._applying_restore
-                        and event_type in (QEvent.Wheel, QEvent.MouseButtonPress)
-                    ):
-                        self._clear_pending_restore()
+            if event_type in (QEvent.MouseButtonPress, QEvent.MouseMove):
+                if obj == viewport:
+                    event_pos = event.pos()
+                else:
+                    event_pos = viewport.mapFromGlobal(obj.mapToGlobal(event.pos()))
 
-                    if event_type in (QEvent.MouseButtonPress, QEvent.MouseMove):
-                        if obj == viewport:
-                            event_pos = event.pos()
-                        else:
-                            event_pos = viewport.mapFromGlobal(obj.mapToGlobal(event.pos()))
+                if event_type == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
+                    self._set_auto_scroll_enabled(not self.auto_scroll, origin=event_pos)
+                    viewport.update()
+                    self.setFocus()
+                    return True
 
-                        if event_type == QEvent.MouseButtonPress and event.button() == Qt.MiddleButton:
-                            self._set_auto_scroll_enabled(not self.auto_scroll, origin=event_pos)
-                            viewport.update()
-                            self.setFocus()
-                            return True
+                if event_type == QEvent.MouseMove and self.auto_scroll:
+                    self.current_mouse_pos = event_pos
+                    self._set_auto_scroll_direction(event_pos.y() - self.auto_scroll_origin.y())
+                    viewport.update()
+                    return True
 
-                        if event_type == QEvent.MouseMove and self.auto_scroll:
-                            self.current_mouse_pos = event_pos
-                            self._set_auto_scroll_direction(event_pos.y() - self.auto_scroll_origin.y())
-                            viewport.update()
-                            return True
+                if (
+                    event_type == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton
+                    and self.auto_scroll
+                ):
+                    self._set_auto_scroll_enabled(False)
+                    viewport.update()
+                    self.setFocus()
+                    return True
 
-                        if (
-                            event_type == QEvent.MouseButtonPress
-                            and event.button() == Qt.LeftButton
-                            and self.auto_scroll
-                        ):
-                            self._set_auto_scroll_enabled(False)
-                            viewport.update()
-                            self.setFocus()
-                            return True
-
-                    if event_type in (QEvent.Leave, QEvent.Hide, QEvent.FocusOut) and self.auto_scroll:
-                        self._set_auto_scroll_enabled(False)
+            if event_type in (QEvent.Leave, QEvent.Hide, QEvent.FocusOut) and self.auto_scroll:
+                self._set_auto_scroll_enabled(False)
 
         return super().eventFilter(obj, event)
 
@@ -1815,13 +1863,10 @@ class ViewerPage(QWidget):
 
     def _toggle_navigation_mode(self):
         self.auto_skip_enabled = self.nav_toggle.isChecked()
-
-        if self.auto_skip_enabled:
-            self.nav_toggle.setText("Auto Skip")
-        else:
-            self.nav_toggle.setText("Standard")
-
         save_setting(VIEWER_AUTO_SKIP_KEY, self.auto_skip_enabled)
         logger.info("Viewer navigation mode changed auto_skip=%s", self.auto_skip_enabled)
-
+        self._apply_reader_session_state()
         self.setFocus()
+
+
+
