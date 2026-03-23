@@ -218,9 +218,9 @@ class ImageLoader(QObject):
                 self._panel_range_cache[path] = range_fractions
                 sample_rows = []
                 for sample_y in {0, max(0, image_height // 4), max(0, image_height // 2), max(0, (image_height * 3) // 4), max(0, image_height - 1)}:
-                    avg, variance, chroma, is_blank = self._blank_row_metrics(image, sample_y)
+                    avg, variance, chroma, occupied, is_blank = self._blank_row_metrics(image, sample_y)
                     sample_rows.append(
-                        f"y={sample_y}:avg={avg:.1f},var={variance:.1f},chroma={chroma:.1f},blank={is_blank}"
+                        f"y={sample_y}:avg={avg:.1f},var={variance:.1f},chroma={chroma:.1f},occupied={occupied:.3f},blank={is_blank}"
                     )
                 logger.info(
                     "Viewer panel analysis path=%s image_h=%d scaled_h=%d ranges=%s samples=[%s]",
@@ -275,17 +275,55 @@ class ImageLoader(QObject):
         if not ranges:
             return [(0.0, 1.0)]
 
-        return ranges
+        return self._merge_panel_ranges(ranges, image_height, row_step)
 
-    def _blank_row_metrics(self, image: QImage, y: int, sample_step: int = 12) -> tuple[float, float, float, bool]:
+    def _merge_panel_ranges(
+        self,
+        ranges: list[tuple[float, float]],
+        image_height: int,
+        row_step: int,
+    ) -> list[tuple[float, float]]:
+        if not ranges:
+            return [(0.0, 1.0)]
+
+        merged = [ranges[0]]
+        min_dialogue_gap = max(row_step * 3, 28) / image_height
+        short_dialogue_gap = max(84, int(image_height * 0.028)) / image_height
+        bridgeable_gap = max(148, int(image_height * 0.048)) / image_height
+        tiny_band = max(112, int(image_height * 0.036)) / image_height
+
+        for start, end in ranges[1:]:
+            prev_start, prev_end = merged[-1]
+            gap = max(0.0, start - prev_end)
+            prev_h = max(0.0, prev_end - prev_start)
+            curr_h = max(0.0, end - start)
+            neighbor_h = min(prev_h, curr_h) if prev_h and curr_h else max(prev_h, curr_h)
+
+            merge_gap = False
+            if gap <= min_dialogue_gap:
+                merge_gap = True
+            elif gap <= short_dialogue_gap and (prev_h <= tiny_band or curr_h <= tiny_band):
+                merge_gap = True
+            elif gap <= bridgeable_gap and neighbor_h > 0 and gap <= (neighbor_h * 0.22):
+                merge_gap = True
+
+            if merge_gap:
+                merged[-1] = (prev_start, max(prev_end, end))
+            else:
+                merged.append((start, end))
+
+        return merged or [(0.0, 1.0)]
+
+    def _blank_row_metrics(self, image: QImage, y: int, sample_step: int = 12) -> tuple[float, float, float, float, bool]:
         width = image.width()
         if width <= 0:
-            return (0.0, 0.0, 0.0, True)
+            return (0.0, 0.0, 0.0, 0.0, True)
 
         step = max(sample_step, width // 160)
         total = 0
         total_sq = 0
         total_chroma = 0
+        occupied = 0
         count = 0
 
         for x in range(0, width, step):
@@ -294,25 +332,31 @@ class ImageLoader(QObject):
             green = (rgb >> 8) & 0xFF
             blue = rgb & 0xFF
             lum = (299 * red + 587 * green + 114 * blue) // 255
+            chroma = max(red, green, blue) - min(red, green, blue)
             total += lum
             total_sq += lum * lum
-            total_chroma += max(red, green, blue) - min(red, green, blue)
+            total_chroma += chroma
+            if lum < 760 or chroma > 40:
+                occupied += 1
             count += 1
 
         if count == 0:
-            return (0.0, 0.0, 0.0, True)
+            return (0.0, 0.0, 0.0, 0.0, True)
 
         avg = total / count
         variance = (total_sq / count) - (avg * avg)
         avg_chroma = total_chroma / count
+        occupied_ratio = occupied / count
 
         is_extreme = avg < 120 or avg > 880
         is_uniform = variance < 3000
         is_soft_fade = variance < 900 and avg_chroma < 28
-        return (avg, variance, avg_chroma, (is_extreme and is_uniform) or is_soft_fade)
+        is_sparse = occupied_ratio <= 0.012 and variance < 2200
+        is_blank = ((is_extreme and is_uniform) or is_soft_fade) and is_sparse
+        return (avg, variance, avg_chroma, occupied_ratio, is_blank)
 
     def _is_blank_row(self, image: QImage, y: int, sample_step: int = 12) -> bool:
-        return self._blank_row_metrics(image, y, sample_step)[3]
+        return self._blank_row_metrics(image, y, sample_step)[4]
 
 
 class ChapterPreview(QWidget):

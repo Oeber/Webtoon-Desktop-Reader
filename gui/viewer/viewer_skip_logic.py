@@ -368,93 +368,95 @@ def build_skip_targets(
         return []
 
     targets = []
-    short_panel_max = int(view_h * 0.95)
-    tall_step = int(view_h * 0.78)
-    first_pad = int(view_h * 0.16)
-    min_target_gap = max(90, int(view_h * 0.18))
-    lookahead_window = int(view_h * 1.10)
-    content_bias = max(24, int(view_h * 0.05))
-    cluster_bottom_fraction = 0.72
+    short_panel_max = int(view_h * 1.42)
+    tall_step = max(88, int(view_h * 0.66))
+    min_target_gap = max(56, int(view_h * 0.10))
 
-    prev_end = 0
-    for index, (start, end) in enumerate(panels):
-        panel_h = end - start
-        leading_gap = max(0, start - prev_end)
-        entry_pad = max(0, first_pad - leading_gap)
+    def clamp_target(target: int) -> int:
+        return max(0, min(target, max_scroll))
 
-        if panel_h <= short_panel_max:
-            base_target = max(0, min(start - entry_pad, max_scroll))
-            best_target = base_target
-            anchor = (start, end)
-            best_score = score_panel_window(panels, base_target, view_h, anchor=anchor)
-            cluster_end = end
-            min_anchor_visible = max(80, min(panel_h, int(view_h * 0.28)))
+    def best_panel_target(
+        panel: tuple[int, int],
+        preferred: int,
+        *,
+        prefer_center: bool,
+        min_top: int | None = None,
+    ) -> int:
+        start, end = panel
+        panel_h = max(0, end - start)
+        centered = clamp_target(int((start + end - view_h) / 2))
+        spread = max(24, int(view_h * 0.08))
+        min_visible = max(120, min(panel_h, int(view_h * (0.52 if prefer_center else 0.34))))
+        candidates = {
+            clamp_target(preferred),
+            centered,
+            clamp_target(start),
+            clamp_target(end - view_h),
+        }
 
-            for look_index in range(index, len(panels)):
-                look_start, look_end = panels[look_index]
-                if look_start - start > lookahead_window:
-                    break
-                cluster_end = max(cluster_end, look_end)
-                cluster_mid_target = max(0, min(int((start + cluster_end - view_h) / 2), max_scroll))
-
-                candidates = {
-                    max(0, min(look_start - min(entry_pad, first_pad // 2), max_scroll)),
-                    max(0, min(look_end - int(view_h * cluster_bottom_fraction), max_scroll)),
-                    cluster_mid_target,
+        if panel_h > view_h:
+            candidates.update(
+                {
+                    clamp_target(start + int(panel_h * 0.16) - int(view_h * 0.08)),
+                    clamp_target(end - int(view_h * 0.82)),
+                    clamp_target(end - int(view_h * 0.68)),
                 }
+            )
 
-                for candidate in candidates:
-                    if visible_overlap(start, end, candidate, view_h) < min_anchor_visible:
-                        continue
-                    coverage = score_panel_window(panels, candidate, view_h, anchor=anchor)
-                    forward_bias = max(0, candidate - base_target)
-                    score = coverage + min(content_bias, forward_bias)
-                    if score > best_score or (score == best_score and candidate > best_target):
-                        best_target = candidate
-                        best_score = score
+        for delta in (-spread * 2, -spread, spread, spread * 2):
+            candidates.add(clamp_target(preferred + delta))
+            candidates.add(clamp_target(centered + delta))
 
-            targets.append(best_target)
-            prev_end = end
+        best_target = None
+        best_score = None
+        for candidate in candidates:
+            if min_top is not None and candidate < min_top:
+                continue
+            if visible_overlap(start, end, candidate, view_h) < min_visible:
+                continue
+
+            score = score_panel_window(panels, candidate, view_h, anchor=panel)
+            if prefer_center:
+                score -= abs(candidate - centered) * 2
+            else:
+                score -= abs(candidate - preferred)
+
+            if best_score is None or score > best_score or (score == best_score and candidate > best_target):
+                best_target = candidate
+                best_score = score
+
+        fallback = centered if prefer_center else clamp_target(preferred)
+        if min_top is not None:
+            fallback = clamp_target(max(fallback, min_top))
+        return best_target if best_target is not None else fallback
+
+    for start, end in panels:
+        panel_h = max(0, end - start)
+        if panel_h <= 0:
             continue
 
-        anchor = (start, end)
-        first_target = max(0, start - min(entry_pad, int(view_h * 0.08)))
-        last_target = max(first_target, end - int(view_h * 0.80))
-        probe_span = max(24, int(view_h * 0.12))
+        if panel_h <= short_panel_max:
+            targets.append(best_panel_target((start, end), int((start + end - view_h) / 2), prefer_center=True))
+            continue
 
-        target = first_target
-        while target < last_target - 8:
-            probe_candidates = {
-                max(0, min(target, max_scroll)),
-                max(0, min(target + probe_span, max_scroll)),
-                max(0, min(target - probe_span, max_scroll)),
-            }
+        first_target = best_panel_target((start, end), start, prefer_center=False)
+        last_target = clamp_target(end - view_h)
+        targets.append(first_target)
 
-            best_target = None
-            best_score = None
-            for candidate in probe_candidates:
-                score = score_panel_window(panels, candidate, view_h, anchor=anchor)
-                if best_score is None or score > best_score or (score == best_score and candidate > best_target):
-                    best_target = candidate
-                    best_score = score
+        current = first_target
+        while current < last_target:
+            preferred = clamp_target(min(last_target, current + tall_step))
+            min_top = current + max(48, int(view_h * 0.10))
+            next_target = best_panel_target((start, end), preferred, prefer_center=False, min_top=min_top)
+            if next_target <= current:
+                break
+            targets.append(next_target)
+            if next_target == last_target:
+                break
+            current = next_target
 
-            targets.append(max(0, best_target if best_target is not None else target))
-            target += tall_step
-
-        end_candidates = {
-            max(0, min(last_target, max_scroll)),
-            max(0, min(last_target - probe_span, max_scroll)),
-        }
-        best_end_target = None
-        best_end_score = None
-        for candidate in end_candidates:
-            score = score_panel_window(panels, candidate, view_h, anchor=anchor)
-            if best_end_score is None or score > best_end_score or (score == best_end_score and candidate > best_end_target):
-                best_end_target = candidate
-                best_end_score = score
-
-        targets.append(max(0, best_end_target if best_end_target is not None else last_target))
-        prev_end = end
-
-    targets = [max(0, min(target, max_scroll)) for target in sorted(set(targets))]
-    return merge_close_targets(targets, min_target_gap)
+    targets = [clamp_target(target) for target in sorted(set(targets))]
+    merged_targets = merge_close_targets(targets, min_target_gap)
+    if targets and merged_targets and targets[-1] > merged_targets[-1]:
+        merged_targets.append(targets[-1])
+    return merged_targets

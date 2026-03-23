@@ -26,16 +26,7 @@ from gui.common.styles import (
 )
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.viewer.viewer_skip_logic import (
-    best_existing_target_for_panel,
-    bottom_carryover_panel,
     build_skip_targets,
-    edge_safe_target,
-    expand_panel_to_cluster,
-    lowest_fully_visible_panel_end,
-    nearest_existing_target_for_panel,
-    next_panel_after,
-    visible_content_overlap_between_windows,
-    visible_overlap,
 )
 from gui.viewer.viewer_support import (
     ChapterPreview,
@@ -1459,8 +1450,6 @@ class ViewerPage(QWidget):
         bar = self.scroll.verticalScrollBar()
         view_h = self.scroll.viewport().height()
         pos = bar.value()
-        center = pos + view_h / 2
-
         if move_down or move_up:
             direction_key = Qt.Key_Down if move_down else Qt.Key_Up
 
@@ -1481,152 +1470,22 @@ class ViewerPage(QWidget):
                 return
 
             SNAP = max(32, int(view_h * 0.07))
-            MIN_MOVE = max(80, int(view_h * 0.16))
+            MIN_MOVE = max(56, int(view_h * 0.10))
 
             if direction_key == Qt.Key_Down:
-                panels = self._get_panel_ranges()
-                carryover_panel = bottom_carryover_panel(panels, pos, view_h) if panels else None
-                if carryover_panel is not None:
-                    carry_target = None
-                    carryover_h = carryover_panel[1] - carryover_panel[0]
-                    if carryover_h <= int(view_h * 1.18):
-                        lower_bias_top = max(
-                            pos + max(24, int(view_h * 0.04)),
-                            carryover_panel[1] - int(view_h * 0.74),
-                        )
-                        carry_target = nearest_existing_target_for_panel(
-                            targets,
-                            carryover_panel,
-                            pos,
-                            view_h,
-                            min_top=lower_bias_top,
-                        )
-                        if carry_target is None:
-                            carry_target = min(bar.maximum(), lower_bias_top)
+                next_index = bisect_right(targets, pos + SNAP)
+                while next_index < len(targets) and (targets[next_index] - pos) < MIN_MOVE:
+                    next_index += 1
 
-                    if carry_target is None and carryover_h > int(view_h * 1.18):
-                        carry_target = best_existing_target_for_panel(
-                            targets,
-                            panels,
-                            carryover_panel,
-                            pos,
-                            view_h,
-                        )
-                    if carry_target is not None:
-                        logger.info(
-                            "Viewer auto-skip down carryover pos=%d view_h=%d carryover=%s target=%d",
-                            pos,
-                            view_h,
-                            carryover_panel,
-                            carry_target,
-                        )
-                        carry_target = edge_safe_target(targets, panels, carry_target, pos, view_h)
-                        self._jump_to_target(carry_target)
-                        return
-
-                consumed_end = lowest_fully_visible_panel_end(panels, pos, view_h) if panels else None
-                if consumed_end is not None:
-                    next_panel = next_panel_after(
-                        panels,
-                        consumed_end,
-                        min_gap=max(24, int(view_h * 0.03)),
-                    )
-                    if next_panel is not None:
-                        next_cluster = expand_panel_to_cluster(panels, next_panel, view_h)
-                        reveal_pad = max(18, int(view_h * 0.06))
-                        min_target = consumed_end + max(12, int(view_h * 0.02))
-                        cluster_h = next_cluster[1] - next_cluster[0]
-                        centered_target = int((next_cluster[0] + next_cluster[1] - view_h) / 2)
-                        if cluster_h <= int(view_h * 1.08):
-                            desired_target = max(min_target, centered_target)
-                        else:
-                            desired_target = max(min_target, next_cluster[0] - reveal_pad)
-                        gap_before_next = max(0, next_cluster[0] - consumed_end)
-
-                        existing_target = nearest_existing_target_for_panel(
-                            targets,
-                            next_cluster,
-                            pos,
-                            view_h,
-                            min_top=min_target,
-                        )
-                        if existing_target is not None and existing_target <= next_cluster[0] + int(view_h * 0.03):
-                            next_panel_target = existing_target
-                        elif gap_before_next <= int(view_h * 0.22):
-                            next_panel_target = desired_target
-                        elif existing_target is not None:
-                            next_panel_target = existing_target
-                        else:
-                            next_panel_target = min_target
-
-                        logger.info(
-                            "Viewer auto-skip down next-panel pos=%d view_h=%d consumed_end=%s next_panel=%s target=%d",
-                            pos,
-                            view_h,
-                            consumed_end,
-                            next_cluster,
-                            next_panel_target,
-                        )
-                        next_panel_target = edge_safe_target(targets, panels, next_panel_target, pos, view_h)
-                        self._jump_to_target(next_panel_target)
-                        return
-
-                next_target = next(
-                    (t for t in targets if (t + view_h / 2) > center + SNAP),
-                    None
-                )
-
-                if next_target is not None:
-                    while next_target is not None and (next_target - pos) < MIN_MOVE:
-                        next_target = next(
-                            (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
-                            None
-                        )
-
-                MAX_REPEAT = int(view_h * 0.34)
-                if next_target is not None and panels:
-                    min_target_from_consumed = None
-                    if consumed_end is not None:
-                        min_target_from_consumed = consumed_end + max(12, int(view_h * 0.02))
-                    min_carryover_visible = None
-                    if carryover_panel is not None:
-                        carryover_h = carryover_panel[1] - carryover_panel[0]
-                        min_carryover_visible = max(120, min(carryover_h, int(view_h * 0.24)))
-
-                    while next_target is not None:
-                        if min_target_from_consumed is not None and next_target < min_target_from_consumed:
-                            next_target = next(
-                                (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
-                                None
-                            )
-                            continue
-                        if (
-                            carryover_panel is not None and
-                            min_carryover_visible is not None and
-                            visible_overlap(carryover_panel[0], carryover_panel[1], next_target, view_h) < min_carryover_visible
-                        ):
-                            next_target = next(
-                                (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
-                                None
-                            )
-                            continue
-                        repeated = visible_content_overlap_between_windows(panels, pos, next_target, view_h)
-                        if repeated <= MAX_REPEAT:
-                            break
-                        next_target = next(
-                            (t for t in targets if t > next_target + 1 and (t - pos) >= MIN_MOVE),
-                            None
-                        )
+                next_target = targets[next_index] if next_index < len(targets) else None
 
                 if next_target is not None:
                     logger.info(
-                        "Viewer auto-skip down generic pos=%d view_h=%d target=%d panels=%d",
+                        "Viewer auto-skip down pos=%d view_h=%d target=%d",
                         pos,
                         view_h,
                         next_target,
-                        len(panels),
                     )
-                    next_target = edge_safe_target(targets, panels, next_target, pos, view_h)
                     self._jump_to_target(next_target)
                 else:
                     logger.info(
@@ -1637,18 +1496,11 @@ class ViewerPage(QWidget):
                     bar.setValue(pos + int(view_h * 0.9))
 
             else:
-                prev_target = next(
-                    (t for t in reversed(targets) if (t + view_h / 2) < center - SNAP),
-                    None
-                )
+                prev_index = bisect_right(targets, pos - SNAP) - 1
+                while prev_index >= 0 and (pos - targets[prev_index]) < MIN_MOVE:
+                    prev_index -= 1
 
-                if prev_target is not None:
-                    while prev_target is not None and (pos - prev_target) < MIN_MOVE:
-                        prev_target = next(
-                            (t for t in reversed(targets) if t < prev_target - 1 and (pos - t) >= MIN_MOVE),
-                            None
-                        )
-
+                prev_target = targets[prev_index] if prev_index >= 0 else None
                 if prev_target is not None:
                     self._jump_to_target(prev_target)
                 else:
