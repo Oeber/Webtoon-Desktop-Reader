@@ -16,8 +16,8 @@
 ; Non-commercial use only
 AppId={{185C1E99-E4F0-435F-8F12-F26235213749}
 AppName=Webtoon Desktop Reader
-AppVersion=0.9.9.2
-;AppVerName=Webtoon Desktop Reader 0.9.9.2
+AppVersion=0.9.9.5
+;AppVerName=Webtoon Desktop Reader 0.9.9.5
 AppPublisher=Webtoon Desktop Reader
 AppPublisherURL=https://github.com/Oeber/Webtoon-Desktop-Reader
 AppSupportURL=https://github.com/Oeber/Webtoon-Desktop-Reader
@@ -33,7 +33,7 @@ Compression=lzma
 SolidCompression=yes
 WizardStyle=classic
 OutputDir={#OutputDir}
-OutputBaseFilename=Webtoon-Desktop-Reader-Setup-v0.9.9.2
+OutputBaseFilename=Webtoon-Desktop-Reader-Setup-v0.9.9.5
 #if SetupIconFile != ""
 SetupIconFile={#SetupIconFile}
 #endif
@@ -57,6 +57,7 @@ Name: "{autodesktop}\Webtoon Desktop Reader"; Filename: "{app}\Webtoon Desktop R
 
 [Run]
 Filename: "{app}\Webtoon Desktop Reader.exe"; Description: "{cm:LaunchProgram,Webtoon Desktop Reader}"; Flags: nowait postinstall skipifsilent
+
 
 
 
