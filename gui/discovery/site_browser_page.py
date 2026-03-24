@@ -168,6 +168,7 @@ class DiscoveryEntryWidget(QFrame):
         self.setToolTip(self._build_tooltip())
         self._cover_requested = False
         self._cover_applied = False
+        self._cover_failed = False
         if not self.entry.cover_url:
             self._apply_local_cover_fallback()
 
@@ -187,7 +188,7 @@ class DiscoveryEntryWidget(QFrame):
         super().leaveEvent(event)
 
     def ensure_cover_requested(self):
-        if self._cover_requested or self._cover_applied:
+        if self._cover_requested or self._cover_applied or self._cover_failed:
             return
         if not self.entry.cover_url or self._cover_loader is None:
             self._apply_local_cover_fallback()
@@ -198,11 +199,13 @@ class DiscoveryEntryWidget(QFrame):
     def apply_cover_data(self, data):
         if not data:
             self._cover_requested = False
+            self._cover_failed = True
             self._apply_local_cover_fallback()
             return
         pixmap = self._decode_cover_pixmap(data)
         if pixmap.isNull():
             self._cover_requested = False
+            self._cover_failed = True
             self._apply_local_cover_fallback()
             return
         self._apply_cover_pixmap(pixmap)
@@ -237,11 +240,12 @@ class DiscoveryEntryWidget(QFrame):
 
     def cover_request_failed(self) -> None:
         self._cover_requested = False
+        self._cover_failed = True
         if not self._cover_applied:
             self._apply_local_cover_fallback()
 
     def needs_cover_request(self) -> bool:
-        return bool(self.entry.cover_url) and not self._cover_requested and not self._cover_applied
+        return bool(self.entry.cover_url) and not self._cover_requested and not self._cover_applied and not self._cover_failed
 
     def _apply_local_cover_fallback(self) -> bool:
         local_webtoon = self._local_info.get("webtoon") if isinstance(self._local_info, dict) else None
@@ -329,6 +333,8 @@ class SiteBrowserPage(QWidget):
     COVER_PRELOAD_MARGIN_PX = 120
     COVER_REQUEST_BATCH_SIZE = 12
     COVER_REQUEST_DEBOUNCE_MS = 16
+    COVER_APPLY_BATCH_SIZE = 6
+    COVER_APPLY_DEBOUNCE_MS = 16
 
     def __init__(self, main_window):
         super().__init__()
@@ -361,6 +367,7 @@ class SiteBrowserPage(QWidget):
         self._entry_columns = 1
         self._search_text = ""
         self._last_cover_request_signature = None
+        self._pending_cover_results = []
         self._pending_append_anchor_bottom = False
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
@@ -377,6 +384,9 @@ class SiteBrowserPage(QWidget):
         self._cover_request_timer = QTimer(self)
         self._cover_request_timer.setSingleShot(True)
         self._cover_request_timer.timeout.connect(self._request_visible_covers_now)
+        self._cover_apply_timer = QTimer(self)
+        self._cover_apply_timer.setSingleShot(True)
+        self._cover_apply_timer.timeout.connect(self._flush_pending_cover_results)
         self._auto_scroll_direction = 0
         self._auth_in_progress = False
         self._startup_catalog_pending = True
@@ -503,6 +513,9 @@ class SiteBrowserPage(QWidget):
         if self.site_combo.count() == 0:
             self._reload_scrapers(load_catalog=False)
         self.ensure_initial_catalog_loaded()
+
+    def is_catalog_busy(self) -> bool:
+        return bool(self._catalog_loading)
 
     def ensure_initial_catalog_loaded(self):
         if self._loaded_once or not self._startup_catalog_pending:
@@ -886,6 +899,8 @@ class SiteBrowserPage(QWidget):
         self._entry_widgets = []
         self._entry_columns = 1
         self._empty_state_label = None
+        self._pending_cover_results.clear()
+        self._cover_apply_timer.stop()
         if self._loading_more_label is not None:
             self._loading_more_label.deleteLater()
             self._loading_more_label = None
@@ -1086,16 +1101,28 @@ class SiteBrowserPage(QWidget):
         for _distance, widget in visible_widgets[:self.COVER_REQUEST_BATCH_SIZE]:
             widget.ensure_cover_requested()
 
-    def _on_cover_loaded(self, widget, data, error: str):
-        if widget not in self._entry_widgets:
+    def _flush_pending_cover_results(self):
+        if not self._pending_cover_results:
             return
-        if error:
-            logger.warning("Discovery cover request failed for %s: %s", widget.entry.title, error)
-            widget.cover_request_failed()
-            self._queue_visible_cover_request(force=True)
-            return
-        widget.apply_cover_data(data)
+        processed = 0
+        while self._pending_cover_results and processed < self.COVER_APPLY_BATCH_SIZE:
+            widget, data, error = self._pending_cover_results.pop(0)
+            if widget not in self._entry_widgets:
+                continue
+            if error:
+                logger.warning("Discovery cover request failed for %s: %s", widget.entry.title, error)
+                widget.cover_request_failed()
+            else:
+                widget.apply_cover_data(data)
+            processed += 1
         self._queue_visible_cover_request(force=True)
+        if self._pending_cover_results:
+            self._cover_apply_timer.start(self.COVER_APPLY_DEBOUNCE_MS)
+
+    def _on_cover_loaded(self, widget, data, error: str):
+        self._pending_cover_results.append((widget, data, error))
+        if not self._cover_apply_timer.isActive():
+            self._cover_apply_timer.start(self.COVER_APPLY_DEBOUNCE_MS)
 
     def _on_catalog_loaded(self, request_id: int, provider_key: str, page_number: int, reset: bool, page, error: str):
         if request_id != self._catalog_request_id:

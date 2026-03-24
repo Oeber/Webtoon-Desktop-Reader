@@ -39,6 +39,7 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 SIDEBAR_ICON_COLOR = "#d8b7b0"
+STARTUP_LIBRARY_UPDATE_DISCOVERY_RETRY_MS = 15000
 
 
 class WindowNavigator:
@@ -301,6 +302,16 @@ class LibraryUpdateScheduler:
         if not load_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False):
             return
         if not self._check_due(allow_zero_interval=True):
+            return
+        current_widget = self.window.stack.currentWidget()
+        if current_widget is self.window.discovery and self.window.discovery.is_catalog_busy():
+            logger.info(
+                "Deferring startup library update check because discovery catalog loading is active"
+            )
+            QTimer.singleShot(
+                STARTUP_LIBRARY_UPDATE_DISCOVERY_RETRY_MS,
+                self._run_startup_library_update_check_if_due,
+            )
             return
         self.run_check(reason="auto_startup")
 
