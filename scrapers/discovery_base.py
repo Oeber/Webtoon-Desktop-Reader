@@ -7,6 +7,8 @@ from .models import CatalogPage, CatalogSeries, normalize_catalog_text
 
 class BaseDiscoveryProvider(ABC):
 
+    browser_fetcher = None
+
     site_name: str = "unknown"
     site_display_name: str = ""
     site_hosts: tuple[str, ...] = ()

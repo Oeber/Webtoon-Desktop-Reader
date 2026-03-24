@@ -552,6 +552,11 @@ class SiteBrowserPage(QWidget):
         current_key = self.site_combo.currentData()
         preferred_key = load_default_discovery_provider()
         providers = get_all_discovery_providers()
+        for provider in providers:
+            try:
+                provider.browser_fetcher = getattr(self.main_window, "browser_fetcher", None)
+            except Exception:
+                pass
         providers.sort(key=lambda provider: provider.get_display_name().casefold())
         self._providers_by_key = {provider.site_name: provider for provider in providers}
 
