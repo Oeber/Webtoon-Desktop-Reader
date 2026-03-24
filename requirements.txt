@@ -6,3 +6,4 @@ beautifulsoup4
 rapidfuzz
 yappi
 curl_cffi
+lxml

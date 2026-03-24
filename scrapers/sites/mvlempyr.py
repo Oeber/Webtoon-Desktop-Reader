@@ -1,8 +1,10 @@
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import parse_qs, urljoin, urlparse
 
+import soupsieve as sv
 from curl_cffi import requests as cffi_requests
 from bs4 import BeautifulSoup
 
@@ -41,10 +43,51 @@ class MvlempyrScraper(BaseScraper):
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    # Pre-compiled selectors — avoids soupsieve recompiling on every call
+    _SEL_CHAPTER_LINKS = sv.compile('a[href*="/chapter/"]')
+    _SEL_NOVEL_LINK_1 = sv.compile('a[href*="/novel/"]')
+    _SEL_NOVEL_LINK_2 = sv.compile('a[href*="/novels/"]')
+    _SEL_STRIP_TAGS = sv.compile("script, style, button, svg, nav, footer, form")
+    _SEL_OG_TITLE = sv.compile('meta[property="og:title"]')
+    _SEL_OG_IMAGE = sv.compile('meta[property="og:image"]')
+    _SEL_TWITTER_IMAGE = sv.compile('meta[name="twitter:image"]')
+    _SEL_ALL_IMAGES = sv.compile("img[src], img[data-src]")
+    _SEL_AUTHOR_LINK = sv.compile('a[href*="/author/"]')
+    _SEL_AUTHOR_TESTID = sv.compile('[data-testid="author-name"]')
+    _SEL_DESCRIPTION_SOURCES = [
+        sv.compile('[data-testid="novel-synopsis"]'),
+        sv.compile(".novel-synopsis"),
+        sv.compile(".summary"),
+        sv.compile(".description"),
+        sv.compile("article"),
+    ]
+    _SEL_CHAPTER_CONTAINER = [
+        sv.compile("article .prose"),
+        sv.compile("article"),
+        sv.compile("main .prose"),
+        sv.compile("main article"),
+        sv.compile("main"),
+        sv.compile(".chapter-content"),
+        sv.compile(".chapter-body"),
+        sv.compile(".entry-content"),
+        sv.compile(".novel-content"),
+        sv.compile(".reading-content"),
+        sv.compile("[data-testid='chapter-content']"),
+        sv.compile("[class*='chapter'][class*='content']"),
+        sv.compile("[class*='novel'][class*='content']"),
+        sv.compile("[class*='reader'][class*='content']"),
+        sv.compile("[class*='prose']"),
+        sv.compile("[class*='break-words']"),
+        sv.compile("[id*='chapter']"),
+        sv.compile("[id*='content']"),
+    ]
+
     def __init__(self):
         self._http = cffi_requests.Session()
         self._last_request_at = 0.0
         self._series_cache: dict[str, SeriesInfo] = {}
+        self._user_agent_cache: str | None = None
+        self._cookies_cache: dict[str, str] | None = None
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -53,7 +96,9 @@ class MvlempyrScraper(BaseScraper):
 
     def get_request_headers(self, url):
         headers = dict(self.HEADERS)
-        headers["User-Agent"] = load_site_user_agent(self.site_name, headers["User-Agent"])
+        if self._user_agent_cache is None:
+            self._user_agent_cache = load_site_user_agent(self.site_name, headers["User-Agent"])
+        headers["User-Agent"] = self._user_agent_cache
         return headers
 
     def is_chapter_url(self, url: str) -> bool:
@@ -61,9 +106,9 @@ class MvlempyrScraper(BaseScraper):
 
     def series_url_from_chapter_url(self, url: str) -> str:
         response = self._get(url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        for selector in ('a[href*="/novel/"]', 'a[href*="/novels/"]'):
-            node = soup.select_one(selector)
+        soup = BeautifulSoup(response.text, "lxml")
+        for sel in (self._SEL_NOVEL_LINK_1, self._SEL_NOVEL_LINK_2):
+            node = sel.select_one(soup)
             href = self._normalize_url(node.get("href", "")) if node is not None else ""
             if "/novel/" in href:
                 return href
@@ -85,7 +130,7 @@ class MvlempyrScraper(BaseScraper):
             return cached
 
         response = self._get(series_url, session=session)
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(response.text, "lxml")
 
         title = self._extract_title(soup)
         description = self._extract_description(soup)
@@ -141,12 +186,16 @@ class MvlempyrScraper(BaseScraper):
                     text=script_text or None,
                 )
 
-        soup = BeautifulSoup(html, "html.parser")
+        # Parse once and reuse for both container search and title fallback
+        soup = BeautifulSoup(html, "lxml")
         container = self._find_chapter_container(soup)
         if container is not None:
             cleaned_html = self._clean_chapter_html(container)
             text = self._normalize_text(container.get_text("\n", strip=True))
             if cleaned_html or text:
+                # Refine title from soup if the regex title was weak
+                if not title or title == self._chapter_title_from_url(chapter_url):
+                    title = self._extract_chapter_title(soup, chapter_url)
                 return ChapterContent(title=title, html=cleaned_html, text=text)
 
         self._dump_failed_chapter_html(chapter_url, html)
@@ -163,7 +212,7 @@ class MvlempyrScraper(BaseScraper):
             match = re.search(pattern, html, re.IGNORECASE | re.DOTALL)
             if not match:
                 continue
-            value = BeautifulSoup(match.group(1), "html.parser").get_text(" ", strip=True)
+            value = BeautifulSoup(match.group(1), "lxml").get_text(" ", strip=True)
             value = re.sub(r"\s*\|\s*MVLEMPYR\s*$", "", value, flags=re.IGNORECASE).strip()
             if value and value.casefold() != "mvlempyr":
                 return value
@@ -184,8 +233,8 @@ class MvlempyrScraper(BaseScraper):
         return "", ""
 
     def _normalize_fragment_html(self, fragment: str) -> tuple[str, str]:
-        soup = BeautifulSoup(fragment, "html.parser")
-        for tag in soup.select("script, style, button, svg, nav, footer, form"):
+        soup = BeautifulSoup(fragment, "lxml")
+        for tag in self._SEL_STRIP_TAGS.select(soup):
             tag.decompose()
         text = self._normalize_text(soup.get_text("\n", strip=True))
         if not text:
@@ -214,14 +263,8 @@ class MvlempyrScraper(BaseScraper):
         raise ScraperError("Could not extract MVLEMPYR series title")
 
     def _extract_description(self, soup: BeautifulSoup) -> str | None:
-        for selector in (
-            '[data-testid="novel-synopsis"]',
-            ".novel-synopsis",
-            ".summary",
-            ".description",
-            "article",
-        ):
-            node = soup.select_one(selector)
+        for sel in self._SEL_DESCRIPTION_SOURCES:
+            node = sel.select_one(soup)
             if node is None:
                 continue
             text = node.get_text(" ", strip=True)
@@ -239,8 +282,8 @@ class MvlempyrScraper(BaseScraper):
         match = re.search(r"Author:\s*(.+)", text, re.IGNORECASE)
         if match:
             return match.group(1).split("\n")[0].strip() or None
-        for selector in ('a[href*="/author/"]', '[data-testid="author-name"]'):
-            node = soup.select_one(selector)
+        for sel in (self._SEL_AUTHOR_LINK, self._SEL_AUTHOR_TESTID):
+            node = sel.select_one(soup)
             if node is not None:
                 value = node.get_text(" ", strip=True)
                 if value:
@@ -251,11 +294,11 @@ class MvlempyrScraper(BaseScraper):
         title = self._extract_title(soup)
         candidates: list[tuple[int, str]] = []
 
-        for selector, attr in (
-            ('meta[property="og:image"]', "content"),
-            ('meta[name="twitter:image"]', "content"),
+        for sel, attr in (
+            (self._SEL_OG_IMAGE, "content"),
+            (self._SEL_TWITTER_IMAGE, "content"),
         ):
-            node = soup.select_one(selector)
+            node = sel.select_one(soup)
             if node is None:
                 continue
             value = self._normalize_url(node.get(attr, ""))
@@ -263,7 +306,7 @@ class MvlempyrScraper(BaseScraper):
             if value and score > 0:
                 candidates.append((score + 200, value))
 
-        for image in soup.select("img[src], img[data-src]"):
+        for image in self._SEL_ALL_IMAGES.select(soup):
             value = self._normalize_url(image.get("data-src") or image.get("src") or "")
             alt_text = " ".join(
                 str(image.get(name, "") or "")
@@ -372,7 +415,7 @@ class MvlempyrScraper(BaseScraper):
 
     def _extract_chapters_from_links(self, soup: BeautifulSoup, base_url: str) -> list[ChapterInfo]:
         found: dict[str, ChapterInfo] = {}
-        for link in soup.select('a[href*="/chapter/"]'):
+        for link in self._SEL_CHAPTER_LINKS.select(soup):
             href = self._normalize_url(link.get("href", ""), base_url)
             if "/chapter/" not in href:
                 continue
@@ -581,24 +624,47 @@ class MvlempyrScraper(BaseScraper):
         if not self._chapter_exists(series_id, 1):
             return 0
 
+        # Exponential expansion to find upper bound — batch concurrent probes
         low = 1
         high = 2
-        while high <= max_limit and self._chapter_exists(series_id, high):
-            low = high
-            high *= 2
+        while high <= max_limit:
+            # Probe next two doublings in parallel to reduce round trips
+            candidates = [high, min(high * 2, max_limit)]
+            results = self._batch_chapter_exists(series_id, candidates)
+            if results.get(high):
+                low = high
+                high = high * 2
+            else:
+                break
 
         high = min(high, max_limit + 1)
         left = low + 1
         right = min(high - 1, max_limit)
         best = low
+
+        # Binary search — probe each level in a small batch
         while left <= right:
             mid = (left + right) // 2
-            if self._chapter_exists(series_id, mid):
+            # Speculatively probe mid and the midpoint of each half simultaneously
+            probe_low = (left + mid - 1) // 2
+            probe_high = (mid + 1 + right) // 2
+            probes = list({mid, probe_low, probe_high} & set(range(left, right + 1)))
+            results = self._batch_chapter_exists(series_id, probes)
+            if results.get(mid):
                 best = mid
                 left = mid + 1
             else:
                 right = mid - 1
+
         return best
+
+    def _batch_chapter_exists(self, series_id: str, chapter_numbers: list[int]) -> dict[int, bool]:
+        """Check multiple chapter numbers concurrently."""
+        if not chapter_numbers:
+            return {}
+        with ThreadPoolExecutor(max_workers=min(len(chapter_numbers), 4)) as pool:
+            futures = {pool.submit(self._chapter_exists, series_id, n): n for n in chapter_numbers}
+            return {futures[f]: f.result() for f in as_completed(futures)}
 
     def _chapter_exists(self, series_id: str, chapter_number: int) -> bool:
         url = f"{self.BASE}/chapter/{series_id}-{int(chapter_number)}"
@@ -678,41 +744,32 @@ class MvlempyrScraper(BaseScraper):
                 return value
         return self._chapter_title_from_url(chapter_url)
 
+    # Selectors at or before this index are "high-confidence" — if one matches
+    # with substantial text we stop early rather than scanning all 18 selectors.
+    _CONTAINER_EARLY_EXIT_THRESHOLD = 4   # covers article .prose, article, main .prose, main article
+    _CONTAINER_EARLY_EXIT_MIN_CHARS = 500
+
     def _find_chapter_container(self, soup: BeautifulSoup):
-        selectors = (
-            "article .prose",
-            "article",
-            "main .prose",
-            "main article",
-            "main",
-            ".chapter-content",
-            ".chapter-body",
-            ".entry-content",
-            ".novel-content",
-            ".reading-content",
-            "[data-testid='chapter-content']",
-            "[class*='chapter'][class*='content']",
-            "[class*='novel'][class*='content']",
-            "[class*='reader'][class*='content']",
-            "[class*='prose']",
-            "[class*='break-words']",
-            "[id*='chapter']",
-            "[id*='content']",
-        )
         best_node = None
         best_score = 0
-        for selector in selectors:
-            for node in soup.select(selector):
+        for idx, sel in enumerate(self._SEL_CHAPTER_CONTAINER):
+            for node in sel.select(soup):
                 text = self._normalize_text(node.get_text("\n", strip=True))
                 score = len(text)
                 if score > best_score and score >= 20:
                     best_node = node
                     best_score = score
+            # Early exit: high-confidence selector found substantial content
+            if (
+                idx <= self._CONTAINER_EARLY_EXIT_THRESHOLD
+                and best_score >= self._CONTAINER_EARLY_EXIT_MIN_CHARS
+            ):
+                break
         return best_node
 
     def _clean_chapter_html(self, node) -> str:
-        clone = BeautifulSoup(str(node), "html.parser")
-        for tag in clone.select("script, style, button, svg, nav, footer, form"):
+        clone = BeautifulSoup(str(node), "lxml")
+        for tag in self._SEL_STRIP_TAGS.select(clone):
             tag.decompose()
         allowed = {"p", "div", "section", "article", "blockquote", "em", "strong", "i", "b", "span", "br", "h1", "h2", "h3", "h4", "ul", "ol", "li"}
         for tag in clone.find_all(True):
@@ -762,7 +819,14 @@ class MvlempyrScraper(BaseScraper):
             return None
 
     def _site_cookies(self) -> dict[str, str]:
-        return {c["name"]: c["value"] for c in load_site_cookies(self.site_name)}
+        if self._cookies_cache is None:
+            self._cookies_cache = {c["name"]: c["value"] for c in load_site_cookies(self.site_name)}
+        return self._cookies_cache
+
+    def invalidate_session_cache(self) -> None:
+        """Call this after updating cookies or user-agent so next request re-reads them."""
+        self._cookies_cache = None
+        self._user_agent_cache = None
 
     def _client(self):
         session = getattr(self, "_http", None)
