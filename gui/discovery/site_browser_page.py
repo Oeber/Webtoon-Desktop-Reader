@@ -39,6 +39,7 @@ from gui.common.styles import (
     card_image_border_style,
 )
 from gui.discovery.cover_loader import DiscoveryCoverLoader
+from gui.downloader.download_widgets import SpinnerCircle
 from gui.library.webtoon_card import CARD_HEIGHT, CARD_RADIUS, CARD_WIDTH
 from library.library_manager import scan_library
 from stores.settings_store import load_default_discovery_provider, load_library_path
@@ -52,6 +53,15 @@ logger = get_logger(__name__)
 DISCOVERY_CARD_SPACING = 16
 DISCOVERY_AUTO_SCROLL_CURSOR_SIZE = 32
 DISCOVERY_AUTO_SCROLL_LINE = "#fff0ec"
+DISCOVERY_LOADING_FRAME_STYLE = """
+    QFrame {
+        background: transparent;
+        border: none;
+        border-radius: 0px;
+    }
+"""
+DISCOVERY_LOADING_TITLE_STYLE = "color: #f6ddd6; font-size: 13px; font-weight: 600;"
+DISCOVERY_LOADING_DETAIL_STYLE = "color: #b8948d; font-size: 11px;"
 
 
 class DiscoveryTitleLabel(QLabel):
@@ -327,6 +337,7 @@ class SiteBrowserPage(QWidget):
         self._current_page = 1
         self._has_next_page = False
         self._loaded_once = False
+        self._catalog_response_received = False
         self._cover_loader = DiscoveryCoverLoader(self)
         self._cover_loader.loaded.connect(self._on_cover_loaded)
         self._catalog_loader = DiscoveryCatalogLoader(self)
@@ -435,14 +446,36 @@ class SiteBrowserPage(QWidget):
         self.error_label.hide()
         root.addWidget(self.error_label)
 
+        self.loading_frame = QFrame()
+        self.loading_frame.setStyleSheet(DISCOVERY_LOADING_FRAME_STYLE)
+        self.loading_frame.hide()
+        loading_layout = QHBoxLayout(self.loading_frame)
+        loading_layout.setContentsMargins(2, 0, 2, 0)
+        loading_layout.setSpacing(10)
+        self.loading_spinner = SpinnerCircle(self.loading_frame)
+        self.loading_spinner.setFixedSize(20, 20)
+        loading_layout.addWidget(self.loading_spinner, 0, Qt.AlignVCenter)
+        loading_text_layout = QVBoxLayout()
+        loading_text_layout.setContentsMargins(0, 0, 0, 0)
+        loading_text_layout.setSpacing(0)
+        self.loading_title_label = QLabel("Loading discovery catalog")
+        self.loading_title_label.setStyleSheet(DISCOVERY_LOADING_TITLE_STYLE)
+        loading_text_layout.addWidget(self.loading_title_label)
+        self.loading_detail_label = QLabel("")
+        self.loading_detail_label.setStyleSheet(DISCOVERY_LOADING_DETAIL_STYLE)
+        self.loading_detail_label.setWordWrap(True)
+        loading_text_layout.addWidget(self.loading_detail_label)
+        loading_layout.addLayout(loading_text_layout, 1)
+        root.addWidget(self.loading_frame)
+
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
         root.addWidget(self.status_label)
 
-        section_label = QLabel("Available series")
-        section_label.setStyleSheet(SECTION_LABEL_STYLE)
-        root.addWidget(section_label)
-
+        self.section_label = QLabel("Available series")
+        self.section_label.setStyleSheet(SECTION_LABEL_STYLE)
+        self.section_label.hide()
+        root.addWidget(self.section_label)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
@@ -533,10 +566,12 @@ class SiteBrowserPage(QWidget):
             return
 
         self._show_message("", is_error=False)
-        loading_label = f"Loading {provider.get_display_name()} page {requested_page}"
-        if search_query:
-            loading_label += f" for '{search_query}'"
-        self.status_label.setText(loading_label + "...")
+        self._show_loading_state(
+            provider_name=provider.get_display_name(),
+            page_number=requested_page,
+            search_query=search_query,
+            reset=reset,
+        )
         logger.info("Loading catalog page %d for %s", requested_page, provider.site_name)
         self._ensure_library_snapshot()
         self._catalog_loading = True
@@ -765,6 +800,11 @@ class SiteBrowserPage(QWidget):
         self._entry_keys = {self._entry_key(entry) for entry in self._loaded_entries}
         self._render_entries()
 
+    def _update_results_visibility(self, has_results: bool):
+        show_results_area = has_results or self._catalog_response_received or not self._startup_catalog_pending
+        self.section_label.setVisible(has_results)
+        self.scroll.setVisible(show_results_area and (has_results or not self._catalog_loading))
+
     def _render_entries(self):
         scrollbar = self.scroll.verticalScrollBar()
         old_value = scrollbar.value()
@@ -774,7 +814,16 @@ class SiteBrowserPage(QWidget):
         self._clear_rendered_entries()
         self._last_cover_request_signature = None
         visible_entries = self._visible_entries()
+        self._update_results_visibility(bool(visible_entries))
         if not visible_entries:
+            if not self._catalog_response_received:
+                self._restore_scroll_position(old_value, anchor_to_bottom)
+                self._pending_append_anchor_bottom = False
+                return
+            if self._catalog_loading:
+                self._restore_scroll_position(old_value, anchor_to_bottom)
+                self._pending_append_anchor_bottom = False
+                return
             self._show_empty_state()
             self._restore_scroll_position(old_value, anchor_to_bottom)
             self._pending_append_anchor_bottom = False
@@ -842,6 +891,7 @@ class SiteBrowserPage(QWidget):
             self._loading_more_label = None
 
     def _show_empty_state(self):
+        self._update_results_visibility(False)
         empty = QLabel("No series found for this page.")
         if self._search_text.strip():
             empty.setText("No series match your search.")
@@ -877,6 +927,30 @@ class SiteBrowserPage(QWidget):
         self.error_label.setVisible(is_error and bool(text))
         self.error_label.setText(text if is_error else "")
         self.status_label.setText("" if is_error else text)
+
+    def _show_loading_state(self, provider_name: str, page_number: int, search_query: str, reset: bool):
+        provider_text = provider_name or "this source"
+        if search_query:
+            title = f"Searching {provider_text}"
+            detail = f"Looking for '{search_query}' on page {page_number}."
+        elif reset and page_number == 1:
+            title = f"Loading {provider_text}"
+            detail = "Fetching the latest discovery picks."
+        elif reset:
+            title = f"Refreshing {provider_text}"
+            detail = f"Reloading page {page_number}."
+        else:
+            title = "Loading more series"
+            detail = f"Fetching page {page_number} from {provider_text}."
+        self.loading_title_label.setText(title)
+        self.loading_detail_label.setText(detail)
+        self.loading_spinner.set_spinning()
+        self.loading_frame.show()
+        self.status_label.clear()
+
+    def _hide_loading_state(self):
+        self.loading_frame.hide()
+        self.loading_spinner.set_idle()
 
     def _refresh_library_snapshot(self):
         try:
@@ -1035,6 +1109,8 @@ class SiteBrowserPage(QWidget):
         self._catalog_loading = False
         self._inflight_catalog_signature = None
         self._catalog_request_started_at = 0.0
+        self._hide_loading_state()
+        self._catalog_response_received = True
         self._set_controls_enabled(True)
 
         current_provider = self._current_provider()
@@ -1357,4 +1433,3 @@ class SiteBrowserPage(QWidget):
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
-
