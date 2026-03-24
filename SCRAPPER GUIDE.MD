@@ -51,6 +51,7 @@ Every scraper must inherit from `BaseScraper` and implement these methods:
 class BaseScraper(ABC):
     site_name: str = "unknown"
     site_display_name: str = ""
+    content_type: str = "webtoon"
     site_hosts: tuple[str, ...] = ()
     site_base_url: str = ""
     site_required_cookie_names: tuple[str, ...] = ()
@@ -107,6 +108,7 @@ class SeriesInfo:
     series_id: str
     title: str
     url: str
+    content_type: str = "webtoon"
     cover_url: str | None = None
     author: str | None = None
     description: str | None = None
@@ -134,6 +136,50 @@ class PageInfo:
     index: int
     image_url: str
 ```
+
+## Content Types
+
+Scrapers now declare a `content_type` at the class level.
+
+```python
+class ExampleScraper(BaseScraper):
+    content_type = "webtoon"   # default
+```
+
+Supported values today:
+
+- `webtoon`: image-based chapters, implemented through `get_chapter_pages()`
+- `webnovel`: text-based chapters, implemented through `get_chapter_content()`
+
+Return the same value through `SeriesInfo.content_type` so the downloader and viewer can choose the correct storage and reader flow.
+
+## Webnovel Scrapers
+
+For text sources, keep `get_chapter_pages()` raising a clear error and implement `get_chapter_content()` instead.
+
+```python
+def get_chapter_pages(self, chapter_url: str) -> list[PageInfo]:
+    raise ScraperError("ExampleSite is a webnovel source and does not provide image pages.")
+
+def get_chapter_content(self, chapter_url: str) -> ChapterContent:
+    response = self._get(chapter_url)
+    return ChapterContent(
+        title="Chapter 1",
+        html="<p>Formatted chapter body</p>",
+        text="Formatted chapter body",
+    )
+```
+
+Webnovel chapter downloads are saved as `chapter.json`, so scrapers should return clean structured text instead of writing files themselves.
+
+If a protected site only yields usable chapter HTML through the embedded browser, also implement:
+
+```python
+def parse_chapter_content_html(self, chapter_url: str, html: str) -> ChapterContent:
+    ...
+```
+
+The downloader can pass browser-fetched HTML into this parser when the direct request path is throttled or blocked.
 
 ## Creating a New Scraper
 
@@ -553,6 +599,17 @@ def download_asset(self, url: str, dest_path: str) -> bool:
 **Rule:** if your scraper uses `curl_cffi` for page fetches, it almost certainly needs `download_asset()` too. The image host is usually under the same Cloudflare zone.
 
 The same pattern often applies to series covers. If your scraper returns `SeriesInfo.cover_url` for a protected host, implement `fetch_cover()` with the same cookie and TLS impersonation strategy. The downloader now passes that fetcher into thumbnail persistence so library/detail/download views can reuse the protected cover instead of falling back to a plain request.
+
+## Session Validation Hooks
+
+Some sites authorize successfully in the embedded browser but still reject plain `requests` validation. For those sites, override:
+
+```python
+def validate_session(self, cookies: list[dict], user_agent: str, url: str | None = None) -> tuple[bool, str]:
+    return True, "Validated by site-specific client."
+```
+
+Use this when the scraper needs its own transport, such as `curl_cffi` impersonation, to confirm that the captured session is reusable.
 
 ## Error Handling Rules
 

@@ -52,6 +52,8 @@ Every discovery provider must inherit from `BaseDiscoveryProvider`.
 
 ```python
 class BaseDiscoveryProvider(ABC):
+    browser_fetcher = None
+
     site_name: str = "unknown"
     site_display_name: str = ""
     site_hosts: tuple[str, ...] = ()
@@ -83,6 +85,20 @@ class BaseDiscoveryProvider(ABC):
     def get_catalog_page(self, page: int = 1, search_query: str = "") -> CatalogPage:
         pass
 ```
+
+## Browser Fetcher Support
+
+Discovery providers can receive the shared embedded-browser HTML fetcher through `provider.browser_fetcher`.
+
+Use this only when a site's catalog HTML is sparse or blocked for direct HTTP clients but renders correctly in the app browser.
+
+```python
+browser_fetcher = getattr(self, "browser_fetcher", None)
+if browser_fetcher is not None:
+    html = browser_fetcher.fetch_html(url, self.site_name, timeout_ms=30000)
+```
+
+Keep the parser itself inside the provider. The GUI should only hand the fetcher in; it should not know provider-specific routes or selectors.
 
 ## Site Session Config
 
@@ -534,6 +550,19 @@ class ExampleDiscoveryProvider(BaseDiscoveryProvider):
 | Cloudflare challenge, `requests` works with `cf_clearance` | `requests` + `apply_site_cookies` |
 | Cloudflare, `requests` returns 403 even with valid `cf_clearance` | `curl_cffi` with `impersonate` |
 
+## Noisy Catalogs
+
+Some discovery pages expose many valid series links inside noisy shared sections such as hero rails, trending blocks, or new-arrivals widgets.
+
+When this happens:
+
+- first, keep broad link discovery so you do not drop the whole catalog accidentally
+- then dedupe by canonical URL or `series_id`
+- prefer slug-derived titles over noisy shared card text when top-of-page titles leak from nearby section headers
+- reject shared section covers unless the image metadata overlaps the target series slug or title
+
+The MVLEMPYR provider is a good example of this pattern: broad link scraping found the correct URLs, but top-of-page title and cover fields leaked from shared section wrappers, so slug-derived titles and stricter cover matching produced cleaner cards without losing the catalog.
+
 ## Filtering Guidance
 
 When a site needs discovery filtered to one content type, prefer this order:
@@ -736,6 +765,17 @@ def fetch_cover(self, url: str, headers: dict[str, str]) -> bytes | None:
 `fetch_cover()` must work for both discovery card covers and the discovery detail hero cover. The shared GUI now passes the provider into `DiscoveryCoverLoader` from both `site_browser_page.py` and `detail_page.py`, so one provider implementation is reused in both places.
 
 If the provider does not implement `fetch_cover()`, both views fall back to the generic shared HTTP session and only `cover_headers` are used.
+
+### Catalog page loads but parses to zero entries
+
+Cause: the provider is hitting a real route, but the direct HTML is sparse, heavily client-rendered, or the parser is too strict.
+
+Fix:
+
+- test the provider directly outside the UI first
+- print the first 20-40 parsed entries to see whether the problem is routing, duplication, titles, or covers
+- only add browser-backed HTML fallback if the route is correct but the direct HTML is missing the real cards
+- avoid over-constraining card validation too early; it is usually safer to keep broad link discovery and then clean titles/covers/deduplication afterward
 
 ### Protected site never loads in discovery
 
