@@ -19,6 +19,7 @@ from core.site_session import (
     site_host,
     site_required_cookie_names,
 )
+from scrapers.registry import get_all_scrapers_including_disabled
 from gui.common.styles import (
     BUTTON_STYLE,
     PAGE_BG_STYLE,
@@ -61,6 +62,7 @@ class SiteAuthDialog(QDialog):
         self._validated_session_ready = False
         self._last_validation_error = ""
         self._auto_accept_pending = False
+        self._validation_inflight = False
 
         self.setWindowTitle(f"Authorize {self.site_label}")
         self.resize(1180, 820)
@@ -141,6 +143,11 @@ class SiteAuthDialog(QDialog):
         self._poll_timer.timeout.connect(self._refresh_cookie_snapshot)
         self._poll_timer.start()
 
+        self._validation_timer = QTimer(self)
+        self._validation_timer.setSingleShot(True)
+        self._validation_timer.setInterval(900)
+        self._validation_timer.timeout.connect(self._auto_validate_session)
+
         self._refresh_cookie_snapshot()
 
         start_url = str(url or "").strip() or self.site_home_url
@@ -160,11 +167,13 @@ class SiteAuthDialog(QDialog):
         if ok:
             self.status_label.setText(self._status_text(f"Loaded {current_url}", current_url=current_url))
             self._maybe_auto_return_home(current_url)
+            self._schedule_validation()
         else:
             self.status_label.setText(f"Failed to load {current_url}")
 
     def _on_url_changed(self, _url):
         self._refresh_cookie_snapshot()
+        self._schedule_validation()
 
     def _on_title_changed(self, _title: str):
         self._refresh_cookie_snapshot()
@@ -178,6 +187,7 @@ class SiteAuthDialog(QDialog):
         self._validated_session_ready = False
         self._last_validation_error = ""
         self._update_status_labels()
+        self._schedule_validation()
 
     def _on_cookie_removed(self, cookie: QNetworkCookie):
         data = self._serialize_cookie(cookie)
@@ -188,6 +198,7 @@ class SiteAuthDialog(QDialog):
         self._validated_session_ready = False
         self._last_validation_error = ""
         self._update_status_labels()
+        self._schedule_validation()
 
     def _serialize_cookie(self, cookie: QNetworkCookie) -> dict | None:
         name = bytes(cookie.name()).decode("utf-8", "ignore").strip()
@@ -248,12 +259,27 @@ class SiteAuthDialog(QDialog):
         text = str(getattr(response, "text", "") or "").casefold()
         return "cloudflare" in text and "just a moment" in text
 
+    def _site_scraper(self):
+        for scraper in get_all_scrapers_including_disabled():
+            if str(getattr(scraper, "site_name", "") or "").strip() == self.site_name:
+                return scraper
+        return None
+
     def _validate_session(self) -> bool:
         cookies = self._captured_cookies()
-        if not cookies:
-            self._validated_session_ready = False
-            self._last_validation_error = "No captured cookies yet."
-            return False
+        scraper = self._site_scraper()
+        validator = getattr(scraper, "validate_session", None) if scraper is not None else None
+        if callable(validator):
+            try:
+                ok, detail = validator(cookies, self._browser_user_agent(), self.site_home_url)
+                self._validated_session_ready = bool(ok)
+                self._last_validation_error = str(detail or "Validated by scraper transport.")
+                return self._validated_session_ready
+            except Exception as exc:
+                logger.warning("Scraper-specific session validation failed for %s: %s", self.site_name, exc)
+                self._validated_session_ready = False
+                self._last_validation_error = f"Scraper validation failed: {exc}"
+
         session = create_session()
         try:
             for cookie in cookies:
@@ -280,7 +306,7 @@ class SiteAuthDialog(QDialog):
             self._validated_session_ready = False
             self._last_validation_error = f"Validation returned HTTP {response.status_code}."
             if self._looks_like_block_page(response):
-                self._last_validation_error = "Validation still hit the Cloudflare block page."
+                self._last_validation_error = "Validation still hit the block page."
             return False
         except Exception as exc:
             self._validated_session_ready = False
@@ -296,6 +322,27 @@ class SiteAuthDialog(QDialog):
     def _check_session(self):
         self._refresh_cookie_snapshot()
         self._validate_session()
+        self._update_status_labels()
+
+    def _schedule_validation(self):
+        if self._cleaned_up or self._validation_inflight or self._has_reusable_session():
+            return
+        current_url = self.view.url().toString() if self.view is not None else ""
+        host = urlparse(str(current_url or "")).netloc.casefold()
+        if not host:
+            return
+        if self.site_host and self.site_host not in host and not host.endswith(f".{self.site_host}"):
+            return
+        self._validation_timer.start()
+
+    def _auto_validate_session(self):
+        if self._cleaned_up or self._validation_inflight or self._has_reusable_session():
+            return
+        self._validation_inflight = True
+        try:
+            self._validate_session()
+        finally:
+            self._validation_inflight = False
         self._update_status_labels()
 
     def _schedule_auto_accept(self):
@@ -325,13 +372,13 @@ class SiteAuthDialog(QDialog):
         if self._validated_session_ready:
             if found:
                 return f"Validated session. Detected cookies: {', '.join(found)}"
-            return "Validated session. Cookie names do not match the expected list, but the live request succeeded."
+            return "Validated session. No expected cookie names were detected, but the live request succeeded."
         required = sorted(site_required_cookie_names(self.site_name), key=str.casefold)
         if found:
             return f"Detected session cookies: {', '.join(found)}"
         if required:
             tail = f" Last check: {self._last_validation_error}" if self._last_validation_error else ""
-            return f"Waiting for required session cookie(s): {', '.join(required)}.{tail}"
+            return f"Waiting for required session cookie(s): {', '.join(required)}. The dialog also tries live validation automatically.{tail}"
         return "Waiting for usable site cookies."
 
     def _status_text(self, prefix: str | None = None, current_url: str | None = None) -> str:
@@ -399,6 +446,13 @@ class SiteAuthDialog(QDialog):
         if poll_timer is not None:
             try:
                 poll_timer.stop()
+            except Exception:
+                pass
+
+        validation_timer = getattr(self, "_validation_timer", None)
+        if validation_timer is not None:
+            try:
+                validation_timer.stop()
             except Exception:
                 pass
 

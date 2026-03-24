@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 import re
 from urllib.parse import parse_qs, urlparse
 
-from .models import PageInfo, SeriesInfo
+from .models import ChapterContent, PageInfo, SeriesInfo
 
 
 class ScraperError(Exception):
@@ -17,6 +17,7 @@ class BaseScraper(ABC):
 
     site_name: str = "unknown"
     site_display_name: str = ""
+    content_type: str = "webtoon"
     site_hosts: tuple[str, ...] = ()
     site_base_url: str = ""
     site_required_cookie_names: tuple[str, ...] = ()
@@ -50,6 +51,25 @@ class BaseScraper(ABC):
         Gets headers for scraping
         """
         pass
+
+    def get_chapter_content(self, chapter_url: str) -> ChapterContent:
+        """
+        Optional text/html chapter extraction for sources such as webnovels.
+        """
+        raise NotImplementedError
+
+    def parse_chapter_content_html(self, chapter_url: str, html: str) -> ChapterContent:
+        """
+        Optional parser for browser-fetched chapter HTML.
+        """
+        raise NotImplementedError
+
+    def validate_session(self, cookies: list[dict], user_agent: str, url: str | None = None) -> tuple[bool, str]:
+        """
+        Optional site-specific session validation hook for protected sites.
+        Return (ok, detail).
+        """
+        return False, "No custom validator available."
 
     def is_chapter_url(self, url: str) -> bool:
         parsed = urlparse(url)

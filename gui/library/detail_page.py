@@ -22,7 +22,7 @@ from gui.common.chapter_selection import (
     sync_selector_checked_state,
 )
 from gui.common.chapter_utils import SPECIAL_CHAPTER_RE, chapter_sort_key
-from gui.common.scene_bookmark_dialog import SceneBookmarksDialog
+from gui.common.scene_bookmark_dialog import AllSceneBookmarksDialog, SceneBookmarksDialog
 from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.common.styles import (
     sized_button_style,
@@ -217,8 +217,16 @@ class DetailPage(QWidget):
         self.bookmark_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.bookmark_btn.clicked.connect(self._toggle_webtoon_bookmark)
 
+        self.saved_marks_btn = QPushButton("  Saved")
+        self.saved_marks_btn.setIcon(qta.icon("fa5s.bookmark", color="#d8b7b0"))
+        self.saved_marks_btn.setIconSize(QSize(14, 14))
+        self.saved_marks_btn.setCursor(Qt.PointingHandCursor)
+        self.saved_marks_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
+        self.saved_marks_btn.clicked.connect(self._open_all_scene_bookmarks)
+
         tb_layout.addWidget(self.back_btn)
         tb_layout.addStretch()
+        tb_layout.addWidget(self.saved_marks_btn)
         tb_layout.addWidget(self.bookmark_btn)
         tb_layout.addWidget(self.edit_btn)
         root.addWidget(top_bar)
@@ -469,6 +477,7 @@ class DetailPage(QWidget):
         self.bookmarks_filter_btn.setChecked(False)
         self.scene_marks_filter_btn.setChecked(False)
         self.scene_bookmark_counts = self.scene_bookmark_store.counts_for_webtoon(webtoon.name)
+        self._sync_saved_marks_button()
 
         # Restore per-webtoon hide-filler setting
         self.hide_specials = self.settings_store.get_hide_filler(webtoon.name)
@@ -1193,6 +1202,11 @@ class DetailPage(QWidget):
         chapter_path = os.path.join(self.webtoon.path, chapter)
         if not os.path.isdir(chapter_path):
             return 0
+        if any(
+            os.path.isfile(os.path.join(chapter_path, filename))
+            for filename in ("chapter.json", "chapter.html", "chapter.txt")
+        ):
+            return 1
         return sum(
             1 for filename in os.listdir(chapter_path)
             if os.path.isfile(os.path.join(chapter_path, filename))
@@ -1318,6 +1332,34 @@ class DetailPage(QWidget):
         progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
         self._build_chapter_list(progress)
 
+    def _saved_mode_label(self) -> str:
+        content_type = str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold()
+        return "Bookmark" if content_type == "webnovel" else "Scene"
+
+    def _sync_saved_marks_button(self):
+        count = sum(int(value or 0) for value in self.scene_bookmark_counts.values())
+        mode_label = self._saved_mode_label()
+        self.saved_marks_btn.setText(f"  Saved ({count})" if count else "  Saved")
+        self.saved_marks_btn.setToolTip(f"Open saved {mode_label.lower()}s across all chapters")
+        self.saved_marks_btn.setEnabled(count > 0)
+
+    def _open_all_scene_bookmarks(self):
+        if self.webtoon is None:
+            return
+        dialog = AllSceneBookmarksDialog(
+            self.webtoon,
+            self.scene_bookmark_store,
+            self._open_scene_bookmark,
+            parent=self,
+            mode_label=self._saved_mode_label(),
+        )
+        dialog.exec()
+        self.scene_bookmark_counts = self.scene_bookmark_store.counts_for_webtoon(self.webtoon.name)
+        self._sync_saved_marks_button()
+        self._update_chapter_count_label()
+        progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
+        self._build_chapter_list(progress)
+
     def _open_scene_bookmarks_for_chapter(self, chapter: str):
         if self.webtoon is None or chapter not in self.webtoon.chapters:
             return
@@ -1330,6 +1372,7 @@ class DetailPage(QWidget):
         )
         dialog.exec()
         self.scene_bookmark_counts = self.scene_bookmark_store.counts_for_webtoon(self.webtoon.name)
+        self._sync_saved_marks_button()
         self._update_chapter_count_label()
         progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
         self._build_chapter_list(progress)
@@ -1349,8 +1392,10 @@ class DetailPage(QWidget):
     def _is_current_webtoon_updating(self) -> bool:
         return bool(
             self.webtoon
-            and self._update_service is not None
-            and self._update_service.has_active_download(self.webtoon.name)
+            and (
+                (self._update_service is not None and self._update_service.has_active_download(self.webtoon.name))
+                or (self._manual_download_service is not None and self._manual_download_service.has_active_download(self.webtoon.name))
+            )
         )
 
     def _append_new_chapters_to_display_order(
@@ -1609,7 +1654,7 @@ class DetailPage(QWidget):
         if self.webtoon and name == self.webtoon.name:
             self._pending_disk_refresh = True
             if not self._disk_refresh_timer.isActive():
-                self._disk_refresh_timer.start(150)
+                self._disk_refresh_timer.start(1000 if self._is_current_webtoon_updating() else 150)
             self._sync_update_button()
 
     def _flush_disk_refresh(self):

@@ -1,9 +1,11 @@
+import json
 import os
 import re
 import shutil
 import subprocess
 import threading
 import time
+from html import escape
 from concurrent.futures import CancelledError
 from urllib.parse import parse_qs, urlparse
 
@@ -51,6 +53,9 @@ class DownloadService(QObject):
         self._restored_pending_jobs = False
         self._queue = get_global_download_queue()
         self._tracking = DownloadTrackingStore(self.settings_store, self.history_store)
+        self.browser_fetcher = None
+        self._last_library_changed_at: dict[str, float] = {}
+        self._browser_fetch_sites: set[str] = set()
 
         temp_root = self._temp_root()
         if os.path.exists(temp_root):
@@ -152,6 +157,9 @@ class DownloadService(QObject):
                 thread.join(timeout=remaining)
             except Exception as e:
                 logger.warning("Failed while joining download thread", exc_info=e)
+
+    def set_browser_fetcher(self, fetcher):
+        self.browser_fetcher = fetcher
 
     def active_download_names(self) -> list[str]:
         with self._jobs_lock:
@@ -301,7 +309,7 @@ class DownloadService(QObject):
 
             self._tracking.save_source_url(saved_name, job.source_url)
             status = "Completed"
-            self.library_changed.emit(saved_name)
+            self._emit_library_changed(saved_name, force=True)
         except DownloadCancelled:
             self._tracking.save_source_url(job.active_name or name, job.source_url)
             status = "Cancelled"
@@ -362,6 +370,17 @@ class DownloadService(QObject):
         job.progress_current = max(0, int(current))
         job.progress_total = max(0, int(total))
         self.progress_changed.emit(name, job.progress_current, job.progress_total)
+
+    def _emit_library_changed(self, name: str, *, force: bool = False, min_interval: float = 1.5):
+        normalized = sanitize_webtoon_name(name or "")
+        if not normalized:
+            return
+        now = time.monotonic()
+        last = self._last_library_changed_at.get(normalized, 0.0)
+        if not force and (now - last) < max(0.0, float(min_interval)):
+            return
+        self._last_library_changed_at[normalized] = now
+        self.library_changed.emit(normalized)
 
     def _get_existing_chapters(self, webtoon_dir: str) -> set[str]:
         existing = set()
@@ -582,6 +601,17 @@ class DownloadService(QObject):
         target_base = os.path.join(output_path, series_name)
         os.makedirs(target_base, exist_ok=True)
 
+        if str(getattr(scraper, "content_type", "webtoon") or "webtoon").strip().casefold() == "webnovel":
+            return self._custom_webnovel_download(
+                scraper,
+                job,
+                series,
+                chapter_list,
+                target_base,
+                series_name,
+                url_type,
+            )
+
         existing = self._get_existing_chapters(target_base)
         had_existing_chapters = bool(existing)
         total_chapters = len(chapter_list)
@@ -692,7 +722,7 @@ class DownloadService(QObject):
             latest_new_chapter_name = chapter_dir_name
             completed_chapters += 1
             self._emit_progress(job, series_name, completed_chapters, total_chapters)
-            self.library_changed.emit(series_name)
+            self._emit_library_changed(series_name)
 
             if failure_count > 0:
                 logger.warning(
@@ -716,6 +746,169 @@ class DownloadService(QObject):
             self.settings_store.set_latest_new_chapter(series_name, latest_new_chapter_name)
 
         return series_name
+
+    def _custom_webnovel_download(
+        self,
+        scraper,
+        job: DownloadJob,
+        series,
+        chapter_list: list,
+        target_base: str,
+        series_name: str,
+        url_type: str,
+    ) -> str:
+        existing = self._get_existing_chapters(target_base)
+        total_chapters = len(chapter_list)
+        completed_chapters = 0
+        any_chapter_succeeded = False
+        latest_new_chapter_name = None
+
+        if url_type == "series":
+            completed_chapters = sum(
+                1 for chapter in chapter_list
+                if self._format_chapter_number(chapter.number) in existing
+            )
+
+        self._emit_progress(job, series_name, completed_chapters, total_chapters)
+
+        for chapter in chapter_list:
+            if job.cancel_requested:
+                raise DownloadCancelled()
+
+            chapter_num = self._format_chapter_number(chapter.number)
+            if chapter_num is not None and chapter_num in existing and url_type == "series":
+                logger.info("Skipping existing webnovel chapter %s for %s", chapter_num, series_name)
+                continue
+
+            content = self._scraper_get_chapter_content(scraper, chapter.url)
+            if content is None:
+                if url_type == "series":
+                    logger.warning("Skipping empty chapter content for %s", chapter.url)
+                    continue
+                raise ScraperError(f"No chapter content found: {chapter.url}")
+
+            if chapter_num is not None:
+                chapter_dir_name = f"Chapter {chapter_num}"
+            else:
+                chapter_dir_name = sanitize_webtoon_name(chapter.title) or "Chapter"
+
+            chapter_dir = os.path.join(target_base, chapter_dir_name)
+            os.makedirs(chapter_dir, exist_ok=True)
+
+            chapter_payload_path = os.path.join(chapter_dir, "chapter.json")
+            html_body = str(getattr(content, "html", "") or "").strip()
+            text_body = str(getattr(content, "text", "") or "").strip()
+            title = str(getattr(content, "title", "") or chapter.title or chapter_dir_name).strip()
+
+            if not html_body and not text_body:
+                shutil.rmtree(chapter_dir, ignore_errors=True)
+                if url_type == "series":
+                    logger.warning("Skipping blank webnovel chapter %s", chapter.url)
+                    continue
+                raise ScraperError(f"Chapter content was blank: {chapter.url}")
+
+            if not html_body:
+                paragraphs = [
+                    f"<p>{escape(line)}</p>"
+                    for line in text_body.splitlines()
+                    if line.strip()
+                ]
+                html_body = "\n".join(paragraphs)
+
+            if not text_body:
+                text_body = BeautifulSoup(html_body, "html.parser").get_text("\n", strip=True)
+
+            payload = {
+                "format": "webnovel_chapter_v1",
+                "series_title": series_name,
+                "chapter_title": title,
+                "source_url": chapter.url,
+                "html": html_body,
+                "text": text_body.rstrip(),
+            }
+            with open(chapter_payload_path, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+
+            any_chapter_succeeded = True
+            latest_new_chapter_name = chapter_dir_name
+            completed_chapters += 1
+            self._emit_progress(job, series_name, completed_chapters, total_chapters)
+            self._emit_library_changed(series_name)
+
+        if job.cancel_requested:
+            raise DownloadCancelled()
+        if not any_chapter_succeeded and completed_chapters == 0:
+            raise ScraperError("No chapters were downloaded")
+
+        snapshot = build_webtoon_from_folder(os.path.dirname(target_base), series_name, self.settings_store)
+        thumb_path = snapshot.thumbnail if snapshot is not None else None
+        if thumb_path:
+            self.thumbnail_resolved.emit(series_name, thumb_path)
+
+        if latest_new_chapter_name:
+            self.settings_store.set_latest_new_chapter(series_name, latest_new_chapter_name)
+
+        return series_name
+
+    def _build_webnovel_chapter_document(self, series_name: str, chapter_title: str, html_body: str) -> str:
+        return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{escape(series_name)} - {escape(chapter_title)}</title>
+  <style>
+    :root {{
+      color-scheme: light;
+      --bg: #f6efe5;
+      --panel: #fffaf4;
+      --text: #2d221d;
+      --muted: #7b675c;
+      --line: rgba(82, 54, 45, 0.12);
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 32px 18px 48px;
+      background: linear-gradient(180deg, #efe3d3 0%, var(--bg) 100%);
+      color: var(--text);
+      font: 18px/1.75 Georgia, 'Times New Roman', serif;
+    }}
+    main {{
+      max-width: 860px;
+      margin: 0 auto;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 28px 24px;
+      box-shadow: 0 18px 48px rgba(61, 39, 31, 0.08);
+    }}
+    h1 {{
+      margin: 0 0 6px;
+      font-size: 32px;
+      line-height: 1.2;
+    }}
+    h2 {{
+      margin: 0 0 24px;
+      color: var(--muted);
+      font-size: 16px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }}
+    p {{ margin: 0 0 1.1em; }}
+    br + br {{ display: block; content: ""; margin-top: 0.9em; }}
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{escape(chapter_title)}</h1>
+    <h2>{escape(series_name)}</h2>
+    {html_body}
+  </main>
+</body>
+</html>
+"""
 
     def _gallery_dl_download(self, job: DownloadJob, url: str, output_path: str, name: str):
         os.makedirs(job.temp_dir, exist_ok=True)
@@ -938,6 +1131,34 @@ class DownloadService(QObject):
             except TypeError:
                 pass
         return scraper.get_chapter_pages(chapter_url)
+
+    def _scraper_get_chapter_content(self, scraper, chapter_url: str):
+        getter = getattr(scraper, "get_chapter_content", None)
+        if not callable(getter):
+            raise ScraperError("This scraper does not support text chapter downloads.")
+
+        parser = getattr(scraper, "parse_chapter_content_html", None)
+        site_name = str(getattr(scraper, "site_name", "") or "").strip()
+        browser_ready = self.browser_fetcher is not None and callable(parser) and bool(site_name)
+
+        if browser_ready and site_name in self._browser_fetch_sites:
+            logger.info("Using browser-backed chapter fetch for %s", chapter_url)
+            html = self.browser_fetcher.fetch_html(chapter_url, site_name)
+            return parser(chapter_url, html)
+
+        try:
+            return getter(chapter_url)
+        except ScraperError as exc:
+            if browser_ready and self._is_expected_access_block(exc):
+                logger.info("Attempting browser-backed chapter fetch for %s", chapter_url)
+                try:
+                    html = self.browser_fetcher.fetch_html(chapter_url, site_name)
+                    self._browser_fetch_sites.add(site_name)
+                    logger.info("Browser-backed chapter mode enabled for site=%s", site_name)
+                    return parser(chapter_url, html)
+                except Exception as browser_exc:
+                    logger.warning("Browser-backed chapter fetch failed for %s", chapter_url, exc_info=browser_exc)
+            raise
 
 
 

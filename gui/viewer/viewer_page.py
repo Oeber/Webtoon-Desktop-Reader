@@ -1,19 +1,21 @@
+import json
 import os
 import time
 from pathlib import Path
 from bisect import bisect_right
 
 import qtawesome as qta
+from bs4 import BeautifulSoup
 from core.app_logging import get_logger
 from core.app_paths import data_path
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
-    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog, QInputDialog
+    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog, QInputDialog, QTextBrowser, QSizePolicy, QProgressBar, QColorDialog, QSpinBox
 )
-from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QImageReader
+from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QImageReader, QTextDocument
 from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QSize
 
-from gui.common.scene_bookmark_dialog import SceneBookmarksDialog
+from gui.common.scene_bookmark_dialog import AllSceneBookmarksDialog, SceneBookmarksDialog
 from gui.common.styles import (
     LOADING_DETAIL_LABEL_STYLE,
     LOADING_TITLE_LABEL_STYLE,
@@ -42,13 +44,17 @@ from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from stores.settings_store import (
     VIEWER_AUTO_SKIP_KEY,
-    VIEWER_CHROME_VISIBLE_KEY,
     VIEWER_FOCUS_MODE_KEY,
     VIEWER_MINIMAP_VISIBLE_KEY,
     VIEWER_SCENE_ANCHORS_VISIBLE_KEY,
+    VIEWER_TEXT_COLOR_KEY,
+    VIEWER_TEXT_PAGE_COLOR_KEY,
+    VIEWER_TEXT_PROGRESS_VISIBLE_KEY,
+    VIEWER_TEXT_SIZE_KEY,
     VIEWER_ZOOM_KEY,
     load_setting,
     save_setting,
+    save_settings,
 )
 
 LAZY_WINDOW   = 2000
@@ -61,6 +67,128 @@ VIEWER_TOOLBAR_ICON_SIZE = QSize(16, 16)
 VIEWER_TOOLBAR_BUTTON_SIZE = 30
 VIEWER_TOOLBAR_TRIGGER_HEIGHT = 96
 logger = get_logger(__name__)
+
+
+class TextReaderSettingsDialog(QDialog):
+    def __init__(self, *, text_size: int, page_color: str, text_color: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Text Reader Settings")
+        self.setModal(True)
+        self.setFixedWidth(360)
+
+        self._default_page_color = "#140e0c"
+        self._default_text_color = "#f6ece5"
+        self._page_color = str(page_color or self._default_page_color)
+        self._text_color = str(text_color or self._default_text_color)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        size_row = QHBoxLayout()
+        size_label = QLabel("Text size")
+        self.size_spin = QSpinBox()
+        self.size_spin.setRange(12, 32)
+        self.size_spin.setValue(max(12, min(32, int(text_size))))
+        size_row.addWidget(size_label)
+        size_row.addStretch()
+        size_row.addWidget(self.size_spin)
+        layout.addLayout(size_row)
+
+        self.page_color_btn = QPushButton()
+        self.page_color_btn.clicked.connect(self._pick_page_color)
+        layout.addLayout(self._build_color_row("Page color", self.page_color_btn, self._reset_page_color))
+
+        self.text_color_btn = QPushButton()
+        self.text_color_btn.clicked.connect(self._pick_text_color)
+        layout.addLayout(self._build_color_row("Text color", self.text_color_btn, self._reset_text_color))
+
+        self.preview_label = QLabel()
+        self.preview_label.setWordWrap(True)
+        self.preview_label.setMinimumHeight(120)
+        self.preview_label.setTextFormat(Qt.RichText)
+        layout.addWidget(self.preview_label)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.accept)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(save_btn)
+        layout.addLayout(buttons)
+
+        self._refresh_color_buttons()
+        self._update_preview()
+
+    def _build_color_row(self, label_text: str, button: QPushButton, reset_callback) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(label_text))
+        row.addStretch()
+        button.setFixedWidth(110)
+        row.addWidget(button)
+        reset_btn = QPushButton("Reset")
+        reset_btn.setFixedWidth(56)
+        reset_btn.clicked.connect(reset_callback)
+        row.addWidget(reset_btn)
+        return row
+
+    def _pick_page_color(self):
+        color = QColorDialog.getColor(QColor(self._page_color), self, "Choose page color")
+        if color.isValid():
+            self._page_color = color.name()
+            self._refresh_color_buttons()
+            self._update_preview()
+
+    def _pick_text_color(self):
+        color = QColorDialog.getColor(QColor(self._text_color), self, "Choose text color")
+        if color.isValid():
+            self._text_color = color.name()
+            self._refresh_color_buttons()
+            self._update_preview()
+
+    def _reset_page_color(self):
+        self._page_color = self._default_page_color
+        self._refresh_color_buttons()
+        self._update_preview()
+
+    def _reset_text_color(self):
+        self._text_color = self._default_text_color
+        self._refresh_color_buttons()
+        self._update_preview()
+
+    def _refresh_color_buttons(self):
+        self.page_color_btn.setText(self._page_color.upper())
+        self.page_color_btn.setStyleSheet(f"background:{self._page_color}; color:{self._best_contrast(self._page_color)};")
+        self.text_color_btn.setText(self._text_color.upper())
+        self.text_color_btn.setStyleSheet(f"background:{self._text_color}; color:{self._best_contrast(self._text_color)};")
+
+    def _update_preview(self):
+        self.preview_label.setStyleSheet(
+            f"background:{self._page_color}; color:{self._text_color}; border:1px solid rgba(255,255,255,0.08); border-radius:12px; padding:14px; font-size:{self.size_spin.value()}px;"
+        )
+        self.preview_label.setText("<b>Preview</b><br/>The chapter text will use these colors and size.")
+
+    @staticmethod
+    def _best_contrast(color_value: str) -> str:
+        color = QColor(str(color_value or "#000000"))
+        if not color.isValid():
+            return "#ffffff"
+        luminance = (0.299 * color.red()) + (0.587 * color.green()) + (0.114 * color.blue())
+        return "#111111" if luminance > 160 else "#ffffff"
+
+    def accept(self):
+        self._update_preview()
+        super().accept()
+
+    @property
+    def values(self) -> dict:
+        return {
+            "text_size": int(self.size_spin.value()),
+            "page_color": self._page_color,
+            "text_color": self._text_color,
+        }
 
 
 class ViewerPage(QWidget):
@@ -80,9 +208,17 @@ class ViewerPage(QWidget):
 
         self._restore_image_index = None
         self._restore_image_offset = 0.0
+        self._restore_text_scroll = 0.0
         self._resize_packed = None
         self._resize_anchor_px = 0
         self._applying_restore = False
+        self._chapter_mode = "image"
+        self._text_loaded_segments: list[dict] = []
+        self._text_segment_bounds: list[dict] = []
+        self._text_append_threshold = 0.82
+        self._text_prepend_threshold = 0.18
+        self._text_max_loaded_segments = 3
+        self._pending_text_bookmark: tuple[int, float] | None = None
 
         self._pending_batch: dict[int, QPixmap] = {}
         self._chapter_image_cache: dict[str, tuple[int, list[str]]] = {}
@@ -125,9 +261,12 @@ class ViewerPage(QWidget):
         self._zoom = load_setting(VIEWER_ZOOM_KEY, 0.5)
         self.auto_skip_enabled = load_setting(VIEWER_AUTO_SKIP_KEY, True)
         self._focus_mode_enabled = bool(load_setting(VIEWER_FOCUS_MODE_KEY, False))
-        self._chrome_visible = bool(load_setting(VIEWER_CHROME_VISIBLE_KEY, True))
         self._minimap_visible = bool(load_setting(VIEWER_MINIMAP_VISIBLE_KEY, True))
         self._scene_anchors_visible = bool(load_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, True))
+        self._text_progress_visible = bool(load_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, True))
+        self._text_font_size = int(load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
+        self._text_page_color = str(load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
+        self._text_color = str(load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
         self.skip_specials_enabled = False
         self._zoom_override_active = False  # True when this webtoon has a saved override
         self._chapter_scene_marks: list[dict] = []
@@ -157,9 +296,9 @@ class ViewerPage(QWidget):
         self.installEventFilter(self)
         self.top_bar_widget.installEventFilter(self)
 
-        self.back_button = self._make_toolbar_button("fa5s.arrow-left", "Back to details", self.go_back)
-        self.prev_button = self._make_toolbar_button("fa5s.chevron-left", "Previous chapter", self.prev_chapter)
-        self.next_button = self._make_toolbar_button("fa5s.chevron-right", "Next chapter", self.next_chapter)
+        self.back_button = self._make_toolbar_button("fa5s.arrow-left", "(Esc) Back to details", self.go_back)
+        self.prev_button = self._make_toolbar_button("fa5s.chevron-left", "([) Previous chapter", self.prev_chapter)
+        self.next_button = self._make_toolbar_button("fa5s.chevron-right", "] Next chapter", self.next_chapter)
 
         self.chapter_selector = QComboBox()
         self.chapter_selector.setFocusPolicy(Qt.NoFocus)
@@ -168,21 +307,22 @@ class ViewerPage(QWidget):
         self.chapter_selector.setMaximumWidth(240)
         self.chapter_selector.currentIndexChanged.connect(self.load_selected_chapter)
 
-        self.nav_toggle = self._make_toolbar_button("fa5s.magic", "Auto Skip", self._toggle_navigation_mode, checkable=True)
+        self.nav_toggle = self._make_toolbar_button("fa5s.magic", "(Space) Auto Skip", self._toggle_navigation_mode, checkable=True)
         self.nav_toggle.setChecked(self.auto_skip_enabled)
 
-        self.save_scene_btn = self._make_toolbar_button("fa5s.bookmark", "Save the current scene with an optional note", self._save_scene_bookmark)
-        self.scene_list_btn = self._make_toolbar_button("fa5s.images", "Open saved scenes for this chapter", self._open_scene_bookmarks)
-        self.focus_mode_btn = self._make_toolbar_button("fa5s.bullseye", "Focused reading mode", self._toggle_focus_mode, checkable=True)
+        self.save_scene_btn = self._make_toolbar_button("fa5s.bookmark", "(S) Save the current scene with an optional note", self._save_scene_bookmark)
+        self.scene_list_btn = self._make_toolbar_button("fa5s.images", "(G) Open saved scenes for this chapter", self._open_scene_bookmarks)
+        self.focus_mode_btn = self._make_toolbar_button("fa5s.bullseye", "(F) Focus mode", self._toggle_focus_mode, checkable=True)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
-        self.chrome_btn = self._make_toolbar_button("fa5s.window-minimize", "Show or hide the reader toolbar", self._toggle_chrome, checkable=True)
-        self.chrome_btn.setChecked(self._chrome_visible)
-        self.minimap_btn = self._make_toolbar_button("fa5s.map", "Show or hide the reading mini-map", self._toggle_minimap, checkable=True)
+        self.text_progress_btn = self._make_toolbar_button("fa5s.stream", "(P) Show or hide text chapter progress", self._toggle_text_progress, checkable=True)
+        self.text_progress_btn.setChecked(self._text_progress_visible)
+        self.text_settings_btn = self._make_toolbar_button("fa5s.font", "(T) Text reader settings", self._open_text_reader_settings)
+        self.minimap_btn = self._make_toolbar_button("fa5s.map", "(M) Show or hide the reading mini-map", self._toggle_minimap, checkable=True)
         self.minimap_btn.setChecked(self._minimap_visible)
-        self.anchors_btn = self._make_toolbar_button("fa5s.map-pin", "Show or hide saved scene anchors on the mini-map", self._toggle_scene_anchors, checkable=True)
+        self.anchors_btn = self._make_toolbar_button("fa5s.map-pin", "(A) Show or hide saved scene anchors on the mini-map", self._toggle_scene_anchors, checkable=True)
         self.anchors_btn.setChecked(self._scene_anchors_visible)
-        self.zoom_out_btn = self._make_toolbar_button("fa5s.search-minus", "Decrease image width", self._zoom_out)
-        self.zoom_in_btn = self._make_toolbar_button("fa5s.search-plus", "Increase image width", self._zoom_in)
+        self.zoom_out_btn = self._make_toolbar_button("fa5s.search-minus", "(-) Decrease image width", self._zoom_out)
+        self.zoom_in_btn = self._make_toolbar_button("fa5s.search-plus", "(+) Increase image width", self._zoom_in)
 
         self._zoom_slider = QSlider(Qt.Horizontal)
         self._zoom_slider.setFixedWidth(100)
@@ -190,7 +330,7 @@ class ViewerPage(QWidget):
         self._zoom_slider.setMaximum(100)
         self._zoom_slider.setValue(int(self._zoom * 100))
         self._zoom_slider.setFocusPolicy(Qt.NoFocus)
-        self._zoom_slider.setToolTip("Image width")
+        self._zoom_slider.setToolTip("(+/-) Image width")
         self._zoom_slider.valueChanged.connect(self._on_zoom_slider)
 
         self._zoom_label = QLabel(f"{int(self._zoom * 100)}%")
@@ -200,7 +340,7 @@ class ViewerPage(QWidget):
 
         self._zoom_reset_btn = QPushButton("Reset zoom")
         self._zoom_reset_btn.setFocusPolicy(Qt.NoFocus)
-        self._zoom_reset_btn.setToolTip("Remove webtoon zoom override and use global default")
+        self._zoom_reset_btn.setToolTip("(0) Remove webtoon zoom override and use global default")
         self._zoom_reset_btn.setStyleSheet(VIEWER_ZOOM_BUTTON_STYLE)
         self._zoom_reset_btn.setEnabled(False)  # enabled only when an override is active
         self._zoom_reset_btn.clicked.connect(self._clear_zoom_override)
@@ -213,7 +353,8 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.save_scene_btn)
         top_bar.addWidget(self.scene_list_btn)
         top_bar.addWidget(self.focus_mode_btn)
-        top_bar.addWidget(self.chrome_btn)
+        top_bar.addWidget(self.text_progress_btn)
+        top_bar.addWidget(self.text_settings_btn)
         top_bar.addWidget(self.minimap_btn)
         top_bar.addWidget(self.anchors_btn)
         top_bar.addStretch()
@@ -235,8 +376,55 @@ class ViewerPage(QWidget):
 
         self.preview = ChapterPreview(self.scroll, metrics_provider=self, scene_jump_callback=self._jump_to_current_scene_mark)
 
+        self.text_progress_panel = QWidget()
+        self.text_progress_panel.setFixedWidth(PREVIEW_W)
+        self.text_progress_panel.setStyleSheet("")
+        text_progress_layout = QVBoxLayout(self.text_progress_panel)
+        text_progress_layout.setContentsMargins(16, 18, 16, 18)
+        text_progress_layout.setSpacing(10)
+        text_progress_layout.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+
+        self.text_side_progress_percent = QLabel("0%")
+        self.text_side_progress_percent.setAlignment(Qt.AlignCenter)
+        self.text_side_progress_percent.setStyleSheet(
+            "color: #fff0e7;"
+            "font-size: 24px;"
+            "font-weight: 700;"
+        )
+
+        self.text_side_progress_label = QLabel("READ")
+        self.text_side_progress_label.setAlignment(Qt.AlignCenter)
+        self.text_side_progress_label.setStyleSheet(
+            "color: rgba(255, 240, 231, 0.62);"
+            "font-size: 11px;"
+            "font-weight: 700;"
+            "letter-spacing: 0.18em;"
+        )
+
+        self.text_side_progress_track = QWidget()
+        self.text_side_progress_track.setFixedWidth(18)
+        self.text_side_progress_track.setMinimumHeight(220)
+        self.text_side_progress_track.setStyleSheet(
+            "background: rgba(255, 255, 255, 0.08);"
+            "border: 1px solid rgba(255, 255, 255, 0.06);"
+            "border-radius: 9px;"
+        )
+        self.text_side_progress_fill = QWidget(self.text_side_progress_track)
+        self.text_side_progress_fill.setStyleSheet(
+            "background: qlineargradient(x1:0,y1:1,x2:0,y2:0,stop:0 #ffb185, stop:1 #ffe2ce);"
+            "border-radius: 7px;"
+        )
+
+        text_progress_layout.addWidget(self.text_side_progress_percent)
+        text_progress_layout.addWidget(self.text_side_progress_label)
+        text_progress_layout.addSpacing(6)
+        text_progress_layout.addWidget(self.text_side_progress_track, 1, Qt.AlignHCenter)
+        text_progress_layout.addStretch()
+        self.text_progress_panel.hide()
+
         content_row.addWidget(self.scroll)
         content_row.addWidget(self.preview)
+        content_row.addWidget(self.text_progress_panel)
         main_layout.addLayout(content_row)
 
         self.auto_scroll = False
@@ -263,6 +451,74 @@ class ViewerPage(QWidget):
         self.image_layout.setContentsMargins(0, 0, 0, 0)
         self.scroll.setWidget(self.container)
 
+        self.text_container = QWidget()
+        self.text_container.setMouseTracking(True)
+        self.text_container.installEventFilter(self)
+        self.text_layout = QVBoxLayout(self.text_container)
+        self.text_layout.setContentsMargins(28, 28, 28, 36)
+        self.text_layout.setSpacing(14)
+        self.text_layout.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+
+        self.text_title_label = QLabel()
+        self.text_title_label.setWordWrap(True)
+        self.text_title_label.setTextFormat(Qt.RichText)
+        self.text_title_label.setMaximumWidth(860)
+        self.text_title_label.setMouseTracking(True)
+        self.text_title_label.installEventFilter(self)
+        self.text_title_label.setStyleSheet("")
+
+        self.text_content_label = QTextBrowser()
+        self.text_content_label.setOpenExternalLinks(True)
+        self.text_content_label.setOpenLinks(True)
+        self.text_content_label.setReadOnly(True)
+        self.text_content_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.text_content_label.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_content_label.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.text_content_label.setStyleSheet("")
+        self.text_content_label.setMaximumWidth(860)
+        self.text_content_label.setMouseTracking(True)
+        self.text_content_label.installEventFilter(self)
+        self.text_content_label.viewport().setMouseTracking(True)
+        self.text_content_label.viewport().installEventFilter(self)
+        self.text_content_label.document().documentLayout().documentSizeChanged.connect(
+            lambda _size: self._sync_text_content_height()
+        )
+
+        self.text_progress_label = QLabel("0% read")
+        self.text_progress_label.setMaximumWidth(860)
+        self.text_progress_label.setStyleSheet(
+            "color: rgba(246, 236, 229, 0.78);"
+            "font-size: 12px;"
+            "font-weight: 600;"
+            "letter-spacing: 0.04em;"
+            "padding: 2px 2px 0 2px;"
+        )
+
+        self.text_progress_bar = QProgressBar()
+        self.text_progress_bar.setMaximumWidth(860)
+        self.text_progress_bar.setTextVisible(False)
+        self.text_progress_bar.setRange(0, 1000)
+        self.text_progress_bar.setValue(0)
+        self.text_progress_bar.setFixedHeight(8)
+        self.text_progress_bar.setStyleSheet(
+            "QProgressBar {"
+            "background: rgba(255, 255, 255, 0.08);"
+            "border: 1px solid rgba(255, 255, 255, 0.05);"
+            "border-radius: 4px;"
+            "}"
+            "QProgressBar::chunk {"
+            "background: qlineargradient(x1:0,y1:0,x2:1,y2:0,stop:0 #ffb185, stop:1 #ffd7b8);"
+            "border-radius: 4px;"
+            "}"
+        )
+
+        self.text_progress_label.hide()
+        self.text_progress_bar.hide()
+
+        self.text_layout.addWidget(self.text_title_label)
+        self.text_layout.addWidget(self.text_content_label)
+        self.text_layout.addStretch()
+
         self.preview.setMouseTracking(True)
         self.preview.installEventFilter(self)
         self._auto_scroll_direction = 0
@@ -281,6 +537,7 @@ class ViewerPage(QWidget):
         self.scroll.verticalScrollBar().valueChanged.connect(self.check_visible_images)
         self.scroll.verticalScrollBar().valueChanged.connect(self.preview.update)
         self.scroll.verticalScrollBar().valueChanged.connect(self._update_session_overlay)
+        self.scroll.verticalScrollBar().valueChanged.connect(self._update_text_progress_indicator)
 
         self._progress_save_timer = QTimer()
         self._progress_save_timer.setSingleShot(True)
@@ -324,7 +581,9 @@ class ViewerPage(QWidget):
             "padding: 8px 10px;"
             "font-size: 11px;"
         )
+        self._apply_text_reader_style()
         self._apply_reader_session_state(persist=False)
+        self._update_text_progress_indicator()
 
     def _make_toolbar_button(self, icon_name: str, tooltip: str, callback, *, checkable: bool = False) -> QPushButton:
         button = QPushButton()
@@ -370,7 +629,7 @@ class ViewerPage(QWidget):
     def _apply_toolbar_visibility(self):
         if not hasattr(self, "top_bar_widget"):
             return
-        should_show = self._chrome_visible and (
+        should_show = (not self._focus_mode_enabled) and (
             self._toolbar_hover_active or self.top_bar_widget.underMouse() or self._toolbar_popup_open()
         )
         self.top_bar_widget.setVisible(should_show)
@@ -394,40 +653,89 @@ class ViewerPage(QWidget):
 
     def _apply_reader_session_state(self, *, persist: bool = True):
         self._apply_toolbar_visibility()
-        self.preview.setVisible(self._minimap_visible)
+        image_mode = self._chapter_mode == "image"
+        text_mode = self._chapter_mode == "text"
+        preview_visible = self._minimap_visible and image_mode
+        self.preview.setVisible(preview_visible)
+        self.text_progress_panel.setVisible(text_mode and self._text_progress_visible)
         self.preview.set_scene_marks_visible(self._scene_anchors_visible)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
-        self.chrome_btn.setChecked(self._chrome_visible)
+        self.text_progress_btn.setChecked(self._text_progress_visible)
         self.minimap_btn.setChecked(self._minimap_visible)
         self.anchors_btn.setChecked(self._scene_anchors_visible)
         self.nav_toggle.setChecked(self.auto_skip_enabled)
-        self.nav_toggle.setToolTip("Auto Skip enabled" if self.auto_skip_enabled else "Standard page navigation")
-        self.focus_mode_btn.setToolTip("Focused reading mode on" if self._focus_mode_enabled else "Focused reading mode off")
-        self.chrome_btn.setToolTip("Reader toolbar hover reveal on" if self._chrome_visible else "Reader toolbar hidden")
-        self.minimap_btn.setToolTip("Mini-map visible" if self._minimap_visible else "Mini-map hidden")
-        self.anchors_btn.setToolTip("Scene anchors visible" if self._scene_anchors_visible else "Scene anchors hidden")
-        self.anchors_btn.setEnabled(self._minimap_visible)
+        self.nav_toggle.setToolTip("(Space) Auto Skip enabled" if self.auto_skip_enabled else "(Space) Standard page navigation")
+        self.focus_mode_btn.setToolTip("(F) Focus mode on" if self._focus_mode_enabled else "(F) Focus mode off")
+        self.text_progress_btn.setToolTip("(P) Text progress visible" if self._text_progress_visible else "(P) Text progress hidden")
+        self.text_settings_btn.setToolTip("(T) Text reader settings")
+        self.minimap_btn.setToolTip("(M) Mini-map visible" if self._minimap_visible else "(M) Mini-map hidden")
+        self.anchors_btn.setToolTip("(A) Scene anchors visible" if self._scene_anchors_visible else "(A) Scene anchors hidden")
+        self.minimap_btn.setEnabled(image_mode)
+        self.anchors_btn.setEnabled(preview_visible)
+        self.nav_toggle.setEnabled(image_mode)
+        self.text_progress_btn.setEnabled(text_mode)
+        self.text_settings_btn.setEnabled(text_mode)
+        zoom_enabled = image_mode
+        self.zoom_in_btn.setEnabled(zoom_enabled)
+        self.zoom_out_btn.setEnabled(zoom_enabled)
+        self._zoom_slider.setEnabled(zoom_enabled)
+        self._zoom_reset_btn.setEnabled(zoom_enabled and self._zoom_override_active)
+        for widget in (
+            self.nav_toggle,
+            self.minimap_btn,
+            self.anchors_btn,
+            self.zoom_out_btn,
+            self._zoom_slider,
+            self.zoom_in_btn,
+            self._zoom_label,
+            self._zoom_reset_btn,
+        ):
+            widget.setVisible(image_mode)
+        for widget in (self.save_scene_btn, self.scene_list_btn):
+            widget.setVisible(image_mode or text_mode)
+        for widget in (self.text_progress_btn, self.text_settings_btn):
+            widget.setVisible(text_mode)
         self._position_session_overlay()
+        self._update_text_progress_indicator()
         self._update_session_overlay()
         if persist:
             save_setting(VIEWER_FOCUS_MODE_KEY, self._focus_mode_enabled)
-            save_setting(VIEWER_CHROME_VISIBLE_KEY, self._chrome_visible)
             save_setting(VIEWER_MINIMAP_VISIBLE_KEY, self._minimap_visible)
             save_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, self._scene_anchors_visible)
+            save_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, self._text_progress_visible)
 
     def _toggle_focus_mode(self, checked: bool):
         self._focus_mode_enabled = bool(checked)
         if self._focus_mode_enabled:
-            self._chrome_visible = False
             self._minimap_visible = True
-        else:
-            self._chrome_visible = True
         self._apply_reader_session_state()
         self.setFocus()
 
-    def _toggle_chrome(self, checked: bool):
-        self._chrome_visible = bool(checked)
+    def _toggle_text_progress(self, checked: bool):
+        self._text_progress_visible = bool(checked)
         self._apply_reader_session_state()
+        self.setFocus()
+
+    def _open_text_reader_settings(self):
+        dialog = TextReaderSettingsDialog(
+            text_size=self._text_font_size,
+            page_color=self._text_page_color,
+            text_color=self._text_color,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values
+        self._text_font_size = int(values["text_size"])
+        self._text_page_color = str(values["page_color"])
+        self._text_color = str(values["text_color"])
+        save_settings({
+            VIEWER_TEXT_SIZE_KEY: self._text_font_size,
+            VIEWER_TEXT_PAGE_COLOR_KEY: self._text_page_color,
+            VIEWER_TEXT_COLOR_KEY: self._text_color,
+        })
+        self._apply_text_reader_style()
+        self._sync_text_content_height()
         self.setFocus()
 
     def _toggle_minimap(self, checked: bool):
@@ -452,14 +760,24 @@ class ViewerPage(QWidget):
         if not hasattr(self, "session_overlay"):
             return
         chapter = self.webtoon.chapters[self.current_chapter_index] if self.webtoon and 0 <= self.current_chapter_index < len(self.webtoon.chapters) else ""
-        total = max(1, len(self.image_labels))
-        progress = max(0.0, min(1.0, self._current_packed_position() / total)) if self.image_labels else 0.0
+        if self._chapter_mode == "text":
+            bar = self.scroll.verticalScrollBar()
+            progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
+        else:
+            total = max(1, len(self.image_labels))
+            progress = max(0.0, min(1.0, self._current_packed_position() / total)) if self.image_labels else 0.0
         scene_count = len(self._chapter_scene_marks)
+        if self._chapter_mode == "text":
+            shortcut_line = "(F) Focus | (P) Progress | (T) Text settings | ([ ]) Chapter | (Esc) Exit"
+            detail_line = "Text chapter"
+        else:
+            shortcut_line = "(F) Focus | (M) Map | (S) Save | (G) List | ([ ]) Chapter | (Esc) Exit"
+            detail_line = f"Scenes {scene_count}"
         self.session_overlay.setText(
             f"{chapter} | {int(progress * 100)}%\n"
-            f"Scenes {scene_count} | H UI | M Map | S Save | G List | [ ] Chapter | Esc Exit"
+            f"{shortcut_line}\n{detail_line}"
         )
-        show_overlay = self._focus_mode_enabled or not self._chrome_visible
+        show_overlay = self._focus_mode_enabled
         self.session_overlay.setVisible(show_overlay)
         self._position_session_overlay()
 
@@ -467,20 +785,40 @@ class ViewerPage(QWidget):
         if not self.webtoon or not (0 <= self.current_chapter_index < len(self.webtoon.chapters)):
             self._chapter_scene_marks = []
             self.preview.set_scene_marks([])
-            self.scene_list_btn.setToolTip("No saved scenes for this chapter")
+            self.scene_list_btn.setToolTip("No saved bookmarks for this chapter")
             self.scene_list_btn.setEnabled(False)
+            self.save_scene_btn.setToolTip("Save a bookmark for this chapter")
+            self.save_scene_btn.setEnabled(False)
             self._update_session_overlay()
             return
+
         chapter = self.webtoon.chapters[self.current_chapter_index]
+        if self._chapter_mode == "image":
+            marks = sorted(
+                self.scene_bookmark_store.list_for_chapter(self.webtoon.name, chapter),
+                key=lambda item: float(item.get("packed") or 0.0),
+            )
+            self._chapter_scene_marks = marks
+            self.preview.set_scene_marks(marks)
+            count = len(marks)
+            self.scene_list_btn.setToolTip(f"(G) Open saved scenes for this chapter ({count})" if count else "(G) Open saved scenes for this chapter")
+            self.scene_list_btn.setEnabled(True)
+            self.save_scene_btn.setToolTip("(S) Save the current scene with an optional note")
+            self.save_scene_btn.setEnabled(True)
+            self._update_session_overlay()
+            return
+
         marks = sorted(
-            self.scene_bookmark_store.list_for_chapter(self.webtoon.name, chapter),
-            key=lambda item: float(item.get("packed") or 0.0),
+            self.scene_bookmark_store.list_for_webtoon(self.webtoon.name),
+            key=lambda item: (str(item.get("chapter") or ""), float(item.get("packed") or 0.0)),
         )
         self._chapter_scene_marks = marks
-        self.preview.set_scene_marks(marks)
+        self.preview.set_scene_marks([])
         count = len(marks)
-        self.scene_list_btn.setToolTip(f"Open saved scenes for this chapter ({count})" if count else "Open saved scenes for this chapter")
+        self.scene_list_btn.setToolTip(f"(G) Open saved bookmarks for this novel ({count})" if count else "(G) Open saved bookmarks for this novel")
         self.scene_list_btn.setEnabled(True)
+        self.save_scene_btn.setToolTip("(S) Save a bookmark for this chapter")
+        self.save_scene_btn.setEnabled(True)
         self._update_session_overlay()
 
     def _jump_to_current_scene_mark(self, packed: float):
@@ -602,11 +940,16 @@ class ViewerPage(QWidget):
         return base + int(height * frac)
 
     def _save_progress(self):
-        if not self.webtoon or not self.image_labels:
+        if not self.webtoon:
+            return
+        if self._chapter_mode == "text":
+            self._save_text_progress()
             return
         chapter = self.webtoon.chapters[self.current_chapter_index]
-        total = len(self.image_labels)
         bar = self.scroll.verticalScrollBar()
+        if not self.image_labels:
+            return
+        total = len(self.image_labels)
         if bar.value() >= bar.maximum() and bar.maximum() > 0:
             packed = float(total)
         else:
@@ -620,8 +963,45 @@ class ViewerPage(QWidget):
         )
         self.progress_store.save(self.webtoon.name, chapter, packed, total)
 
+    def _save_text_progress(self):
+        if not self.webtoon or not self._text_loaded_segments:
+            return
+        bar = self.scroll.verticalScrollBar()
+        active = self._active_text_segment(bar.value())
+        if active is None:
+            chapter = self.webtoon.chapters[self.current_chapter_index]
+            progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
+            self.progress_store.save(self.webtoon.name, chapter, progress, 1)
+            return
+        entries = []
+        for segment in self._text_loaded_segments:
+            chapter = segment["chapter"]
+            index = int(segment["index"])
+            if index < int(active["index"]):
+                entries.append((chapter, 1.0, 1))
+            elif index == int(active["index"]):
+                entries.append((chapter, float(active["progress"]), 1))
+        if entries:
+            logger.info(
+                "Viewer saving text progress for %s active_chapter=%s progress=%.3f loaded_segments=%d",
+                self.webtoon.name,
+                active["chapter"],
+                float(active["progress"]),
+                len(self._text_loaded_segments),
+            )
+            self.progress_store.save_many(self.webtoon.name, entries)
+
     def _current_scene_bookmark_payload(self) -> tuple[str, float, int, float] | None:
-        if not self.webtoon or not self.image_labels:
+        if not self.webtoon:
+            return None
+        if self._chapter_mode == "text":
+            active = self._active_text_segment(self.scroll.verticalScrollBar().value())
+            if active is None:
+                return None
+            chapter = str(active["chapter"])
+            packed = max(0.0, min(1.0, float(active.get("progress") or 0.0)))
+            return chapter, packed, 0, packed
+        if not self.image_labels:
             return None
         chapter = self.webtoon.chapters[self.current_chapter_index]
         total = len(self.image_labels)
@@ -640,19 +1020,19 @@ class ViewerPage(QWidget):
         if payload is None:
             return
         chapter, packed, image_index, offset_frac = payload
-        note, accepted = QInputDialog.getText(
-            self,
-            "Save Scene",
-            "Optional note for this scene:",
-        )
+        title = "Save Bookmark" if self._chapter_mode == "text" else "Save Scene"
+        prompt = "Optional note for this bookmark:" if self._chapter_mode == "text" else "Optional note for this scene:"
+        note, accepted = QInputDialog.getText(self, title, prompt)
         if not accepted:
             return
-        thumbnail_path = self._save_scene_thumbnail(image_index, offset_frac)
+        thumbnail_path = ""
+        if self._chapter_mode == "image":
+            thumbnail_path = self._save_scene_thumbnail(image_index, offset_frac)
         self.scene_bookmark_store.save(
             self.webtoon.name,
             chapter,
             packed,
-            image_index + 1,
+            image_index + 1 if self._chapter_mode == "image" else 0,
             note,
             thumbnail_path=thumbnail_path,
         )
@@ -713,23 +1093,37 @@ class ViewerPage(QWidget):
         return cleaned or "scene"
 
     def _open_scene_bookmarks(self):
-        payload = self._current_scene_bookmark_payload()
-        if payload is None:
+        if not self.webtoon:
             return
-        chapter, _packed, _image_index, _offset_frac = payload
-        dialog = SceneBookmarksDialog(
-            self.webtoon,
-            chapter,
-            self.scene_bookmark_store,
-            lambda packed: self._jump_to_saved_scene(chapter, packed),
-            parent=self,
-        )
+        if not (0 <= self.current_chapter_index < len(self.webtoon.chapters)):
+            return
+        chapter = self.webtoon.chapters[self.current_chapter_index]
+        if self._chapter_mode == "text":
+            dialog = AllSceneBookmarksDialog(
+                self.webtoon,
+                self.scene_bookmark_store,
+                self._jump_to_saved_scene,
+                parent=self,
+                mode_label="Bookmark",
+            )
+        else:
+            dialog = SceneBookmarksDialog(
+                self.webtoon,
+                chapter,
+                self.scene_bookmark_store,
+                lambda packed: self._jump_to_saved_scene(chapter, packed),
+                parent=self,
+                mode_label="Scene",
+            )
         dialog.exec()
         self._refresh_scene_marks()
         self.setFocus()
 
     def _jump_to_saved_scene(self, chapter: str, packed: float):
         if not self.webtoon:
+            return
+        if self._chapter_mode == "text":
+            self._jump_to_text_bookmark(chapter, packed)
             return
         current_chapter = self.webtoon.chapters[self.current_chapter_index]
         if chapter != current_chapter:
@@ -739,7 +1133,38 @@ class ViewerPage(QWidget):
         if self._restore_image_index is not None:
             self._progress_save_timer.start()
 
+    def _jump_to_text_bookmark(self, chapter: str, packed: float):
+        if not self.webtoon:
+            return
+        try:
+            chapter_index = self.webtoon.chapters.index(chapter)
+        except ValueError:
+            return
+        progress = max(0.0, min(1.0, float(packed or 0.0)))
+        if any(int(segment.get("index") or -1) == chapter_index for segment in self._text_loaded_segments):
+            self._jump_to_text_segment_progress(chapter_index, progress)
+            return
+        self._pending_text_bookmark = (chapter_index, progress)
+        self._clear_pending_restore()
+        self._load_chapter_no_prompt(chapter_index)
+
+    def _jump_to_text_segment_progress(self, chapter_index: int, progress: float):
+        self._rebuild_text_segment_bounds()
+        progress = max(0.0, min(1.0, float(progress or 0.0)))
+        for bound in self._text_segment_bounds:
+            if int(bound.get("index") or -1) != int(chapter_index):
+                continue
+            span = max(1, int(bound["end"]) - int(bound["start"]))
+            target = int(bound["start"]) + int(span * progress)
+            bar = self.scroll.verticalScrollBar()
+            bar.setValue(max(0, min(target, bar.maximum())))
+            self._sync_text_active_chapter(target, force=True)
+            self._update_text_progress_indicator()
+            self._progress_save_timer.start()
+            return
+
     def _unpack_restore(self, packed: float):
+        self._restore_text_scroll = max(0.0, min(1.0, float(packed or 0.0)))
         if packed < 0.005:
             self._restore_image_index = None
             self._restore_image_offset = 0.0
@@ -750,6 +1175,7 @@ class ViewerPage(QWidget):
     def _clear_pending_restore(self):
         self._restore_image_index = None
         self._restore_image_offset = 0.0
+        self._restore_text_scroll = 0.0
 
     def _apply_restore(self):
         idx = self._restore_image_index
@@ -927,11 +1353,15 @@ class ViewerPage(QWidget):
             self.chapter_selector.setCurrentIndex(index)
         self.chapter_selector.blockSignals(False)
 
-        self._load_chapter_images(chapter)
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        if self._has_text_chapter_content(chapter_path):
+            self._load_text_chapter(chapter, chapter_path)
+        else:
+            self._load_chapter_images(chapter)
         self._refresh_scene_marks()
         self.update_nav_buttons()
 
-        if self._restore_image_index is None:
+        if self._chapter_mode == "image" and self._restore_image_index is None:
             self.scroll.verticalScrollBar().setValue(0)
 
     def clear_images(self):
@@ -967,12 +1397,412 @@ class ViewerPage(QWidget):
         self._chapter_scene_marks = []
         self.scene_list_btn.setToolTip("No saved scenes for this chapter")
         self.scene_list_btn.setEnabled(False)
+        self.save_scene_btn.setEnabled(False)
         self._update_session_overlay()
 
         self._panel_ranges = []
         self._panel_ranges_dirty = True
         self._panel_build_generation += 1
         self._panel_build_inflight = False
+
+        self.text_title_label.clear()
+        self.text_progress_label.setText("0% read")
+        self.text_progress_bar.setValue(0)
+        self.text_side_progress_percent.setText("0%")
+        self._update_text_side_progress_fill(0)
+        self.text_content_label.clear()
+        self._text_loaded_segments = []
+        self._text_segment_bounds = []
+
+    def _set_chapter_mode(self, mode: str):
+        mode = "text" if str(mode).strip().casefold() == "text" else "image"
+        self._chapter_mode = mode
+        target = self.text_container if mode == "text" else self.container
+        if self.scroll.widget() is not target:
+            self.scroll.takeWidget()
+            self.scroll.setWidget(target)
+        self._apply_reader_session_state(persist=False)
+
+    def _has_text_chapter_content(self, chapter_path: str) -> bool:
+        for filename in ("chapter.json", "chapter.html", "chapter.txt"):
+            if os.path.isfile(os.path.join(chapter_path, filename)):
+                return True
+        return False
+
+    def _load_text_chapter(self, chapter: str, chapter_path: str):
+        self.clear_images()
+        self._set_chapter_mode("text")
+        segment = self._build_text_segment(self.current_chapter_index)
+        if segment is None:
+            logger.warning("Viewer text chapter is empty: %s", chapter_path)
+            QMessageBox.information(self, "Chapter empty", f"'{chapter}' has no readable text.")
+            return
+        self._text_loaded_segments = [segment]
+        self._render_text_segments()
+        self._apply_text_reader_style()
+        self._sync_text_active_chapter(0.0, force=True)
+        self._update_text_progress_indicator()
+        self._update_session_overlay()
+        self.setFocus()
+        if self._pending_text_bookmark and int(self._pending_text_bookmark[0]) == int(self.current_chapter_index):
+            pending_index, pending_progress = self._pending_text_bookmark
+            self._pending_text_bookmark = None
+            QTimer.singleShot(0, lambda idx=pending_index, prog=pending_progress: self._jump_to_text_segment_progress(idx, prog))
+        QTimer.singleShot(0, self._sync_text_content_height)
+        QTimer.singleShot(0, self._update_text_progress_indicator)
+        QTimer.singleShot(0, self._apply_text_restore)
+
+    def _build_text_segment(self, chapter_index: int) -> dict | None:
+        if not self.webtoon or chapter_index < 0 or chapter_index >= len(self.webtoon.chapters):
+            return None
+        chapter = self.webtoon.chapters[chapter_index]
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        payload = self._read_text_chapter_payload(chapter_path)
+        title = str(chapter or "").strip() or chapter
+        html_body = str(payload.get("html") or "").strip()
+        text_body = str(payload.get("text") or "").strip()
+        if not html_body:
+            paragraphs = [
+                f"<p>{self._escape_html(line)}</p>"
+                for line in text_body.splitlines()
+                if line.strip()
+            ]
+            html_body = "\n".join(paragraphs)
+        if not html_body:
+            return None
+        return {
+            "index": int(chapter_index),
+            "chapter": chapter,
+            "title": title,
+            "html_body": html_body,
+        }
+
+    def _render_text_segments(self):
+        if not self._text_loaded_segments:
+            self.text_title_label.clear()
+            self.text_content_label.clear()
+            self._text_segment_bounds = []
+            return
+        self.text_title_label.setText(self._render_text_chapter_title(str(self._text_loaded_segments[0]["title"])))
+        self.text_content_label.setHtml(self._render_continuous_text_document())
+        self._sync_text_content_height()
+        self._rebuild_text_segment_bounds()
+
+    def _render_continuous_text_document(self) -> str:
+        parts = ["<div style='max-width:860px;margin:0 auto;'>", self._text_document_style_block()]
+        for pos, segment in enumerate(self._text_loaded_segments):
+            parts.append(self._render_text_segment_fragment(segment, include_break=(pos > 0)))
+        parts.append("</div>")
+        return "".join(parts)
+
+    def _text_document_style_block(self) -> str:
+        text_color = self._escape_html(self._text_color)
+        return (
+            "<style>"
+            f"p{{margin:0 0 1.1em 0;color:{text_color};}}"
+            f"h1,h2,h3{{color:{text_color};line-height:1.25;margin:0 0 0.7em 0;}}"
+            "blockquote{margin:1.2em 0;padding:0.8em 1em;border-left:3px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.03);}"
+            "hr{border:none;border-top:1px solid rgba(255,255,255,0.12);margin:1.8em 0 1.2em 0;}"
+            ".chapter-bridge{padding:0.6em 0 0.8em 0;}"
+            f".chapter-bridge h2{{margin:0;color:{text_color};font-size:24px;font-weight:700;}}"
+            "</style>"
+        )
+
+    def _render_text_segment_fragment(self, segment: dict, *, include_break: bool) -> str:
+        title_html = self._escape_html(str(segment.get("title") or segment.get("chapter") or "Chapter"))
+        body_html = str(segment.get("html_body") or "")
+        if include_break:
+            return (
+                "<hr>"
+                "<div class='chapter-bridge'>"
+                f"<h2>{title_html}</h2>"
+                "</div>"
+                f"{body_html}"
+            )
+        return body_html
+
+    def _estimate_text_segment_height(self, segment: dict, *, include_break: bool, width: int) -> int:
+        doc = QTextDocument()
+        doc.setDefaultStyleSheet("")
+        doc.setHtml(
+            "<div style='max-width:860px;margin:0 auto;'>"
+            + self._text_document_style_block()
+            + self._render_text_segment_fragment(segment, include_break=include_break)
+            + "</div>"
+        )
+        doc.setTextWidth(max(200, width))
+        return max(1, int(doc.size().height()))
+
+    def _rebuild_text_segment_bounds(self):
+        width = max(200, self.text_content_label.viewport().width())
+        bounds = []
+        current = 0
+        for pos, segment in enumerate(self._text_loaded_segments):
+            height = self._estimate_text_segment_height(segment, include_break=(pos > 0), width=width)
+            start = current
+            end = current + height
+            bounds.append({
+                "index": int(segment["index"]),
+                "chapter": segment["chapter"],
+                "title": segment["title"],
+                "start": start,
+                "end": end,
+            })
+            current = end
+        self._text_segment_bounds = bounds
+
+    def _active_text_segment(self, scroll_value: int | float | None = None) -> dict | None:
+        if not self._text_segment_bounds:
+            return None
+        bar = self.scroll.verticalScrollBar()
+        position = int(bar.value() if scroll_value is None else scroll_value)
+        for bound in self._text_segment_bounds:
+            if position < int(bound["end"]):
+                span = max(1, int(bound["end"]) - int(bound["start"]))
+                progress = max(0.0, min(1.0, (position - int(bound["start"])) / span))
+                active = dict(bound)
+                active["progress"] = progress
+                return active
+        bound = dict(self._text_segment_bounds[-1])
+        bound["progress"] = 1.0
+        return bound
+
+    def _sync_text_active_chapter(self, scroll_value: int | float | None = None, *, force: bool = False):
+        active = self._active_text_segment(scroll_value)
+        if active is None:
+            return
+        active_index = int(active["index"])
+        if not force and active_index == self.current_chapter_index:
+            return
+        self.current_chapter_index = active_index
+        self.text_title_label.setText(self._render_text_chapter_title(str(active["title"])))
+        self.chapter_selector.blockSignals(True)
+        if self._chapter_index_map:
+            selector_pos = next((i for i, real in enumerate(self._chapter_index_map) if real == active_index), None)
+            if selector_pos is not None:
+                self.chapter_selector.setCurrentIndex(selector_pos)
+        else:
+            self.chapter_selector.setCurrentIndex(active_index)
+        self.chapter_selector.blockSignals(False)
+        self.update_nav_buttons()
+
+    def _maybe_append_next_text_segment(self):
+        if self._chapter_mode != "text" or not self.webtoon or not self._text_loaded_segments:
+            return False
+        active = self._active_text_segment(self.scroll.verticalScrollBar().value())
+        if active is None:
+            return False
+        last_index = int(self._text_loaded_segments[-1]["index"])
+        if int(active["index"]) != last_index or float(active.get("progress") or 0.0) < self._text_append_threshold:
+            return False
+        next_index = self._next_chapter_index(last_index)
+        if next_index is None or any(int(seg["index"]) == next_index for seg in self._text_loaded_segments):
+            return False
+        segment = self._build_text_segment(next_index)
+        if segment is None:
+            return False
+        self._text_loaded_segments.append(segment)
+        return True
+
+    def _maybe_prepend_previous_text_segment(self):
+        if self._chapter_mode != "text" or not self.webtoon or not self._text_loaded_segments:
+            return False
+        active = self._active_text_segment(self.scroll.verticalScrollBar().value())
+        if active is None:
+            return False
+        first_index = int(self._text_loaded_segments[0]["index"])
+        if int(active["index"]) != first_index or float(active.get("progress") or 0.0) > self._text_prepend_threshold:
+            return False
+        prev_index = self._prev_chapter_index(first_index)
+        if prev_index is None or any(int(seg["index"]) == prev_index for seg in self._text_loaded_segments):
+            return False
+        segment = self._build_text_segment(prev_index)
+        if segment is None:
+            return False
+        self._text_loaded_segments.insert(0, segment)
+        return True
+
+    def _ensure_text_segment_window(self):
+        if self._chapter_mode != "text" or not self._text_loaded_segments:
+            return
+        bar = self.scroll.verticalScrollBar()
+        active = self._active_text_segment(bar.value())
+        if active is None:
+            return
+        active_index = int(active["index"])
+        previous_bounds = {int(bound["index"]): dict(bound) for bound in self._text_segment_bounds}
+        previous_offset = 0
+        if active_index in previous_bounds:
+            previous_offset = max(0, int(bar.value()) - int(previous_bounds[active_index]["start"]))
+
+        changed = self._maybe_prepend_previous_text_segment()
+        changed = self._maybe_append_next_text_segment() or changed
+
+        if len(self._text_loaded_segments) > self._text_max_loaded_segments:
+            active_pos = next((i for i, seg in enumerate(self._text_loaded_segments) if int(seg["index"]) == active_index), 0)
+            keep_start = max(0, active_pos - 1)
+            keep_end = min(len(self._text_loaded_segments), keep_start + self._text_max_loaded_segments)
+            keep_start = max(0, keep_end - self._text_max_loaded_segments)
+            trimmed = self._text_loaded_segments[keep_start:keep_end]
+            if len(trimmed) != len(self._text_loaded_segments):
+                self._text_loaded_segments = trimmed
+                changed = True
+
+        if not changed:
+            return
+
+        self._render_text_segments()
+        self._rebuild_text_segment_bounds()
+        new_bound = next((bound for bound in self._text_segment_bounds if int(bound["index"]) == active_index), None)
+        if new_bound is not None:
+            target = int(new_bound["start"]) + previous_offset
+            QTimer.singleShot(0, lambda: self.scroll.verticalScrollBar().setValue(max(0, min(target, self.scroll.verticalScrollBar().maximum()))))
+
+    def _read_text_chapter_payload(self, chapter_path: str) -> dict:
+        json_path = os.path.join(chapter_path, "chapter.json")
+        if os.path.isfile(json_path):
+            with open(json_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if isinstance(data, dict):
+                return data
+
+        html_path = os.path.join(chapter_path, "chapter.html")
+        txt_path = os.path.join(chapter_path, "chapter.txt")
+        payload = {}
+        if os.path.isfile(html_path):
+            with open(html_path, "r", encoding="utf-8") as handle:
+                html = handle.read()
+            soup = BeautifulSoup(html, "html.parser")
+            body = soup.body
+            payload["html"] = body.decode_contents() if body is not None else html
+        if os.path.isfile(txt_path):
+            with open(txt_path, "r", encoding="utf-8") as handle:
+                payload["text"] = handle.read()
+        return payload
+
+    def _apply_text_restore(self):
+        if self._chapter_mode != "text":
+            return
+        bar = self.scroll.verticalScrollBar()
+        if bar.maximum() <= 0:
+            bar.setValue(0)
+            self._update_text_progress_indicator()
+            return
+        target = int(max(0.0, min(1.0, self._restore_text_scroll)) * bar.maximum())
+        bar.setValue(max(0, min(target, bar.maximum())))
+        self._update_text_progress_indicator()
+
+    def _update_text_side_progress_fill(self, value: int):
+        track = getattr(self, "text_side_progress_track", None)
+        fill = getattr(self, "text_side_progress_fill", None)
+        if track is None or fill is None:
+            return
+        track_width = max(1, track.width())
+        track_height = max(1, track.height())
+        inset = 2
+        inner_width = max(1, track_width - (inset * 2))
+        inner_height = max(1, track_height - (inset * 2))
+        clamped = max(0, min(1000, int(value)))
+        fill_height = max(0, int(inner_height * (clamped / 1000.0)))
+        if fill_height <= 0:
+            fill.setGeometry(inset, inset, inner_width, 0)
+            fill.hide()
+            return
+        fill.setGeometry(inset, inset, inner_width, fill_height)
+        fill.show()
+
+    def _update_text_progress_indicator(self):
+        if not hasattr(self, "text_progress_bar"):
+            return
+        visible = self._chapter_mode == "text" and self._text_progress_visible
+        self.text_progress_label.setVisible(False)
+        self.text_progress_bar.setVisible(False)
+        self.text_progress_panel.setVisible(visible)
+        if self._chapter_mode != "text":
+            return
+        self._rebuild_text_segment_bounds()
+        self._ensure_text_segment_window()
+        self._rebuild_text_segment_bounds()
+        bar = self.scroll.verticalScrollBar()
+        active = self._active_text_segment(bar.value())
+        if active is None:
+            progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
+            percent = int(progress * 100)
+            value = int(progress * 1000)
+        else:
+            self._sync_text_active_chapter(bar.value())
+            percent = int(float(active["progress"]) * 100)
+            value = int(float(active["progress"]) * 1000)
+        self.text_progress_label.setText(f"{percent}% read")
+        self.text_progress_bar.setValue(value)
+        self.text_side_progress_percent.setText(f"{percent}%")
+        self._update_text_side_progress_fill(value)
+
+    @staticmethod
+    def _escape_html(value: str) -> str:
+        return (
+            str(value or "")
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+        )
+
+    def _render_text_chapter_title(self, title: str) -> str:
+        return f"<div style='font-size:28px;font-weight:700;color:{self._escape_html(self._text_color)};'>{self._escape_html(title)}</div>"
+
+    def _apply_text_reader_style(self):
+        page_color = str(self._text_page_color or "#140e0c")
+        text_color = str(self._text_color or "#f6ece5")
+        font_size = max(12, min(32, int(self._text_font_size or 18)))
+        self.text_title_label.setStyleSheet(
+            f"color: {text_color}; font-size: 28px; font-weight: 700; padding: 0 0 4px 0;"
+        )
+        self.text_content_label.setStyleSheet(
+            "QTextBrowser {"
+            f"background-color: {page_color};"
+            f"color: {text_color};"
+            "border: 1px solid rgba(255, 255, 255, 0.07);"
+            "border-radius: 20px;"
+            "padding: 20px 22px;"
+            f"font-size: {font_size}px;"
+            "line-height: 1.75;"
+            "}"
+        )
+        self.text_progress_panel.setStyleSheet(
+            "background: rgba(14, 12, 11, 0.88); border-left: 1px solid rgba(255, 255, 255, 0.05);"
+        )
+        self.text_side_progress_percent.setStyleSheet(
+            f"color: {text_color}; font-size: 24px; font-weight: 700;"
+        )
+        self.text_side_progress_label.setStyleSheet(
+            f"color: {text_color}; font-size: 11px; font-weight: 700; letter-spacing: 0.18em;"
+        )
+
+    def _render_text_chapter_body(self, html_body: str) -> str:
+        return (
+            "<div style='max-width:860px;margin:0 auto;'>"
+            "<style>"
+            "p{margin:0 0 1.1em 0;}"
+            "h1,h2,h3{color:#fff4ef;line-height:1.25;margin:0 0 0.7em 0;}"
+            "blockquote{margin:1.2em 0;padding:0.8em 1em;border-left:3px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.03);}"
+            "hr{border:none;border-top:1px solid rgba(255,255,255,0.12);margin:1.6em 0;}"
+            "</style>"
+            f"{html_body}"
+            "</div>"
+        )
+
+    def _sync_text_content_height(self):
+        if getattr(self, "_chapter_mode", "image") != "text":
+            return
+        doc = self.text_content_label.document()
+        viewport_width = max(200, self.text_content_label.viewport().width())
+        doc.setTextWidth(viewport_width)
+        doc_height = int(doc.documentLayout().documentSize().height())
+        frame = self.text_content_label.frameWidth() * 2
+        target_height = max(220, doc_height + frame + 12)
+        self.text_content_label.setMinimumHeight(target_height)
+        self.text_content_label.setMaximumHeight(target_height)
+
 
     def _show_loading_overlay(self, chapter: str, total_images: int = 0):
         self._chapter_load_total = max(0, int(total_images))
@@ -1039,6 +1869,7 @@ class ViewerPage(QWidget):
 
     def _load_chapter_images(self, chapter):
         self.clear_images()
+        self._set_chapter_mode("image")
         self._show_loading_overlay(chapter)
 
         chapter_path = os.path.join(self.webtoon.path, chapter)
@@ -1367,6 +2198,9 @@ class ViewerPage(QWidget):
         self._resize_timer.start()
         self._position_loading_overlay()
         self._position_toolbar()
+        if self._chapter_mode == "text":
+            QTimer.singleShot(0, self._sync_text_content_height)
+            QTimer.singleShot(0, self._update_text_progress_indicator)
         super().resizeEvent(event)
 
     def _invalidate_panel_cache(self):
@@ -1457,8 +2291,9 @@ class ViewerPage(QWidget):
         chapter_forward = key in (Qt.Key_Right, Qt.Key_BracketRight)
         chapter_back = key in (Qt.Key_Left, Qt.Key_BracketLeft)
         session_keys = {
-            Qt.Key_H,
             Qt.Key_M,
+            Qt.Key_P,
+            Qt.Key_T,
             Qt.Key_A,
             Qt.Key_F,
             Qt.Key_S,
@@ -1477,6 +2312,13 @@ class ViewerPage(QWidget):
         pos = bar.value()
         if move_down or move_up:
             direction_key = Qt.Key_Down if move_down else Qt.Key_Up
+
+            if self._chapter_mode == "text":
+                if direction_key == Qt.Key_Down:
+                    bar.setValue(pos + view_h)
+                else:
+                    bar.setValue(max(0, pos - view_h))
+                return
 
             if not self.auto_skip_enabled:
                 if direction_key == Qt.Key_Down:
@@ -1561,8 +2403,11 @@ class ViewerPage(QWidget):
         elif key == Qt.Key_G:
             self._open_scene_bookmarks()
 
-        elif key == Qt.Key_H:
-            self._toggle_chrome(not self._chrome_visible)
+        elif key == Qt.Key_P and self._chapter_mode == "text":
+            self._toggle_text_progress(not self._text_progress_visible)
+
+        elif key == Qt.Key_T and self._chapter_mode == "text":
+            self._open_text_reader_settings()
 
         elif key == Qt.Key_M:
             self._toggle_minimap(not self._minimap_visible)
@@ -1579,8 +2424,6 @@ class ViewerPage(QWidget):
                 self.scroll.viewport().update()
             elif self._focus_mode_enabled:
                 self._toggle_focus_mode(False)
-            elif not self._chrome_visible:
-                self._toggle_chrome(True)
             else:
                 super().keyPressEvent(event)
 
@@ -1620,6 +2463,31 @@ class ViewerPage(QWidget):
         painter.end()
         return QCursor(pixmap, center, center)
 
+    def _auto_scroll_cursor_targets(self) -> list[QWidget]:
+        targets = []
+        scroll_area = getattr(self, "scroll", None)
+        viewport = scroll_area.viewport() if isinstance(scroll_area, QScrollArea) else None
+        if viewport is not None:
+            targets.append(viewport)
+        for widget in (
+            getattr(self, "container", None),
+            getattr(self, "text_container", None),
+            getattr(self, "text_title_label", None),
+            getattr(self, "text_content_label", None),
+            getattr(getattr(self, "text_content_label", None), "viewport", lambda: None)(),
+            getattr(self, "preview", None),
+        ):
+            if isinstance(widget, QWidget) and widget not in targets:
+                targets.append(widget)
+        return targets
+
+    def _apply_auto_scroll_cursor(self, cursor: QCursor | None) -> None:
+        for widget in self._auto_scroll_cursor_targets():
+            if cursor is None:
+                widget.unsetCursor()
+            else:
+                widget.setCursor(cursor)
+
     def _set_auto_scroll_direction(self, direction: int) -> None:
         scroll_area = getattr(self, "scroll", None)
         viewport = scroll_area.viewport() if isinstance(scroll_area, QScrollArea) else None
@@ -1629,7 +2497,7 @@ class ViewerPage(QWidget):
         if normalized == self._auto_scroll_direction:
             return
         self._auto_scroll_direction = normalized
-        viewport.setCursor(self._auto_scroll_cursors[normalized])
+        self._apply_auto_scroll_cursor(self._auto_scroll_cursors[normalized])
 
     def _set_auto_scroll_enabled(self, enabled: bool, *, origin: QPoint | None = None):
         scroll_area = getattr(self, "scroll", None)
@@ -1642,13 +2510,13 @@ class ViewerPage(QWidget):
             self.auto_scroll_origin = QPoint(point)
             self.current_mouse_pos = QPoint(point)
             self._auto_scroll_direction = 0
-            viewport.setCursor(self._auto_scroll_cursors[0])
+            self._apply_auto_scroll_cursor(self._auto_scroll_cursors[0])
             if not self.scroll_timer.isActive():
                 self.scroll_timer.start(16)
         else:
             self._auto_scroll_direction = 0
             self.scroll_timer.stop()
-            viewport.unsetCursor()
+            self._apply_auto_scroll_cursor(None)
 
     def eventFilter(self, obj, event):
         if not hasattr(self, "top_bar_widget") or not hasattr(self, "_toolbar_hide_timer"):
@@ -1673,7 +2541,7 @@ class ViewerPage(QWidget):
                     local_pos = self.mapFromGlobal(obj.mapToGlobal(event.pos())) if hasattr(event, "pos") else QPoint()
                     in_trigger_zone = 0 <= local_pos.y() <= VIEWER_TOOLBAR_TRIGGER_HEIGHT
                     in_toolbar = self.top_bar_widget.geometry().contains(local_pos)
-                    if self._chrome_visible and (in_trigger_zone or in_toolbar or obj == self.top_bar_widget):
+                    if in_trigger_zone or in_toolbar or obj == self.top_bar_widget:
                         self._toolbar_hide_timer.stop()
                         self._set_toolbar_hover_active(True)
                     elif obj != self.top_bar_widget and not in_toolbar and not self._toolbar_popup_open():

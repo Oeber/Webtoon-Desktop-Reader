@@ -13,6 +13,7 @@ from ..models import SeriesInfo, ChapterInfo, PageInfo
 class ManhuaTopScraper(BaseScraper):
     site_name = "manhuatop"
     site_display_name = "ManhuaTop"
+    content_type = "webtoon"
     site_hosts = ("manhuatop.org", "www.manhuatop.org")
     site_base_url = "https://manhuatop.org/"
     site_required_cookie_names = ("cf_clearance",)
@@ -463,6 +464,7 @@ class ManhuaTopScraper(BaseScraper):
             series_id=slug,
             title=title,
             url=url,
+            content_type=self.content_type,
             cover_url=cover_url,
             author=author,
             description=description,

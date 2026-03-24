@@ -12,14 +12,25 @@ SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
 class Webtoon:
-    def __init__(self, name, path, chapters, thumbnail, category=None, is_bookmarked=False, has_new_chapter=False):
+    def __init__(
+        self,
+        name,
+        path,
+        chapters,
+        thumbnail,
+        category=None,
+        is_bookmarked=False,
+        has_new_chapter=False,
+        content_type="webtoon",
+    ):
         self.name = name
         self.path = path
         self.chapters = chapters
-        self.thumbnail = thumbnail
+        self.thumbnail = thumbnail or ""
         self.category = category
         self.is_bookmarked = bool(is_bookmarked)
         self.has_new_chapter = bool(has_new_chapter)
+        self.content_type = content_type
 
 
 def scan_library(library_path: str, settings_store) -> list[Webtoon]:
@@ -97,18 +108,20 @@ def build_webtoon_from_folder(
     if not chapters:
         return None
 
-    first_image = _first_chapter_image_path(webtoon_path, chapters)
-    if not first_image:
-        return None
-
-    thumbnail = resolve_thumbnail_path(
-        webtoon_name,
-        first_image,
-        settings_store,
-        settings_row=settings_row,
-    )
-
     settings_row = settings_row or {}
+    first_image = _first_chapter_image_path(webtoon_path, chapters)
+    if first_image:
+        thumbnail = resolve_thumbnail_path(
+            webtoon_name,
+            first_image,
+            settings_store,
+            settings_row=settings_row,
+        )
+        content_type = "webtoon"
+    else:
+        thumbnail = preferred_thumbnail_path(webtoon_name, settings_store, settings_row=settings_row) or ""
+        content_type = "webnovel"
+
     return Webtoon(
         webtoon_name,
         webtoon_path,
@@ -117,6 +130,7 @@ def build_webtoon_from_folder(
         settings_row.get("category"),
         is_bookmarked=bool(settings_row.get("bookmarked", 0)),
         has_new_chapter=bool(settings_row.get("latest_new_chapter")),
+        content_type=content_type,
     )
 
 

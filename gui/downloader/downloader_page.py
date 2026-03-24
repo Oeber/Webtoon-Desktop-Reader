@@ -20,6 +20,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         super().__init__(main_window, "Downloader", "History", history_kind="download")
         self.history_store = get_download_history()
         self._auth_retry_in_progress = False
+        self._last_auth_retry_by_url: dict[tuple[str, str], float] = {}
         self._activity_refresh_pending = False
         self._last_activity_refresh_at = 0.0
 
@@ -106,9 +107,16 @@ class DownloaderPage(DownloadHistoryPageBase):
     def _on_auth_required(self, site_name: str, url: str, preferred_name, chapter_urls):
         if not site_name or self._auth_retry_in_progress:
             return
+        retry_key = (str(site_name or "").strip(), str(url or "").strip())
+        now = time.monotonic()
+        last_retry = self._last_auth_retry_by_url.get(retry_key, 0.0)
+        if now - last_retry < 30.0:
+            logger.warning("Suppressing repeated auth retry loop for %s", url)
+            return
         self._auth_retry_in_progress = True
         try:
             if self.main_window.open_site_authorization(site_name, url=url):
+                self._last_auth_retry_by_url[retry_key] = time.monotonic()
                 self.start_download_from_url(url, preferred_name=preferred_name or None, chapter_urls=list(chapter_urls or []))
         finally:
             self._auth_retry_in_progress = False

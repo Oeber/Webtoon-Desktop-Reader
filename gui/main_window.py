@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QStackedWid
 
 from core.app_logging import get_logger
 from gui.common.styles import STACK_BG_STYLE
+from gui.common.browser_html_fetcher import BrowserHtmlFetcher
 from gui.discovery.detail_page import DiscoveryDetailPage
 from gui.discovery.site_browser_page import SiteBrowserPage
 from gui.downloader.downloader_page import DownloaderPage
@@ -46,6 +47,7 @@ class MainWindow(QMainWindow):
         self.discovery_detail = DiscoveryDetailPage(self)
         self.downloader = DownloaderPage(self)
         self.updates = UpdatePage(self)
+        self.browser_fetcher = BrowserHtmlFetcher(self)
 
         for page in (
             self.library,
@@ -91,6 +93,8 @@ class MainWindow(QMainWindow):
         self.library_update_scheduler.refresh_schedule()
 
     def _attach_shared_services(self):
+        self.downloader.service.set_browser_fetcher(self.browser_fetcher)
+        self.updates.service.set_browser_fetcher(self.browser_fetcher)
         self.library.attach_update_service(self.updates.service)
         self.library.attach_manual_download_service(self.downloader.service)
         self.detail.attach_update_service(self.updates.service)

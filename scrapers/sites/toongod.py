@@ -14,6 +14,7 @@ from ..models import SeriesInfo, ChapterInfo, PageInfo
 class ToonGodScraper(BaseScraper):
     site_name = "toongod"
     site_display_name = "ToonGod"
+    content_type = "webtoon"
     site_hosts = ("toongod.org", "www.toongod.org")
     site_base_url = "https://www.toongod.org/"
     site_required_cookie_names = ("cf_clearance",)
@@ -426,6 +427,7 @@ class ToonGodScraper(BaseScraper):
             series_id=slug,
             title=title,
             url=url,
+            content_type=self.content_type,
             cover_url=cover_url,
             author=author,
             description=description,

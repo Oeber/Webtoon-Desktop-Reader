@@ -31,6 +31,19 @@ class SceneBookmarkStore:
         ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
+    def list_for_webtoon(self, webtoon_name: str) -> list[dict]:
+        conn = get_connection()
+        rows = conn.execute(
+            """
+            SELECT id, webtoon_name, chapter, packed, image_index, note, thumbnail_path, created_at, updated_at
+            FROM scene_bookmarks
+            WHERE webtoon_name = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (webtoon_name,),
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
     def counts_for_webtoon(self, webtoon_name: str) -> dict[str, int]:
         conn = get_connection()
         rows = conn.execute(

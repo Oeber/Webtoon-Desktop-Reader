@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 class OmegaScansScraper(BaseScraper):
 
     site_name = "omega_scans"
+    content_type = "webtoon"
 
     BASE = "https://omegascans.org"
     API_BASE = "https://api.omegascans.org"
@@ -86,6 +87,7 @@ class OmegaScansScraper(BaseScraper):
             series_id=slug,
             title=title,
             url=url,
+            content_type=self.content_type,
             cover_url=cover,
             author=author,
             description=description,

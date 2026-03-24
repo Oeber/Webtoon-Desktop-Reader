@@ -281,6 +281,9 @@ class LibraryUpdateScheduler:
         if self.window.updates.service.is_busy():
             logger.info("Skipping library update check because update downloads are active")
             return False
+        if self.window.downloader.service.is_busy():
+            logger.info("Skipping library update check because manual downloads are active")
+            return False
         return self.window.updates.run_background_check(reason=reason)
 
     def _check_due(self, allow_zero_interval: bool = False) -> bool:

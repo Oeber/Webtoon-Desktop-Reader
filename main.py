@@ -1,14 +1,12 @@
 import sys
+import os
 import ctypes
+import argparse
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from core.app_logging import setup_logging, get_logger
-from core.app_update import APP_NAME, APP_VERSION
 from core.app_paths import resource_path
-from core.profiler import create_session_profiler
-from gui.main_window import MainWindow
-from stores.db import prewarm_connection, prewarm_connection_async
 
 logger = None
 
@@ -22,11 +20,47 @@ def _set_windows_app_id():
     except Exception:
         logger.exception("Failed to set Windows AppUserModelID")
 
+def _helper_args(argv: list[str]) -> argparse.Namespace | None:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--browser-fetch-helper', action='store_true')
+    parser.add_argument('--site-name')
+    parser.add_argument('--url')
+    parser.add_argument('--timeout-ms', type=int, default=30000)
+    parser.add_argument('--output')
+    known, _unknown = parser.parse_known_args(argv[1:])
+    if not known.browser_fetch_helper:
+        return None
+    return known
+
+
 def main(argv: list[str] | None = None) -> int:
     global logger
+    raw_argv = argv or sys.argv
     setup_logging()
     logger = get_logger(__name__)
-    profiler, app_argv = create_session_profiler(argv or sys.argv, logger)
+
+    helper = _helper_args(list(raw_argv))
+    if helper is not None:
+        os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
+        flags = str(os.environ.get("QTWEBENGINE_CHROMIUM_FLAGS") or "").strip()
+        if "--no-sandbox" not in flags:
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = f"{flags} --no-sandbox".strip()
+        from core.browser_fetch_runtime import run_browser_fetch_helper
+        _set_windows_app_id()
+        app = QApplication(list(raw_argv))
+        return run_browser_fetch_helper(
+            helper.site_name or '',
+            helper.url or '',
+            int(helper.timeout_ms or 30000),
+            helper.output or '',
+        )
+
+    from core.app_update import APP_NAME, APP_VERSION
+    from core.profiler import create_session_profiler
+    from gui.main_window import MainWindow
+    from stores.db import prewarm_connection, prewarm_connection_async
+
+    profiler, app_argv = create_session_profiler(raw_argv, logger)
     profiler.start()
 
     _set_windows_app_id()

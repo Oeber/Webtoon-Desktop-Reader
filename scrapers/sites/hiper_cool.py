@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 class HiperCoolScraper(BaseScraper):
     site_name = "hiper_cool"
     site_display_name = "HiperCool"
+    content_type = "webtoon"
     site_hosts = ("hiper.cool", "www.hiper.cool")
     site_base_url = "https://hiper.cool/"
     site_required_cookie_names = ("cf_clearance",)
@@ -68,6 +69,7 @@ class HiperCoolScraper(BaseScraper):
             series_id=slug,
             title=title,
             url=series_url,
+            content_type=self.content_type,
             cover_url=self._extract_cover(soup),
             author=self._extract_author(soup),
             description=self._extract_description(soup),

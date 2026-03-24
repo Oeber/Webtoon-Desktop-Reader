@@ -13,6 +13,13 @@ class PageInfo:
 
 
 @dataclass
+class ChapterContent:
+    title: str
+    html: str | None = None
+    text: str | None = None
+
+
+@dataclass
 class ChapterInfo:
     id: str
     number: Optional[float]
@@ -27,6 +34,7 @@ class SeriesInfo:
     series_id: str
     title: str
     url: str
+    content_type: str = "webtoon"
     cover_url: Optional[str] = None
     author: Optional[str] = None
     description: Optional[str] = None
