@@ -5,6 +5,7 @@ from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBox
 
 from core.app_logging import get_logger
 from stores.download_history_store import get_instance as get_download_history
+from gui.downloader.helpers import sanitize_webtoon_name
 from gui.common.styles import SECTION_LABEL_STYLE
 from gui.downloader.download_widgets import BTN_STYLE, INPUT_STYLE, CancellableDownloadEntry, HistoryDownloadEntry
 from gui.downloader.page_base import DownloadHistoryPageBase
@@ -128,7 +129,9 @@ class DownloaderPage(DownloadHistoryPageBase):
         chapter_urls: list[str] | None = None,
     ) -> str | None:
         url = (url or "").strip()
-        entry_name = self._next_entry_name(preferred_name or url)
+
+        raw_entry_name = self._next_entry_name(preferred_name or url)
+        entry_name = sanitize_webtoon_name(raw_entry_name) or "download"
 
         entry = CancellableDownloadEntry(
             entry_name,
@@ -157,7 +160,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         self.set_error_text("")
         self.url_input.clear()
         return None
-
+    
     def _next_entry_name(self, url: str) -> str:
         base = url.strip().strip("'\"").rstrip("/").split("/")[-1] or "download"
         candidate = base

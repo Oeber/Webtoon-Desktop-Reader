@@ -1,5 +1,5 @@
 import re
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cffi_requests
@@ -40,6 +40,8 @@ class MvlempyrDiscoveryProvider(BaseDiscoveryProvider):
 
     def __init__(self):
         self._http = cffi_requests.Session()
+        self._section_label_cache: dict[int, str] = {}
+        self._cover_bytes_cache: dict[str, bytes | None] = {}
 
     def get_display_name(self) -> str:
         return "MVLEMPYR"
@@ -103,19 +105,71 @@ class MvlempyrDiscoveryProvider(BaseDiscoveryProvider):
         raise ScraperError(f"Failed to load MVLEMPYR catalog page {page}{detail}")
 
     def fetch_cover(self, url: str, headers: dict[str, str]) -> bytes | None:
+        normalized = self._normalize_cover_fetch_url(url)
+        if not normalized:
+            return None
+
+        cached = self._cover_bytes_cache.get(normalized)
+        if cached is not None:
+            return cached
+
         try:
-            response = self._http.get(
-                url,
-                headers=self._request_headers(url),
-                cookies=self._site_cookies(),
-                impersonate=self.IMPERSONATE,
-                timeout=20,
+            parsed = urlparse(normalized)
+            host = (parsed.netloc or "").casefold()
+            path = (parsed.path or "").casefold()
+
+            is_same_site = any(site_host in host for site_host in self.site_hosts)
+            looks_static = (
+                path.endswith((".jpg", ".jpeg", ".png", ".webp", ".avif"))
+                or "/images/" in path
+                or "/covers/" in path
+                or "/uploads/" in path
             )
-            if response.status_code == 200:
+
+            request_headers = {
+                "User-Agent": load_site_user_agent(self.site_name, self.HEADERS["User-Agent"]),
+                "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+                "Referer": self.BASE + "/",
+            }
+
+            kwargs = {
+                "url": normalized,
+                "headers": request_headers,
+                "timeout": 8,
+            }
+
+            if is_same_site and not looks_static:
+                kwargs["cookies"] = self._site_cookies()
+                kwargs["impersonate"] = self.IMPERSONATE
+
+            response = self._http.get(**kwargs)
+            if response.status_code == 200 and response.content:
+                self._cover_bytes_cache[normalized] = response.content
                 return response.content
         except Exception:
             pass
+
+        self._cover_bytes_cache[normalized] = None
         return None
+    
+    def _normalize_cover_fetch_url(self, url: str) -> str:
+        value = self._normalize_url(str(url or "").strip())
+        if not value:
+            return ""
+
+        parsed = urlparse(value)
+
+        # unwrap Next.js proxy URLs like /_next/image?url=...
+        if "/_next/image" in (parsed.path or ""):
+            query = parse_qs(parsed.query)
+            wrapped = query.get("url", [])
+            if wrapped:
+                inner = unquote(str(wrapped[0] or "").strip())
+                inner_url = self._normalize_url(inner)
+                if inner_url:
+                    return inner_url
+
+        return value
 
 
     def _looks_like_access_error(self, message: str) -> bool:
@@ -161,6 +215,7 @@ class MvlempyrDiscoveryProvider(BaseDiscoveryProvider):
         entries = []
         seen_urls: set[str] = set()
         source_low = str(source_url or "").casefold()
+        self._section_label_cache.clear()
 
         for node in soup.select('a[href*="/novel/"]'):
             entry = self._entry_from_link(node, seen_urls, source_url=source_url)
@@ -248,40 +303,46 @@ class MvlempyrDiscoveryProvider(BaseDiscoveryProvider):
             if current is None:
                 break
 
-            for selector in ("h1", "h2", "h3", "h4", "h5", "h6"):
-                heading = current.find_previous(selector)
-                if heading is None:
-                    continue
+            node_id = id(current)
+            cached = self._section_label_cache.get(node_id)
+            if cached is not None:
+                return cached
+
+            heading = current.find_previous(["h1", "h2", "h3", "h4", "h5", "h6"])
+            value = ""
+            if heading is not None:
                 value = self._compact_text(heading.get_text(" ", strip=True)).casefold()
                 if value and len(value) <= 80:
+                    self._section_label_cache[node_id] = value
                     return value
+
+            self._section_label_cache[node_id] = ""
         return ""
 
 
     def _entry_container(self, link):
-        best = link if getattr(link, "get_text", None) else None
-        best_score = len(self._compact_text(link.get_text(" ", strip=True)))
+        card_classes = re.compile(
+            r"(?:^|[\s_-])(card|item|novel|book|entry|product|result|tile|row)(?:[\s_-]|$)",
+            re.IGNORECASE,
+        )
         current = link
-        for _ in range(6):
+        for _ in range(8):
             current = getattr(current, "parent", None)
-            if current is None or not getattr(current, "get_text", None):
+            if current is None:
                 break
-            text = self._compact_text(current.get_text(" ", strip=True))
-            if not text:
-                continue
-            score = len(text)
-            if score > 1200:
+
+            classes = " ".join(str(value) for value in (current.get("class") or []))
+            if classes and card_classes.search(classes):
+                return current
+
+            novel_links = current.find_all("a", href=re.compile(r"/novel/"), limit=4)
+            if len(novel_links) > 3:
                 break
-            if "/novel/" in str(current):
-                score += 150
-            if re.search(r"\bchapters?\b", text, re.IGNORECASE):
-                score += 80
-            if len(current.find_all("a", href=re.compile(r"/novel/"))) > 3:
-                score -= 200
-            if score > best_score:
-                best = current
-                best_score = score
-        return best
+
+            if current.find("a", href=re.compile(r"/novel/")) is not None:
+                return current
+
+        return link
 
     def _extract_title(self, container, link, slug: str) -> str:
         return self._slug_title(slug)
@@ -375,28 +436,50 @@ class MvlempyrDiscoveryProvider(BaseDiscoveryProvider):
     def _extract_cover_url(self, node, slug: str) -> str | None:
         if node is None:
             return None
+
         slug_title = self._slug_title(slug)
         slug_tokens = self._meaningful_tokens(slug_title)
-        for selector in ("img", "picture img"):
-            for image in node.select(selector):
-                meta_text = " ".join(
-                    str(image.get(name) or "").strip()
-                    for name in ("alt", "title", "aria-label")
-                )
-                meta_tokens = self._meaningful_tokens(meta_text)
-                for attr in ("data-src", "data-lazy-src", "data-lazy", "src"):
-                    value = self._normalize_url(str(image.get(attr) or "").strip())
-                    if not value:
-                        continue
-                    low = value.casefold()
-                    if any(marker in low for marker in ("ratingstar", "fire", "logo", "banner", "icon", "avatar")):
-                        continue
-                    if not (low.endswith((".jpg", ".jpeg", ".png", ".webp", ".avif")) or "/_next/image" in low):
-                        continue
-                    if meta_tokens and slug_tokens and not (meta_tokens & slug_tokens):
-                        continue
-                    return value
-        return None
+        best: tuple[int, str] | None = None
+
+        for image in node.find_all("img", limit=8):
+            meta_text = " ".join(
+                str(image.get(name) or "").strip()
+                for name in ("alt", "title", "aria-label")
+            )
+            meta_tokens = self._meaningful_tokens(meta_text)
+
+            for attr in ("data-src", "data-lazy-src", "data-lazy", "src"):
+                raw = str(image.get(attr) or "").strip()
+                value = self._normalize_cover_fetch_url(raw)
+                if not value:
+                    continue
+
+                low = value.casefold()
+                if any(marker in low for marker in ("ratingstar", "fire", "logo", "banner", "icon", "avatar")):
+                    continue
+
+                if not (low.endswith((".jpg", ".jpeg", ".png", ".webp", ".avif")) or "/_next/image" in low or "/images/" in low):
+                    continue
+
+                if meta_tokens and slug_tokens and not (meta_tokens & slug_tokens):
+                    continue
+
+                score = 0
+                if meta_tokens and slug_tokens:
+                    score += 200
+                if "/images/" in low:
+                    score += 120
+                if low.endswith(".webp"):
+                    score += 40
+                if "/_next/image" in low:
+                    score -= 80
+                if "placeholder" in low or "default" in low:
+                    score -= 200
+
+                if best is None or score > best[0]:
+                    best = (score, value)
+
+        return best[1] if best else None
 
     def _extract_author(self, container, text: str) -> str | None:
         if container is not None:
@@ -539,4 +622,3 @@ class MvlempyrDiscoveryProvider(BaseDiscoveryProvider):
             return True
         text = str(html or "").casefold()
         return "just a moment" in text and "cloudflare" in text
-

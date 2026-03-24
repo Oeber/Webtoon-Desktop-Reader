@@ -292,54 +292,83 @@ class MvlempyrScraper(BaseScraper):
         path = urlparse(series_url).path.strip("/")
         return path.split("/")[-1] if path else "unknown"
 
-    def _extract_chapters(self, soup: BeautifulSoup, html: str, series_url: str, series_id: str, total_hint: int | None = None) -> list[ChapterInfo]:
-        candidates: list[list[ChapterInfo]] = []
+    def _extract_chapters(
+        self,
+        soup: BeautifulSoup,
+        html: str,
+        series_url: str,
+        series_id: str,
+        total_hint: int | None = None,
+    ) -> list[ChapterInfo]:
+        real_candidates: list[list[ChapterInfo]] = []
         debug_payload: dict[str, object] = {"total_hint": total_hint or 0}
 
         html_chapters = self._extract_chapters_from_links(soup, series_url)
         if html_chapters:
+            html_chapters = self._dedupe_chapters(html_chapters)
             debug_payload["html_links"] = len(html_chapters)
-            candidates.append(html_chapters)
+            real_candidates.append(html_chapters)
 
         script_chapters = self._extract_chapters_from_scripts(html, series_url)
         if script_chapters:
+            script_chapters = self._dedupe_chapters(script_chapters)
             debug_payload["script_links"] = len(script_chapters)
-            candidates.append(script_chapters)
+            real_candidates.append(script_chapters)
 
         for payload in self._candidate_chapter_payloads(series_id, series_url):
             try:
                 data = self._get_json(payload["url"], payload.get("params"))
             except ScraperError:
                 continue
-            api_chapters = self._extract_chapters_from_json(data, series_url)
-            if api_chapters:
-                debug_payload[payload["url"]] = len(api_chapters)
-                candidates.append(api_chapters)
 
+            api_chapters = self._extract_chapters_from_json(data, series_url)
+            if not api_chapters:
+                continue
+
+            api_chapters = self._dedupe_chapters(api_chapters)
+            debug_payload[payload["url"]] = len(api_chapters)
+            real_candidates.append(api_chapters)
+
+        if real_candidates:
+            best = max(real_candidates, key=self._chapter_source_score)
+            best = self._dedupe_chapters(best)
+
+            # If we got a reasonable real list, trust it.
+            if len(best) >= 2:
+                return best
+
+            # Only probe/synthesize when the real result is weak.
+            if self._can_synthesize_chapters(series_id):
+                logger.info("MVLEMPYR chapter list weak for series_id=%s; probing chapter count", series_id)
+                discovered_total = self._discover_chapter_count(series_id)
+                debug_payload["discovered_total"] = discovered_total
+                logger.info("MVLEMPYR probed chapter count series_id=%s total=%s", series_id, discovered_total)
+
+                if discovered_total > len(best):
+                    synthesized = self._synthesize_chapters(series_id, discovered_total)
+                    logger.info("MVLEMPYR synthesized chapter list series_id=%s total=%s", series_id, len(synthesized))
+                    return synthesized
+
+            if len(best) <= 1 and (total_hint or 0) > len(best):
+                self._dump_series_debug(series_url, html, debug_payload)
+            return best
+
+        # No real sources worked at all: now try synthesis as a last resort.
         if total_hint and total_hint > 1 and self._can_synthesize_chapters(series_id):
             synthesized = self._synthesize_chapters(series_id, total_hint)
             debug_payload["synthesized"] = len(synthesized)
-            candidates.append(synthesized)
+            return synthesized
 
-        if not candidates:
-            self._dump_series_debug(series_url, html, debug_payload)
-            return []
-
-        best = max(candidates, key=self._chapter_source_score)
-        best = self._dedupe_chapters(best)
-
-        if len(best) <= 1 and self._can_synthesize_chapters(series_id):
-            logger.info("MVLEMPYR chapter list weak for series_id=%s; probing chapter count", series_id)
+        if self._can_synthesize_chapters(series_id):
             discovered_total = self._discover_chapter_count(series_id)
             debug_payload["discovered_total"] = discovered_total
-            logger.info("MVLEMPYR probed chapter count series_id=%s total=%s", series_id, discovered_total)
-            if discovered_total > len(best):
-                best = self._synthesize_chapters(series_id, discovered_total)
-                logger.info("MVLEMPYR synthesized chapter list series_id=%s total=%s", series_id, len(best))
+            if discovered_total > 0:
+                synthesized = self._synthesize_chapters(series_id, discovered_total)
+                logger.info("MVLEMPYR synthesized fallback chapter list series_id=%s total=%s", series_id, len(synthesized))
+                return synthesized
 
-        if len(best) <= 1 and (total_hint or 0) > len(best):
-            self._dump_series_debug(series_url, html, debug_payload)
-        return best
+        self._dump_series_debug(series_url, html, debug_payload)
+        return []
 
     def _extract_chapters_from_links(self, soup: BeautifulSoup, base_url: str) -> list[ChapterInfo]:
         found: dict[str, ChapterInfo] = {}
