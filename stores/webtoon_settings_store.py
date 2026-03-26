@@ -284,6 +284,25 @@ class WebtoonSettingsStore:
     def get_content_type(self, webtoon_name: str) -> str | None:
         return self._get_scalar(webtoon_name, "content_type", default=None, coerce=str)
 
+    def get_manga_view_mode(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "manga_view_mode", default=None, coerce=str)
+
+    def set_manga_view_mode(self, webtoon_name: str, view_mode: str):
+        normalized = str(view_mode or "").strip() or None
+        if normalized is None:
+            self._clear_scalar(webtoon_name, "manga_view_mode", log_message="Clearing manga view mode for %s")
+            return
+        self._set_scalar(webtoon_name, "manga_view_mode", normalized, log_message="Saving manga view mode for %s: %s")
+
+    def get_manga_fit_mode(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "manga_fit_mode", default=None, coerce=str)
+
+    def set_manga_fit_mode(self, webtoon_name: str, fit_mode: str):
+        normalized = str(fit_mode or "").strip() or None
+        if normalized is None:
+            self._clear_scalar(webtoon_name, "manga_fit_mode", log_message="Clearing manga fit mode for %s")
+            return
+        self._set_scalar(webtoon_name, "manga_fit_mode", normalized, log_message="Saving manga fit mode for %s: %s")
     def set_content_type(self, webtoon_name: str, content_type: str):
         normalized = str(content_type or "").strip() or None
         if normalized is None:
@@ -479,8 +498,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type, manga_view_mode, manga_fit_mode)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -500,6 +519,8 @@ class WebtoonSettingsStore:
                 row["update_mode"],
                 row["auto_download_limit"],
                 row["content_type"],
+                row["manga_view_mode"],
+                row["manga_fit_mode"],
             ),
         )
         conn.execute(
@@ -551,6 +572,10 @@ class WebtoonSettingsStore:
 
     def _persist_custom_thumbnail(self, webtoon_name: str, path: str):
         self._set_scalar(webtoon_name, "custom_thumbnail", path)
+
+
+
+
 
 
 

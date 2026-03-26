@@ -10,7 +10,8 @@ from core.app_logging import get_logger
 from core.app_paths import data_path
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
-    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog, QInputDialog, QTextBrowser, QSizePolicy, QProgressBar, QColorDialog, QSpinBox
+    QPushButton, QComboBox, QHBoxLayout, QSlider, QMessageBox, QDialog, QInputDialog, QTextBrowser, QSizePolicy, QProgressBar, QColorDialog, QSpinBox,
+    QGroupBox
 )
 from PySide6.QtGui import QPixmap, QPainter, QColor, QPen, QCursor, QImageReader, QTextDocument
 from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QSize
@@ -67,6 +68,9 @@ SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 VIEWER_TOOLBAR_ICON_SIZE = QSize(16, 16)
 VIEWER_TOOLBAR_BUTTON_SIZE = 30
 VIEWER_TOOLBAR_TRIGGER_HEIGHT = 96
+VIEWER_MANGA_LAYOUT_KEY = "viewer_manga_layout"
+VIEWER_MANGA_SPREAD_PARITY_KEY = "viewer_manga_spread_parity"
+MANGA_SPREAD_GAP = 0
 logger = get_logger(__name__)
 
 
@@ -192,6 +196,82 @@ class TextReaderSettingsDialog(QDialog):
         }
 
 
+class MangaReaderSettingsDialog(QDialog):
+    def __init__(self, *, layout_mode: str, spread_parity: str, fit_mode: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Manga Reader Settings")
+        self.setModal(True)
+        self.setFixedWidth(340)
+
+        self._layout_mode = "double" if str(layout_mode or "").strip().casefold() == "double" else "single"
+        self._spread_parity = "even" if str(spread_parity or "").strip().casefold() == "even" else "odd"
+        self._fit_mode = "height" if str(fit_mode or "").strip().casefold() == "height" else "width"
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+
+        intro = QLabel("Choose how manga pages are shown in the viewer.")
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        page_group = QGroupBox("Page Layout")
+        page_layout = QVBoxLayout(page_group)
+        page_layout.setContentsMargins(12, 12, 12, 12)
+        page_layout.setSpacing(8)
+        page_row = QHBoxLayout()
+        page_row.addWidget(QLabel("View"))
+        page_row.addStretch()
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItem("Single Page", ("single", "odd"))
+        self.mode_combo.addItem("Double Page (Odds)", ("double", "odd"))
+        self.mode_combo.addItem("Double Page (Evens)", ("double", "even"))
+        selected_value = (self._layout_mode, self._spread_parity)
+        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(selected_value)))
+        page_row.addWidget(self.mode_combo)
+        page_layout.addLayout(page_row)
+        layout.addWidget(page_group)
+
+        fit_group = QGroupBox("Scale")
+        fit_layout = QVBoxLayout(fit_group)
+        fit_layout.setContentsMargins(12, 12, 12, 12)
+        fit_layout.setSpacing(8)
+        fit_row = QHBoxLayout()
+        fit_row.addWidget(QLabel("Sizing"))
+        fit_row.addStretch()
+        self.fit_combo = QComboBox()
+        self.fit_combo.addItem("Fit Width", "width")
+        self.fit_combo.addItem("Fit Height", "height")
+        self.fit_combo.setCurrentIndex(max(0, self.fit_combo.findData(self._fit_mode)))
+        fit_row.addWidget(self.fit_combo)
+        fit_layout.addLayout(fit_row)
+        layout.addWidget(fit_group)
+
+        note = QLabel("Single-page mode keeps the active page centered.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: rgba(255, 255, 255, 0.7);")
+        layout.addWidget(note)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Save")
+        save_btn.clicked.connect(self.accept)
+        buttons.addWidget(cancel_btn)
+        buttons.addWidget(save_btn)
+        layout.addLayout(buttons)
+
+    @property
+    def values(self) -> dict:
+        layout_mode, spread_parity = self.mode_combo.currentData() or ("single", "odd")
+        return {
+            "layout_mode": str(layout_mode),
+            "spread_parity": str(spread_parity),
+            "fit_mode": str(self.fit_combo.currentData() or "width"),
+        }
+
+
 class ViewerPage(QWidget):
     chapter_loading_started = Signal(str, str)
     chapter_loading_finished = Signal(str, str)
@@ -266,6 +346,9 @@ class ViewerPage(QWidget):
         self._minimap_visible = bool(load_setting(VIEWER_MINIMAP_VISIBLE_KEY, True))
         self._scene_anchors_visible = bool(load_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, True))
         self._text_progress_visible = bool(load_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, True))
+        self._manga_layout_mode = "single"
+        self._manga_spread_parity = "odd"
+        self._manga_fit_mode = "width"
         self._text_font_size = int(load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
         self._text_page_color = str(load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
         self._text_color = str(load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
@@ -321,6 +404,7 @@ class ViewerPage(QWidget):
         self.text_settings_btn = self._make_toolbar_button("fa5s.font", "(T) Text reader settings", self._open_text_reader_settings)
         self.minimap_btn = self._make_toolbar_button("fa5s.map", "(M) Show or hide the reading mini-map", self._toggle_minimap, checkable=True)
         self.minimap_btn.setChecked(self._minimap_visible)
+        self.manga_settings_btn = self._make_toolbar_button("fa5s.book-open", "Manga reader settings", self._open_manga_reader_settings)
         self.anchors_btn = self._make_toolbar_button("fa5s.map-pin", "(A) Show or hide saved scene anchors on the mini-map", self._toggle_scene_anchors, checkable=True)
         self.anchors_btn.setChecked(self._scene_anchors_visible)
         self.zoom_out_btn = self._make_toolbar_button("fa5s.search-minus", "(-) Decrease image width", self._zoom_out)
@@ -358,6 +442,7 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.text_progress_btn)
         top_bar.addWidget(self.text_settings_btn)
         top_bar.addWidget(self.minimap_btn)
+        top_bar.addWidget(self.manga_settings_btn)
         top_bar.addWidget(self.anchors_btn)
         top_bar.addStretch()
         top_bar.addWidget(self.zoom_out_btn)
@@ -460,6 +545,12 @@ class ViewerPage(QWidget):
         self.image_layout = QVBoxLayout(self.container)
         self.image_layout.setSpacing(0)
         self.image_layout.setContentsMargins(0, 0, 0, 0)
+        self.manga_spread_label = QLabel(self.container)
+        self.manga_spread_label.setAlignment(Qt.AlignCenter)
+        self.manga_spread_label.setMouseTracking(True)
+        self.manga_spread_label.installEventFilter(self)
+        self.manga_spread_label.hide()
+        self.image_layout.addWidget(self.manga_spread_label, 0, Qt.AlignHCenter)
         self.scroll.setWidget(self.container)
 
         self.text_container = QWidget()
@@ -685,15 +776,20 @@ class ViewerPage(QWidget):
         self.text_settings_btn.setToolTip("(T) Text reader settings")
         if manga_mode:
             self.minimap_btn.setToolTip("(M) Page tracker visible" if self._minimap_visible else "(M) Page tracker hidden")
+            layout_label = "Double Page" if self._manga_uses_double_page() else "Single Page"
+            parity_label = "Evens" if self._normalize_manga_spread_parity(self._manga_spread_parity) == "even" else "Odds"
+            fit_label = "Fit Height" if self._manga_fit_mode == "height" else "Fit Width"
+            self.manga_settings_btn.setToolTip(f"Manga reader settings ({layout_label}, {parity_label}, {fit_label})")
         else:
             self.minimap_btn.setToolTip("(M) Mini-map visible" if self._minimap_visible else "(M) Mini-map hidden")
         self.anchors_btn.setToolTip("(A) Scene anchors visible" if self._scene_anchors_visible else "(A) Scene anchors hidden")
         self.minimap_btn.setEnabled(image_mode)
         self.anchors_btn.setEnabled(preview_visible)
         self.nav_toggle.setEnabled(image_mode and not manga_mode)
+        self.manga_settings_btn.setEnabled(manga_mode)
         self.text_progress_btn.setEnabled(text_mode)
         self.text_settings_btn.setEnabled(text_mode)
-        zoom_enabled = image_mode
+        zoom_enabled = image_mode and not manga_mode
         self.zoom_in_btn.setEnabled(zoom_enabled)
         self.zoom_out_btn.setEnabled(zoom_enabled)
         self._zoom_slider.setEnabled(zoom_enabled)
@@ -701,6 +797,7 @@ class ViewerPage(QWidget):
         for widget in (
             self.nav_toggle,
             self.minimap_btn,
+            self.manga_settings_btn,
             self.anchors_btn,
             self.zoom_out_btn,
             self._zoom_slider,
@@ -708,7 +805,16 @@ class ViewerPage(QWidget):
             self._zoom_label,
             self._zoom_reset_btn,
         ):
-            widget.setVisible(image_mode and not manga_mode if widget in (self.nav_toggle, self.minimap_btn, self.anchors_btn) else image_mode)
+            if widget in (self.nav_toggle, self.anchors_btn):
+                widget.setVisible(image_mode and not manga_mode)
+            elif widget == self.minimap_btn:
+                widget.setVisible(image_mode)
+            elif widget == self.manga_settings_btn:
+                widget.setVisible(image_mode and manga_mode)
+            else:
+                widget.setVisible(image_mode and not manga_mode)
+        if manga_mode:
+            self._sync_manga_page_visibility()
         for widget in (self.save_scene_btn, self.scene_list_btn):
             widget.setVisible(image_mode or text_mode)
         for widget in (self.text_progress_btn, self.text_settings_btn):
@@ -761,6 +867,39 @@ class ViewerPage(QWidget):
         self._apply_reader_session_state()
         self.setFocus()
 
+    def _open_manga_reader_settings(self):
+        dialog = MangaReaderSettingsDialog(
+            layout_mode=self._manga_layout_mode,
+            spread_parity=self._manga_spread_parity,
+            fit_mode=self._manga_fit_mode,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        values = dialog.values
+        next_mode = self._normalize_manga_layout(values.get("layout_mode"))
+        next_parity = self._normalize_manga_spread_parity(values.get("spread_parity"))
+        next_fit = self._normalize_manga_fit_mode(values.get("fit_mode"))
+        changed = (
+            (next_mode != self._manga_layout_mode)
+            or (next_parity != self._manga_spread_parity)
+            or (next_fit != self._manga_fit_mode)
+        )
+        self._manga_layout_mode = next_mode
+        self._manga_spread_parity = next_parity
+        self._manga_fit_mode = next_fit
+        if changed:
+            if self.webtoon:
+                view_mode_value = "double_even" if self._manga_layout_mode == "double" and self._manga_spread_parity == "even" else self._manga_layout_mode
+                self.settings_store.set_manga_view_mode(self.webtoon.name, view_mode_value)
+                self.settings_store.set_manga_fit_mode(self.webtoon.name, self._manga_fit_mode)
+            if self._is_manga_image_mode() and self.image_labels:
+                self.rescale_images(previous_zoom=self._zoom)
+            self._sync_manga_page_visibility()
+            self._apply_reader_session_state()
+            self._progress_save_timer.start()
+        self.setFocus()
+
     def _toggle_scene_anchors(self, checked: bool):
         self._scene_anchors_visible = bool(checked)
         self._apply_reader_session_state()
@@ -783,7 +922,9 @@ class ViewerPage(QWidget):
             progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
         elif self._is_manga_image_mode():
             total = max(1, len(self.image_labels))
-            progress = ((self._manga_page_index + 1) / total) if self.image_labels else 0.0
+            visible_indexes = self._manga_visible_indexes()
+            last_visible = visible_indexes[-1] if visible_indexes else self._manga_page_index
+            progress = ((last_visible + 1) / total) if self.image_labels else 0.0
         else:
             total = max(1, len(self.image_labels))
             progress = max(0.0, min(1.0, self._current_packed_position() / total)) if self.image_labels else 0.0
@@ -794,7 +935,11 @@ class ViewerPage(QWidget):
         elif self._is_manga_image_mode():
             total_pages = max(1, len(self.image_labels))
             shortcut_line = "(Left/Right/Up/Down) Page | (M) Tracker | ([ ]) Chapter | (S) Save | (G) List | (Esc) Exit"
-            detail_line = f"Page {self._manga_page_index + 1} / {total_pages}"
+            visible_indexes = self._manga_visible_indexes()
+            if len(visible_indexes) >= 2:
+                detail_line = f"Pages {visible_indexes[0] + 1}-{visible_indexes[-1] + 1} / {total_pages}"
+            else:
+                detail_line = f"Page {visible_indexes[0] + 1 if visible_indexes else 1} / {total_pages}"
         else:
             shortcut_line = "(F) Focus | (M) Map | (S) Save | (G) List | ([ ]) Chapter | (Esc) Exit"
             detail_line = f"Scenes {scene_count}"
@@ -878,38 +1023,186 @@ class ViewerPage(QWidget):
         else:
             self._zoom_override_active = False
             self._set_zoom(load_setting(VIEWER_ZOOM_KEY, 0.5), rescale_existing=rescale_existing)
+        self._manga_layout_mode = self._normalize_manga_layout(self.settings_store.get_manga_view_mode(webtoon.name) or "single")
+        self._manga_spread_parity = self._normalize_manga_spread_parity("even" if self._manga_layout_mode == "double_even" else "odd")
+        if self._manga_layout_mode == "double_even":
+            self._manga_layout_mode = "double"
+        self._manga_fit_mode = self._normalize_manga_fit_mode(self.settings_store.get_manga_fit_mode(webtoon.name) or "width")
         self._zoom_reset_btn.setEnabled(self._zoom_override_active)
+
+    @staticmethod
+    def _normalize_manga_layout(value) -> str:
+        return "double" if str(value or "").strip().casefold() == "double" else "single"
+
+    @staticmethod
+    def _normalize_manga_spread_parity(value) -> str:
+        return "even" if str(value or "").strip().casefold() == "even" else "odd"
+
+    @staticmethod
+    def _normalize_manga_fit_mode(value) -> str:
+        return "height" if str(value or "").strip().casefold() == "height" else "width"
 
     def _is_manga_image_mode(self) -> bool:
         if self._chapter_mode != "image" or not self.webtoon:
             return False
         return str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
 
+    def _manga_uses_double_page(self) -> bool:
+        return self._normalize_manga_layout(self._manga_layout_mode) == "double"
+
+    def _manga_spread_anchor_for_index(self, index: int) -> int:
+        if not self.image_labels:
+            return 0
+        index = max(0, min(len(self.image_labels) - 1, int(index)))
+        if not self._manga_uses_double_page():
+            return index
+        if self._normalize_manga_spread_parity(self._manga_spread_parity) == "odd":
+            return index - (index % 2)
+        if index <= 0:
+            return 0
+        return index if index % 2 == 1 else index - 1
+
+    def _manga_visible_indexes(self, index: int | None = None) -> list[int]:
+        if not self.image_labels:
+            return []
+        anchor = self._manga_spread_anchor_for_index(self._manga_page_index if index is None else index)
+        if not self._manga_uses_double_page():
+            return [anchor]
+        if self._normalize_manga_spread_parity(self._manga_spread_parity) == "even" and anchor == 0:
+            return [0]
+        indexes = [anchor]
+        if anchor + 1 < len(self.image_labels):
+            indexes.append(anchor + 1)
+        return indexes
+
+    def _manga_canvas_width(self) -> int:
+        return max(1, self.scroll.viewport().width())
+
+    def _manga_target_page_size(self, index: int | None = None) -> tuple[int, int]:
+        viewport_width = self._manga_canvas_width()
+        viewport_height = max(1, self.scroll.viewport().height())
+        visible_indexes = self._manga_visible_indexes(index)
+        if index < 0 or index >= len(self.image_labels):
+            return (viewport_width, viewport_height)
+        label = self.image_labels[index]
+        natural_w = getattr(label, "_natural_width", 0)
+        natural_h = getattr(label, "_natural_height", 0)
+        fit_mode = self._normalize_manga_fit_mode(self._manga_fit_mode)
+
+        if fit_mode == "height" and natural_w > 0 and natural_h > 0:
+            target_h = viewport_height
+            target_w = max(1, int(target_h * (natural_w / natural_h)))
+            return (target_w, target_h)
+
+        if len(visible_indexes) >= 2:
+            target_w = max(1, viewport_width // 2)
+        else:
+            target_w = viewport_width
+
+        if natural_w > 0 and natural_h > 0:
+            target_h = max(1, int(target_w * (natural_h / natural_w)))
+        else:
+            target_h = max(1, label.height())
+        return (target_w, target_h)
+
+    def _manga_display_page_width(self, index: int | None = None) -> int:
+        return self._manga_target_page_size(index)[0]
+
+    def _manga_scaled_label_height(self, index: int, zoom: float | None = None) -> int:
+        return self._manga_target_page_size(index)[1]
+
+    def _update_manga_spread_label(self) -> None:
+        if not hasattr(self, "manga_spread_label"):
+            return
+        if not self._is_manga_image_mode() or not self.image_labels:
+            self.manga_spread_label.clear()
+            self.manga_spread_label.hide()
+            return
+
+        visible_indexes = self._manga_visible_indexes()
+        if not visible_indexes:
+            self.manga_spread_label.clear()
+            self.manga_spread_label.hide()
+            return
+
+        canvas_width = self._manga_canvas_width()
+        page_entries: list[tuple[QPixmap | None, int, int]] = []
+        max_height = 1
+        for index in visible_indexes:
+            label = self.image_labels[index]
+            src = getattr(label, "_source_pixmap", None)
+            if src is None or src.isNull():
+                src = getattr(label, "_preview_pixmap", None)
+            if src is not None and src.isNull():
+                src = None
+            scaled_width, scaled_height = self._manga_target_page_size(index)
+            max_height = max(max_height, scaled_height)
+            page_entries.append((src, scaled_width, scaled_height))
+
+        total_width = sum(width for _src, width, _height in page_entries)
+        if total_width > canvas_width and total_width > 0:
+            scale = canvas_width / total_width
+            scaled_entries: list[tuple[QPixmap | None, int, int]] = []
+            max_height = 1
+            for src, width, height in page_entries:
+                next_width = max(1, int(width * scale))
+                next_height = max(1, int(height * scale))
+                max_height = max(max_height, next_height)
+                scaled_entries.append((src, next_width, next_height))
+            page_entries = scaled_entries
+
+        canvas = QPixmap(canvas_width, max_height)
+        canvas.fill(QColor("#101010"))
+        painter = QPainter(canvas)
+        painter.fillRect(canvas.rect(), QColor("#101010"))
+
+        spread_width = sum(width for _src, width, _height in page_entries)
+        x = max(0, (canvas_width - spread_width) // 2)
+
+        for src, scaled_width, scaled_height in page_entries:
+            target_rect = QPoint(x, max(0, (max_height - scaled_height) // 2))
+            if src is not None and not src.isNull():
+                scaled = src.scaled(scaled_width, scaled_height, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                painter.drawPixmap(target_rect, scaled)
+            else:
+                painter.fillRect(x, target_rect.y(), scaled_width, scaled_height, QColor("#242424"))
+            x += scaled_width + MANGA_SPREAD_GAP
+        painter.end()
+
+        self.manga_spread_label.setPixmap(canvas)
+        self.manga_spread_label.setFixedSize(canvas.size())
+        self.manga_spread_label.show()
+
     def _sync_manga_page_visibility(self) -> None:
         if not self.image_labels:
             self._manga_page_index = 0
+            self.manga_spread_label.hide()
             return
-        current = max(0, min(len(self.image_labels) - 1, int(self._manga_page_index)))
+        current = self._manga_spread_anchor_for_index(int(self._manga_page_index))
         self._manga_page_index = current
         manga_mode = self._is_manga_image_mode()
         for index, label in enumerate(self.image_labels):
-            label.setVisible((not manga_mode) or index == current)
+            label.setVisible(not manga_mode)
+        if manga_mode:
+            self._update_manga_spread_label()
+        else:
+            self.manga_spread_label.hide()
 
     def _set_manga_page(self, index: int, offset_frac: float = 0.0) -> bool:
         if not self.image_labels:
             self._manga_page_index = 0
             return False
-        self._manga_page_index = max(0, min(len(self.image_labels) - 1, int(index)))
+        self._manga_page_index = self._manga_spread_anchor_for_index(index)
         self._sync_manga_page_visibility()
-        start_index = max(0, self._manga_page_index - 1)
-        end_index = min(len(self.image_labels), self._manga_page_index + 2)
+        visible_indexes = self._manga_visible_indexes()
+        start_index = max(0, min(visible_indexes) - 1)
+        end_index = min(len(self.image_labels), max(visible_indexes) + 2)
         for probe in range(start_index, end_index):
             self._queue_preview_index(probe)
             label = self.image_labels[probe]
             if getattr(label, "_source_pixmap", None) is None:
                 self.loader.load(probe, label.img_path, 0)
-        label = self.image_labels[self._manga_page_index]
-        height = self._label_heights[self._manga_page_index] if self._manga_page_index < len(self._label_heights) else self._scaled_label_height(label)
+        height = max(1, self.manga_spread_label.height())
         target_px = int(max(0.0, min(1.0, float(offset_frac or 0.0))) * max(0, height))
         bar = self.scroll.verticalScrollBar()
         bar.setValue(max(0, min(target_px, bar.maximum())))
@@ -921,7 +1214,13 @@ class ViewerPage(QWidget):
     def _step_manga_page(self, delta: int) -> bool:
         if not self._is_manga_image_mode() or not self.image_labels:
             return False
-        next_index = self._manga_page_index + int(delta)
+        visible_indexes = self._manga_visible_indexes()
+        if not visible_indexes:
+            return False
+        if int(delta) > 0:
+            next_index = visible_indexes[-1] + 1
+        else:
+            next_index = visible_indexes[0] - 1
         if next_index < 0 or next_index >= len(self.image_labels):
             return False
         self._set_manga_page(next_index, 0.0)
@@ -932,6 +1231,11 @@ class ViewerPage(QWidget):
         if self._is_manga_image_mode():
             return max(0, min(len(self.image_labels) - 1, int(self._manga_page_index))) if self.image_labels else 0
         return self.image_index_at_offset(self.scroll.verticalScrollBar().value())
+
+    def current_preview_image_indexes(self) -> list[int]:
+        if self._is_manga_image_mode():
+            return list(self._manga_visible_indexes())
+        return [self.current_preview_image_index()]
 
     def jump_to_image_index(self, index: int) -> None:
         if self._is_manga_image_mode():
@@ -947,8 +1251,7 @@ class ViewerPage(QWidget):
             if not self.image_labels:
                 return 0.0
             index = max(0, min(len(self.image_labels) - 1, int(self._manga_page_index)))
-            label = self.image_labels[index]
-            height = self._label_heights[index] if index < len(self._label_heights) else self._scaled_label_height(label)
+            height = max(1, self.manga_spread_label.height())
             bar = self.scroll.verticalScrollBar()
             offset_frac = (bar.value() / max(1, height)) if height > 0 else 0.0
             return index + max(0.0, min(1.0, offset_frac))
@@ -997,6 +1300,8 @@ class ViewerPage(QWidget):
         return self._prefix_heights[-1]
 
     def total_content_height(self) -> int:
+        if self._is_manga_image_mode():
+            return max(1, self.manga_spread_label.height())
         return self._prefix_heights[-1] if self._prefix_heights else 0
 
     def image_index_at_offset(self, scroll_top: int) -> int:
@@ -1010,8 +1315,7 @@ class ViewerPage(QWidget):
             return 0.0
         if self._is_manga_image_mode():
             index = max(0, min(len(self.image_labels) - 1, int(self._manga_page_index)))
-            label = self.image_labels[index]
-            height = self._label_heights[index] if index < len(self._label_heights) else self._scaled_label_height(label, zoom)
+            height = max(1, self.manga_spread_label.height())
             offset_frac = (max(0, int(scroll_top)) / max(1, height)) if height > 0 else 0.0
             return index + max(0.0, min(1.0, offset_frac))
         if zoom is None or abs(zoom - self._zoom) < 0.0001:
@@ -1038,7 +1342,7 @@ class ViewerPage(QWidget):
             packed = max(0.0, float(packed))
             idx = max(0, min(total - 1, int(packed)))
             frac = max(0.0, min(1.0, packed - int(packed)))
-            height = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx])
+            height = max(1, self.manga_spread_label.height())
             return int(height * frac)
         total = len(self.image_labels)
         packed = max(0.0, float(packed))
@@ -1334,6 +1638,7 @@ class ViewerPage(QWidget):
         if (
             not changed_indexes
             or not self.image_labels
+            or self._is_manga_image_mode()
             or self._restore_image_index is not None
             or self._applying_restore
             or self._resize_packed is not None
@@ -1371,6 +1676,8 @@ class ViewerPage(QWidget):
 
             self.preview.notify_image_loaded()
             self.manga_preview.notify_image_loaded()
+            if self._is_manga_image_mode():
+                self._update_manga_spread_label()
             self.check_visible_images()
             self._panel_warm_timer.start()
             self._hide_loading_overlay()
@@ -1410,6 +1717,8 @@ class ViewerPage(QWidget):
 
         self.preview.notify_image_loaded()
         self.manga_preview.notify_image_loaded()
+        if self._is_manga_image_mode():
+            self._update_manga_spread_label()
         self._invalidate_panel_cache()
         self.check_visible_images()
         self._panel_warm_timer.start()
@@ -1525,6 +1834,8 @@ class ViewerPage(QWidget):
         self.image_labels = []
         self._manga_page_index = 0
         self._reset_layout_metrics()
+        self.manga_spread_label.clear()
+        self.manga_spread_label.hide()
 
         self.preview.set_image_labels([])
         self.manga_preview.set_image_labels([])
@@ -2032,9 +2343,7 @@ class ViewerPage(QWidget):
             return
 
         self._show_loading_overlay(chapter, total_images=len(image_infos))
-        target_width = self._image_width()
-
-        for img_path, natural_w, natural_h, file_size in image_infos:
+        for image_index, (img_path, natural_w, natural_h, file_size) in enumerate(image_infos):
             label = self._acquire_image_label()
             label.img_path = img_path
             label._source_pixmap = None
@@ -2042,6 +2351,7 @@ class ViewerPage(QWidget):
             label._natural_width = natural_w
             label._natural_height = natural_h
             label._file_size = file_size
+            target_width = self._manga_display_page_width(image_index) if self._is_manga_image_mode() else self._image_width()
             if natural_w > 0 and natural_h > 0:
                 placeholder_height = max(100, int(target_width * (natural_h / natural_w)))
             else:
@@ -2059,6 +2369,7 @@ class ViewerPage(QWidget):
 
         self.preview.set_image_labels(self.image_labels)
         self.manga_preview.set_image_labels(self.image_labels)
+        self._sync_manga_page_visibility()
 
         self.check_visible_images()
         QTimer.singleShot(0, self.check_visible_images)
@@ -2148,7 +2459,8 @@ class ViewerPage(QWidget):
         idx = self._restore_image_index
         if idx is None or idx >= len(self.image_labels):
             return
-        end = min(len(self.image_labels), idx + 3)
+        visible_indexes = self._manga_visible_indexes(idx) if self._is_manga_image_mode() else [idx]
+        end = min(len(self.image_labels), (max(visible_indexes) if visible_indexes else idx) + 3)
         for i in range(end):
             self.loader.load(i, self.image_labels[i].img_path, 0)
 
@@ -2156,8 +2468,9 @@ class ViewerPage(QWidget):
         if not self.image_labels:
             return
         if self._is_manga_image_mode():
-            start_index = max(0, self._manga_page_index - 1)
-            end_index = min(len(self.image_labels) - 1, self._manga_page_index + 1)
+            visible_indexes = self._manga_visible_indexes()
+            start_index = max(0, min(visible_indexes) - 1) if visible_indexes else 0
+            end_index = min(len(self.image_labels) - 1, max(visible_indexes) + 1) if visible_indexes else 0
         else:
             viewport_top = self.scroll.verticalScrollBar().value()
             viewport_bottom = viewport_top + self.scroll.viewport().height()
@@ -2227,7 +2540,12 @@ class ViewerPage(QWidget):
         src = getattr(label, '_source_pixmap', None)
         if src is None or src.isNull():
             return
-        scaled = src.scaledToWidth(self._image_width(), Qt.SmoothTransformation)
+        try:
+            index = self.image_labels.index(label)
+        except ValueError:
+            index = -1
+        target_width = self._manga_display_page_width(index) if self._is_manga_image_mode() and index >= 0 else self._image_width()
+        scaled = src.scaledToWidth(target_width, Qt.SmoothTransformation)
         label.setPixmap(scaled)
         label.setFixedHeight(scaled.height())
 
@@ -2243,6 +2561,12 @@ class ViewerPage(QWidget):
         try:
             for index, label in enumerate(self.image_labels):
                 self._apply_pixmap_to_label(label)
+                if self._is_manga_image_mode() and getattr(label, "_source_pixmap", None) is None:
+                    target_width = self._manga_display_page_width(index)
+                    natural_w = getattr(label, "_natural_width", 0)
+                    natural_h = getattr(label, "_natural_height", 0)
+                    if natural_w > 0 and natural_h > 0:
+                        label.setFixedHeight(max(100, int(target_width * (natural_h / natural_w))))
                 self._set_label_height_cache(index, label.height())
         finally:
             self.container.setUpdatesEnabled(True)
@@ -2259,6 +2583,8 @@ class ViewerPage(QWidget):
         QTimer.singleShot(0, _restore)
 
         self.preview.update()
+        if self._is_manga_image_mode():
+            self._update_manga_spread_label()
         self._invalidate_panel_cache()
         self._panel_warm_timer.start()
 
@@ -2398,12 +2724,15 @@ class ViewerPage(QWidget):
         if getattr(label, '_source_pixmap', None) is None and natural_w > 0 and natural_h > 0:
             anchor = self._capture_layout_anchor([index])
             aspect = natural_h / natural_w
-            scaled_h = max(100, int(self._image_width() * aspect))
+            target_width = self._manga_display_page_width(index) if self._is_manga_image_mode() else self._image_width()
+            scaled_h = max(100, int(target_width * aspect))
             label.setFixedHeight(scaled_h)
             self._set_label_height_cache(index, scaled_h)
             self._restore_layout_anchor(anchor)
         self.preview.notify_image_loaded()
         self.manga_preview.notify_image_loaded()
+        if self._is_manga_image_mode():
+            self._update_manga_spread_label()
 
     def _get_panel_ranges(self) -> list[tuple[int, int]]:
         if self._panel_ranges_dirty:

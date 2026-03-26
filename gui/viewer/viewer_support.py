@@ -488,6 +488,14 @@ class ChapterPreview(QWidget):
             cumulative += height
         return len(self.image_labels) - 1
 
+    def _current_image_indexes(self) -> list[int]:
+        if not self.image_labels:
+            return []
+        if self.metrics_provider is not None and hasattr(self.metrics_provider, "current_preview_image_indexes"):
+            indexes = [int(idx) for idx in self.metrics_provider.current_preview_image_indexes()]
+            return [idx for idx in indexes if 0 <= idx < len(self.image_labels)]
+        return [self._current_image_index()]
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -692,6 +700,7 @@ class ChapterPreview(QWidget):
 
     def _paint_pages_only_strip(self, painter: QPainter, current_idx: int):
         layouts = self._pages_only_layout(current_idx)
+        active_indexes = set(self._current_image_indexes())
         for index, rect, full_h in layouts:
             src = getattr(self.image_labels[index], "_source_pixmap", None) or getattr(self.image_labels[index], "_preview_pixmap", None)
             if src and not src.isNull():
@@ -708,7 +717,7 @@ class ChapterPreview(QWidget):
                 painter.restore()
             else:
                 painter.fillRect(rect, QColor("#2a2a2a"))
-            if index == current_idx:
+            if index in active_indexes:
                 painter.fillRect(rect, QColor(41, 121, 255, 64))
                 pen = QPen(QColor(41, 121, 255, 220))
                 pen.setWidth(1)
