@@ -131,62 +131,68 @@ class ImageLoader(QObject):
         self.preview_executor.submit(self._preview_task, index, path, max_w)
 
     def _load_task(self, index: int, path: str):
-        if self._cancelled:
-            return
-        started = time.perf_counter()
-        reader = QImageReader(path)
-        image = reader.read()
-        pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
-        if pixmap.isNull():
-            logger.warning("Viewer image load failed index=%d path=%s", index, path)
-            return
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
         try:
-            file_size = os.path.getsize(path)
-        except OSError:
-            file_size = 0
-        logger.info(
-            "Viewer image loaded index=%d path=%s dims=%dx%d file_size=%s load_ms=%.2f",
-            index,
-            path,
-            pixmap.width(),
-            pixmap.height(),
-            format_bytes(file_size),
-            elapsed_ms,
-        )
-        if not self._cancelled:
-            self.image_ready.emit(index, pixmap)
+            if self._cancelled:
+                return
+            started = time.perf_counter()
+            reader = QImageReader(path)
+            image = reader.read()
+            pixmap = QPixmap.fromImage(image) if not image.isNull() else QPixmap()
+            if pixmap.isNull():
+                logger.warning("Viewer image load failed index=%d path=%s", index, path)
+                return
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            try:
+                file_size = os.path.getsize(path)
+            except OSError:
+                file_size = 0
+            logger.info(
+                "Viewer image loaded index=%d path=%s dims=%dx%d file_size=%s load_ms=%.2f",
+                index,
+                path,
+                pixmap.width(),
+                pixmap.height(),
+                format_bytes(file_size),
+                elapsed_ms,
+            )
+            if not self._cancelled:
+                self.image_ready.emit(index, pixmap)
+        finally:
+            self._queued.discard(index)
 
     def _preview_task(self, index: int, path: str, max_w: int):
-        if self._cancelled:
-            return
-        natural_w = 0
-        natural_h = 0
-        thumb = QPixmap()
-
-        reader = QImageReader(path)
-        size = reader.size()
-        if size.isValid():
-            natural_w = size.width()
-            natural_h = size.height()
-            if natural_w > max_w > 0 and natural_h > 0:
-                scaled_h = max(1, int(max_w * (natural_h / natural_w)))
-                reader.setScaledSize(QSize(max_w, scaled_h))
-
-            image = reader.read()
-            if not image.isNull():
-                thumb = QPixmap.fromImage(image)
-
-        if thumb.isNull():
-            pixmap = QPixmap(path)
-            if pixmap.isNull():
+        try:
+            if self._cancelled:
                 return
-            natural_w = pixmap.width()
-            natural_h = pixmap.height()
-            thumb = pixmap if natural_w <= max_w else pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
+            natural_w = 0
+            natural_h = 0
+            thumb = QPixmap()
 
-        if not self._cancelled:
-            self.preview_ready.emit(index, thumb, natural_w, natural_h)
+            reader = QImageReader(path)
+            size = reader.size()
+            if size.isValid():
+                natural_w = size.width()
+                natural_h = size.height()
+                if natural_w > max_w > 0 and natural_h > 0:
+                    scaled_h = max(1, int(max_w * (natural_h / natural_w)))
+                    reader.setScaledSize(QSize(max_w, scaled_h))
+
+                image = reader.read()
+                if not image.isNull():
+                    thumb = QPixmap.fromImage(image)
+
+            if thumb.isNull():
+                pixmap = QPixmap(path)
+                if pixmap.isNull():
+                    return
+                natural_w = pixmap.width()
+                natural_h = pixmap.height()
+                thumb = pixmap if natural_w <= max_w else pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
+
+            if not self._cancelled:
+                self.preview_ready.emit(index, thumb, natural_w, natural_h)
+        finally:
+            self._preview_queued.discard(index)
 
     def build_panel_ranges(self, generation: int, payload: list):
         self.panel_executor.submit(self._panel_task, generation, payload)

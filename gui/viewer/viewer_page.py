@@ -18,8 +18,18 @@ from PySide6.QtCore import Qt, QPoint, QEvent, QEventLoop, QTimer, Signal, QSize
 
 from gui.common.scene_bookmark_dialog import AllSceneBookmarksDialog, SceneBookmarksDialog
 from gui.common.styles import (
+    ACCENT,
+    BG,
+    BORDER,
     LOADING_DETAIL_LABEL_STYLE,
     LOADING_TITLE_LABEL_STYLE,
+    BUTTON_STYLE,
+    INPUT_STYLE,
+    SECTION_LABEL_TRANSPARENT_STYLE,
+    SURFACE,
+    TEXT,
+    TEXT_MUTED,
+    TEXT_MUTED_BODY_STYLE,
     VIEWER_LOADING_OVERLAY_STYLE,
     VIEWER_TOOLBAR_BUTTON_STYLE,
     VIEWER_TOOLBAR_COMBO_STYLE,
@@ -202,6 +212,35 @@ class MangaReaderSettingsDialog(QDialog):
         self.setWindowTitle("Manga Reader Settings")
         self.setModal(True)
         self.setFixedWidth(340)
+        self.setStyleSheet(
+            f"""
+            QDialog {{
+                background: {BG};
+                color: {TEXT};
+            }}
+            QLabel {{
+                background: transparent;
+                color: {TEXT};
+            }}
+            QGroupBox {{
+                background: {SURFACE};
+                color: {TEXT};
+                border: 1px solid {BORDER};
+                border-radius: 12px;
+                margin-top: 10px;
+                padding-top: 8px;
+                font-weight: 700;
+            }}
+            QGroupBox::title {{
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 4px;
+                color: {TEXT_MUTED};
+            }}
+            {INPUT_STYLE}
+            {BUTTON_STYLE}
+            """
+        )
 
         self._layout_mode = "double" if str(layout_mode or "").strip().casefold() == "double" else "single"
         self._spread_parity = "even" if str(spread_parity or "").strip().casefold() == "even" else "odd"
@@ -213,6 +252,7 @@ class MangaReaderSettingsDialog(QDialog):
 
         intro = QLabel("Choose how manga pages are shown in the viewer.")
         intro.setWordWrap(True)
+        intro.setStyleSheet(TEXT_MUTED_BODY_STYLE)
         layout.addWidget(intro)
 
         page_group = QGroupBox("Page Layout")
@@ -223,6 +263,7 @@ class MangaReaderSettingsDialog(QDialog):
         page_row.addWidget(QLabel("View"))
         page_row.addStretch()
         self.mode_combo = QComboBox()
+        self.mode_combo.setFixedWidth(170)
         self.mode_combo.addItem("Single Page", ("single", "odd"))
         self.mode_combo.addItem("Double Page (Odds)", ("double", "odd"))
         self.mode_combo.addItem("Double Page (Evens)", ("double", "even"))
@@ -240,6 +281,7 @@ class MangaReaderSettingsDialog(QDialog):
         fit_row.addWidget(QLabel("Sizing"))
         fit_row.addStretch()
         self.fit_combo = QComboBox()
+        self.fit_combo.setFixedWidth(170)
         self.fit_combo.addItem("Fit Width", "width")
         self.fit_combo.addItem("Fit Height", "height")
         self.fit_combo.setCurrentIndex(max(0, self.fit_combo.findData(self._fit_mode)))
@@ -249,14 +291,36 @@ class MangaReaderSettingsDialog(QDialog):
 
         note = QLabel("Single-page mode keeps the active page centered.")
         note.setWordWrap(True)
-        note.setStyleSheet("color: rgba(255, 255, 255, 0.7);")
+        note.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         layout.addWidget(note)
 
         buttons = QHBoxLayout()
         buttons.addStretch()
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setStyleSheet(BUTTON_STYLE)
         cancel_btn.clicked.connect(self.reject)
         save_btn = QPushButton("Save")
+        save_btn.setStyleSheet(
+            f"""
+            QPushButton {{
+                background: {ACCENT};
+                color: {BG};
+                border: 1px solid {ACCENT};
+                border-radius: 6px;
+                padding: 6px 16px;
+                font-size: 13px;
+                font-weight: 700;
+            }}
+            QPushButton:hover {{
+                background: #ff9e90;
+                border-color: #ff9e90;
+            }}
+            QPushButton:pressed {{
+                background: #ff7c69;
+                border-color: #ff7c69;
+            }}
+            """
+        )
         save_btn.clicked.connect(self.accept)
         buttons.addWidget(cancel_btn)
         buttons.addWidget(save_btn)
@@ -390,6 +454,7 @@ class ViewerPage(QWidget):
         self.chapter_selector.setStyleSheet(VIEWER_TOOLBAR_COMBO_STYLE)
         self.chapter_selector.setMinimumWidth(170)
         self.chapter_selector.setMaximumWidth(240)
+        self.chapter_selector.setVisible(False)
         self.chapter_selector.currentIndexChanged.connect(self.load_selected_chapter)
 
         self.nav_toggle = self._make_toolbar_button("fa5s.magic", "(Space) Auto Skip", self._toggle_navigation_mode, checkable=True)
@@ -404,7 +469,7 @@ class ViewerPage(QWidget):
         self.text_settings_btn = self._make_toolbar_button("fa5s.font", "(T) Text reader settings", self._open_text_reader_settings)
         self.minimap_btn = self._make_toolbar_button("fa5s.map", "(M) Show or hide the reading mini-map", self._toggle_minimap, checkable=True)
         self.minimap_btn.setChecked(self._minimap_visible)
-        self.manga_settings_btn = self._make_toolbar_button("fa5s.book-open", "Manga reader settings", self._open_manga_reader_settings)
+        self.manga_settings_btn = self._make_toolbar_button("fa5s.book-open", "(T) Manga reader settings", self._open_manga_reader_settings)
         self.anchors_btn = self._make_toolbar_button("fa5s.map-pin", "(A) Show or hide saved scene anchors on the mini-map", self._toggle_scene_anchors, checkable=True)
         self.anchors_btn.setChecked(self._scene_anchors_visible)
         self.zoom_out_btn = self._make_toolbar_button("fa5s.search-minus", "(-) Decrease image width", self._zoom_out)
@@ -779,7 +844,7 @@ class ViewerPage(QWidget):
             layout_label = "Double Page" if self._manga_uses_double_page() else "Single Page"
             parity_label = "Evens" if self._normalize_manga_spread_parity(self._manga_spread_parity) == "even" else "Odds"
             fit_label = "Fit Height" if self._manga_fit_mode == "height" else "Fit Width"
-            self.manga_settings_btn.setToolTip(f"Manga reader settings ({layout_label}, {parity_label}, {fit_label})")
+            self.manga_settings_btn.setToolTip(f"(T) Manga reader settings ({layout_label}, {parity_label}, {fit_label})")
         else:
             self.minimap_btn.setToolTip("(M) Mini-map visible" if self._minimap_visible else "(M) Mini-map hidden")
         self.anchors_btn.setToolTip("(A) Scene anchors visible" if self._scene_anchors_visible else "(A) Scene anchors hidden")
@@ -934,7 +999,7 @@ class ViewerPage(QWidget):
             detail_line = "Text chapter"
         elif self._is_manga_image_mode():
             total_pages = max(1, len(self.image_labels))
-            shortcut_line = "(Left/Right/Up/Down) Page | (M) Tracker | ([ ]) Chapter | (S) Save | (G) List | (Esc) Exit"
+            shortcut_line = "(Left/Right/Up/Down) Page | (M) Tracker | (T) Settings | ([ ]) Chapter | (S) Save | (G) List | (Esc) Exit"
             visible_indexes = self._manga_visible_indexes()
             if len(visible_indexes) >= 2:
                 detail_line = f"Pages {visible_indexes[0] + 1}-{visible_indexes[-1] + 1} / {total_pages}"
@@ -1138,6 +1203,9 @@ class ViewerPage(QWidget):
             scaled_width, scaled_height = self._manga_target_page_size(index)
             max_height = max(max_height, scaled_height)
             page_entries.append((src, scaled_width, scaled_height))
+
+        if len(page_entries) >= 2:
+            page_entries.reverse()
 
         total_width = sum(width for _src, width, _height in page_entries)
         if total_width > canvas_width and total_width > 0:
@@ -1800,6 +1868,12 @@ class ViewerPage(QWidget):
         self._refresh_scene_marks()
         self.update_nav_buttons()
 
+    def _sync_chapter_selector_visibility(self) -> None:
+        selector = getattr(self, "chapter_selector", None)
+        if selector is None:
+            return
+        selector.setVisible(selector.count() > 1)
+
         if self._chapter_mode == "image" and self._restore_image_index is None:
             if self._is_manga_image_mode():
                 self._set_manga_page(0, 0.0)
@@ -2373,6 +2447,7 @@ class ViewerPage(QWidget):
 
         self.check_visible_images()
         QTimer.singleShot(0, self.check_visible_images)
+        QTimer.singleShot(50, self.check_visible_images)
 
         self._queue_initial_previews()
 
@@ -2642,6 +2717,7 @@ class ViewerPage(QWidget):
             self._chapter_index_map = []
             self.chapter_selector.addItems(self.webtoon.chapters)
         self.chapter_selector.blockSignals(False)
+        self._sync_chapter_selector_visibility()
 
     def update_nav_buttons(self):
         self.prev_button.setEnabled(self._prev_chapter_index(self.current_chapter_index) is not None)
@@ -2894,6 +2970,9 @@ class ViewerPage(QWidget):
 
         elif key == Qt.Key_T and self._chapter_mode == "text":
             self._open_text_reader_settings()
+
+        elif key == Qt.Key_T and manga_mode:
+            self._open_manga_reader_settings()
 
         elif key == Qt.Key_M:
             self._toggle_minimap(not self._minimap_visible)

@@ -7,7 +7,7 @@ from core.app_logging import get_logger
 from requests.exceptions import RequestException
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QToolButton, QMessageBox
+    QPushButton, QScrollArea, QToolButton, QMessageBox, QGridLayout, QFrame
 )
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
 from PySide6.QtCore import Qt, QPoint, QSize, QTimer, QObject, Signal
@@ -25,6 +25,8 @@ from gui.common.chapter_utils import SPECIAL_CHAPTER_RE, chapter_sort_key
 from gui.common.scene_bookmark_dialog import AllSceneBookmarksDialog, SceneBookmarksDialog
 from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.common.styles import (
+    BG,
+    BORDER,
     sized_button_style,
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
@@ -54,6 +56,10 @@ from gui.common.styles import (
     chapter_name_style,
     TOP_BAR_STYLE,
     SECONDARY_META_LABEL_STYLE,
+    STATUS_LABEL_STYLE,
+    SURFACE,
+    TEXT,
+    TEXT_MUTED_BODY_STYLE,
 )
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.downloader.helpers import sanitize_webtoon_name
@@ -141,6 +147,156 @@ class RemoteSeriesLoader(QObject):
         threading.Thread(target=worker, daemon=True).start()
 
 
+def _page_sort_key(name: str):
+    match = re.search(r"(\d+(?:\.\d+)?)", name)
+    if match:
+        try:
+            return (0, float(match.group(1)), name.lower())
+        except Exception:
+            pass
+    return (1, float("inf"), name.lower())
+
+
+def _scaled_preview_pixmap(path: str, width: int, height: int, radius: int = 12) -> QPixmap:
+    pixmap = QPixmap(path)
+    if pixmap.isNull():
+        placeholder = QPixmap(width, height)
+        placeholder.fill(QColor("#171111"))
+        painter = QPainter(placeholder)
+        painter.setPen(QColor("#9b7670"))
+        painter.drawText(placeholder.rect(), Qt.AlignCenter, "Preview unavailable")
+        painter.end()
+        return placeholder
+
+    scaled = pixmap.scaled(width, height, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    x = max(0, (scaled.width() - width) // 2)
+    y = max(0, (scaled.height() - height) // 2)
+    cropped = scaled.copy(x, y, width, height)
+    rounded = QPixmap(width, height)
+    rounded.fill(Qt.transparent)
+    painter = QPainter(rounded)
+    painter.setRenderHint(QPainter.Antialiasing)
+    path_shape = QPainterPath()
+    path_shape.addRoundedRect(0, 0, width, height, radius, radius)
+    painter.setClipPath(path_shape)
+    painter.drawPixmap(0, 0, cropped)
+    painter.end()
+    return rounded
+
+
+def _preview_placeholder_pixmap(width: int, height: int, radius: int = 12) -> QPixmap:
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    path_shape = QPainterPath()
+    path_shape.addRoundedRect(0, 0, width, height, radius, radius)
+    painter.fillPath(path_shape, QColor("#1d1514"))
+    painter.setPen(QPen(QColor("#3c2522"), 1))
+    painter.drawPath(path_shape)
+    painter.end()
+    return pixmap
+
+
+class MangaPageTile(QFrame):
+    clicked = Signal(int)
+
+    PREVIEW_WIDTH = 108
+    PREVIEW_HEIGHT = 152
+
+    def __init__(self, image_path: str, page_index: int, parent=None):
+        super().__init__(parent)
+        self._page_index = int(page_index)
+        self.image_path = str(image_path or "")
+        self._preview_loaded = False
+        self._scene_count = 0
+        self.setCursor(Qt.PointingHandCursor)
+        self.setStyleSheet(
+            f"""
+            QFrame {{
+                background: {SURFACE};
+                border: 1px solid {BORDER};
+                border-radius: 14px;
+            }}
+            QFrame:hover {{
+                border-color: #ff8a7a;
+                background: #211615;
+            }}
+            QLabel {{
+                background: transparent;
+                color: {TEXT};
+            }}
+            """
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(0)
+
+        self.preview_label = QLabel()
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setFixedSize(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
+        self.preview_label.setPixmap(_preview_placeholder_pixmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
+        layout.addWidget(self.preview_label, 0, Qt.AlignCenter)
+
+    def set_preview_pixmap(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            return
+        self.preview_label.setPixmap(pixmap)
+        self._preview_loaded = True
+
+    @property
+    def preview_loaded(self) -> bool:
+        return self._preview_loaded
+
+    def set_scene_count(self, count: int) -> None:
+        self._scene_count = max(0, int(count))
+        if self._scene_count > 0:
+            self.setStyleSheet(
+                f"""
+                QFrame {{
+                    background: {SURFACE};
+                    border: 1px solid #c5352f;
+                    border-radius: 14px;
+                }}
+                QFrame:hover {{
+                    border-color: #ff8a7a;
+                    background: #211615;
+                }}
+                QLabel {{
+                    background: transparent;
+                    color: {TEXT};
+                }}
+                """
+            )
+        else:
+            self.setStyleSheet(
+                f"""
+                QFrame {{
+                    background: {SURFACE};
+                    border: 1px solid {BORDER};
+                    border-radius: 14px;
+                }}
+                QFrame:hover {{
+                    border-color: #ff8a7a;
+                    background: #211615;
+                }}
+                QLabel {{
+                    background: transparent;
+                    color: {TEXT};
+                }}
+                """
+            )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self._page_index)
+        super().mousePressEvent(event)
+
+
 class DetailPage(QWidget):
 
     def __init__(self, main_window):
@@ -183,6 +339,17 @@ class DetailPage(QWidget):
         self._remote_selection_label = None
         self._remote_download_selected_btn = None
         self._remote_clear_selection_btn = None
+        self._manga_preview_active = False
+        self._manga_preview_chapter = ""
+        self._manga_preview_index = -1
+        self._manga_preview_columns = 6
+        self._manga_preview_tiles: list[MangaPageTile] = []
+        self._manga_preview_queue: list[int] = []
+        self._manga_preview_queued: set[int] = set()
+        self._manga_preview_pixmap_cache: dict[str, QPixmap] = {}
+        self._manga_preview_loader_timer = QTimer(self)
+        self._manga_preview_loader_timer.setSingleShot(True)
+        self._manga_preview_loader_timer.timeout.connect(self._drain_manga_preview_queue)
 
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -232,9 +399,9 @@ class DetailPage(QWidget):
         root.addWidget(top_bar)
 
         # Hero
-        hero = QWidget()
-        hero.setStyleSheet(HERO_PANEL_STYLE)
-        hero_layout = QHBoxLayout(hero)
+        self.hero_panel = QWidget()
+        self.hero_panel.setStyleSheet(HERO_PANEL_STYLE)
+        hero_layout = QHBoxLayout(self.hero_panel)
         hero_layout.setContentsMargins(32, 28, 32, 28)
         hero_layout.setSpacing(28)
 
@@ -330,17 +497,17 @@ class DetailPage(QWidget):
 
         hero_layout.addWidget(self.thumb_label)
         hero_layout.addWidget(info_widget, 1)
-        root.addWidget(hero)
+        root.addWidget(self.hero_panel)
 
         # Section header
-        section_header = QWidget()
-        section_header.setStyleSheet(SECTION_HEADER_PANEL_STYLE)
+        self.section_header = QWidget()
+        self.section_header.setStyleSheet(SECTION_HEADER_PANEL_STYLE)
 
-        sh_layout = QHBoxLayout(section_header)
+        sh_layout = QHBoxLayout(self.section_header)
         sh_layout.setContentsMargins(32, 20, 32, 8)
 
-        chapters_lbl = QLabel("CHAPTERS")
-        chapters_lbl.setStyleSheet(SECTION_CAPTION_STYLE)
+        self.section_caption_label = QLabel("CHAPTERS")
+        self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
 
         self.sort_btn = QPushButton("  Latest")
         self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#d8b7b0"))
@@ -378,7 +545,7 @@ class DetailPage(QWidget):
         self.scene_marks_filter_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE)
         self.scene_marks_filter_btn.clicked.connect(self._toggle_scene_marks_filter)
 
-        sh_layout.addWidget(chapters_lbl)
+        sh_layout.addWidget(self.section_caption_label)
         sh_layout.addStretch()
         sh_layout.addWidget(self.scene_marks_filter_btn)
         sh_layout.addSpacing(6)
@@ -387,7 +554,7 @@ class DetailPage(QWidget):
         sh_layout.addWidget(self.hide_specials_btn)
         sh_layout.addSpacing(6)
         sh_layout.addWidget(self.sort_btn)
-        root.addWidget(section_header)
+        root.addWidget(self.section_header)
 
         self.chapter_batch_bar = QWidget()
         self.chapter_batch_bar.setStyleSheet(BATCH_BAR_STYLE)
@@ -446,6 +613,28 @@ class DetailPage(QWidget):
         root.addWidget(self.chapter_scroll, 1)
         root.addWidget(self.chapter_batch_bar)
 
+        self.manga_preview_panel = QWidget()
+        self.manga_preview_panel.setStyleSheet(PAGE_BG_STYLE)
+        preview_layout = QVBoxLayout(self.manga_preview_panel)
+        preview_layout.setContentsMargins(32, 20, 32, 20)
+        preview_layout.setSpacing(12)
+
+        self.manga_preview_scroll = QScrollArea()
+        self.manga_preview_scroll.setWidgetResizable(True)
+        self.manga_preview_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.manga_preview_scroll.setStyleSheet(CHAPTER_SCROLL_AREA_STYLE)
+        self.manga_preview_scroll.verticalScrollBar().valueChanged.connect(self._schedule_visible_manga_preview_tiles)
+        preview_layout.addWidget(self.manga_preview_scroll, 1)
+
+        self.manga_preview_content = QWidget()
+        self.manga_preview_grid = QGridLayout(self.manga_preview_content)
+        self.manga_preview_grid.setContentsMargins(0, 8, 0, 8)
+        self.manga_preview_grid.setHorizontalSpacing(12)
+        self.manga_preview_grid.setVerticalSpacing(12)
+        self.manga_preview_scroll.setWidget(self.manga_preview_content)
+        self.manga_preview_panel.hide()
+        root.addWidget(self.manga_preview_panel, 1)
+
     def _chapter_selection_visible(self) -> bool:
         return bool(self.selected_chapters)
 
@@ -458,6 +647,7 @@ class DetailPage(QWidget):
 
     def load_webtoon(self, webtoon, progress_store):
         logger.info("Loading detail page for %s", webtoon.name)
+        self._hide_manga_page_preview()
         self.webtoon        = webtoon
         self.webtoon.path = os.path.abspath(webtoon.path)
         self.progress_store = progress_store
@@ -488,6 +678,7 @@ class DetailPage(QWidget):
 
         self.title_label.setText(webtoon.name)
         self._sync_webtoon_bookmark_button()
+        self._sync_detail_filter_visibility()
         self._update_chapter_count_label()
         self._sync_update_button()
 
@@ -512,9 +703,14 @@ class DetailPage(QWidget):
             p.end()
             self.thumb_label.setPixmap(rounded)
 
-        # Last read label
+        # Last read / page count label
         progress = progress_store.get(webtoon.name)
-        if progress:
+        single_manga_chapter = self._single_manga_chapter()
+        if single_manga_chapter:
+            total_pages = self._chapter_total_images(single_manga_chapter)
+            self.last_read_label.setText(f"{total_pages} pages" if total_pages > 0 else "")
+            self.continue_btn.show() if progress else self.continue_btn.hide()
+        elif progress:
             ch = progress["chapter"]
             scroll, total = self._progress_for_chapter(ch)
             percent = self._calc_percent(scroll, total)
@@ -526,6 +722,7 @@ class DetailPage(QWidget):
 
         self._begin_remote_series_lookup()
         self._build_chapter_list(progress)
+        self._maybe_auto_open_single_manga_preview()
         self._sync_chapter_batch_actions()
         self._sync_update_button()
 
@@ -806,6 +1003,20 @@ class DetailPage(QWidget):
             chapters = [c for c in chapters if int(self.scene_bookmark_counts.get(c, 0) or 0) > 0]
         return chapters
 
+    def _single_manga_chapter(self) -> str | None:
+        if not self._is_manga_webtoon() or self.webtoon is None:
+            return None
+        chapters = list(getattr(self.webtoon, "chapters", []) or [])
+        return chapters[0] if len(chapters) == 1 else None
+
+    def _maybe_auto_open_single_manga_preview(self) -> None:
+        chapter = self._single_manga_chapter()
+        if not chapter:
+            return
+        if self._manga_preview_active and self._manga_preview_chapter == chapter:
+            return
+        self._open_manga_chapter_preview(chapter, self.webtoon.chapters.index(chapter))
+
     def _filtered_new_remote_chapters(self) -> list[dict]:
         if self.show_only_bookmarked or self.show_only_scene_marks:
             return []
@@ -825,6 +1036,11 @@ class DetailPage(QWidget):
 
     def _update_chapter_count_label(self):
         if self.webtoon is None:
+            self.chapter_count_label.clear()
+            return
+
+        single_manga_chapter = self._single_manga_chapter()
+        if single_manga_chapter:
             self.chapter_count_label.clear()
             return
 
@@ -1015,7 +1231,7 @@ class DetailPage(QWidget):
 
     def _sync_chapter_batch_actions(self):
         count = len(self.selected_chapters)
-        self.chapter_batch_bar.setVisible(count > 0)
+        self.chapter_batch_bar.setVisible((count > 0) and not self._manga_preview_active)
         self._refresh_chapter_selection_visibility()
         if count <= 0:
             return
@@ -1328,6 +1544,9 @@ class DetailPage(QWidget):
             self.webtoon.name if self.webtoon else "<none>",
             self.show_only_scene_marks,
         )
+        if self._manga_preview_active and self.webtoon is not None and 0 <= self._manga_preview_index < len(self.webtoon.chapters):
+            self._open_manga_chapter_preview(self._manga_preview_chapter, self._manga_preview_index)
+            return
         self._update_chapter_count_label()
         progress = self.progress_store.get(self.webtoon.name) if self.webtoon else None
         self._build_chapter_list(progress)
@@ -1335,6 +1554,125 @@ class DetailPage(QWidget):
     def _saved_mode_label(self) -> str:
         content_type = str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold()
         return "Bookmark" if content_type == "webnovel" else "Scene"
+
+    def _is_manga_webtoon(self) -> bool:
+        return str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
+
+    def _sync_detail_filter_visibility(self) -> None:
+        manga = self._is_manga_webtoon()
+        self.section_caption_label.setText("" if manga else "CHAPTERS")
+        self.sort_btn.setVisible(not manga)
+        self.hide_specials_btn.setVisible(not manga)
+        self.bookmarks_filter_btn.setVisible(not manga)
+        self.scene_marks_filter_btn.setVisible(True)
+
+    def _scene_counts_for_preview_chapter(self, chapter: str) -> dict[int, int]:
+        if self.webtoon is None or chapter not in self.webtoon.chapters:
+            return {}
+        counts: dict[int, int] = {}
+        for bookmark in self.scene_bookmark_store.list_for_chapter(self.webtoon.name, chapter):
+            image_index = max(1, int(bookmark.get("image_index") or 0))
+            page_index = image_index - 1
+            counts[page_index] = counts.get(page_index, 0) + 1
+        return counts
+
+    def _set_manga_preview_visible(self, visible: bool) -> None:
+        self._manga_preview_active = bool(visible)
+        self.chapter_scroll.setVisible(not visible)
+        self.chapter_batch_bar.setVisible((not visible) and self._chapter_selection_visible())
+        self.manga_preview_panel.setVisible(visible)
+
+    def _clear_manga_preview_grid(self) -> None:
+        self._manga_preview_loader_timer.stop()
+        self._manga_preview_queue.clear()
+        self._manga_preview_queued.clear()
+        self._manga_preview_tiles = []
+        while self.manga_preview_grid.count():
+            item = self.manga_preview_grid.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _hide_manga_page_preview(self) -> None:
+        self._manga_preview_chapter = ""
+        self._manga_preview_index = -1
+        self._clear_manga_preview_grid()
+        self._set_manga_preview_visible(False)
+
+    def _refresh_active_manga_preview_scene_markers(self) -> None:
+        if not self._manga_preview_active or not self._manga_preview_chapter:
+            return
+        if self.show_only_scene_marks and self.webtoon is not None and 0 <= self._manga_preview_index < len(self.webtoon.chapters):
+            self._open_manga_chapter_preview(self._manga_preview_chapter, self._manga_preview_index)
+            return
+        counts = self._scene_counts_for_preview_chapter(self._manga_preview_chapter)
+        for index, tile in enumerate(self._manga_preview_tiles):
+            tile.set_scene_count(counts.get(index, 0))
+
+    def _queue_manga_preview_indexes(self, indexes: list[int], *, prioritize: bool = False) -> None:
+        if not indexes:
+            return
+        pending = []
+        for index in indexes:
+            if index < 0 or index >= len(self._manga_preview_tiles):
+                continue
+            tile = self._manga_preview_tiles[index]
+            if tile.preview_loaded or index in self._manga_preview_queued:
+                continue
+            self._manga_preview_queued.add(index)
+            pending.append(index)
+        if not pending:
+            return
+        if prioritize:
+            self._manga_preview_queue = pending + self._manga_preview_queue
+        else:
+            self._manga_preview_queue.extend(pending)
+        if not self._manga_preview_loader_timer.isActive():
+            self._manga_preview_loader_timer.start(0)
+
+    def _visible_manga_preview_indexes(self) -> list[int]:
+        if not self._manga_preview_tiles:
+            return []
+        bar = self.manga_preview_scroll.verticalScrollBar()
+        viewport = self.manga_preview_scroll.viewport()
+        row_height = max(1, self._manga_preview_tiles[0].sizeHint().height() + self.manga_preview_grid.verticalSpacing())
+        first_row = max(0, bar.value() // row_height)
+        visible_rows = max(1, (viewport.height() // row_height) + 2)
+        start_row = max(0, first_row - 1)
+        end_row = first_row + visible_rows + 1
+        indexes: list[int] = []
+        for row in range(start_row, end_row + 1):
+            row_start = row * self._manga_preview_columns
+            row_end = min(len(self._manga_preview_tiles), row_start + self._manga_preview_columns)
+            indexes.extend(range(row_start, row_end))
+        return indexes
+
+    def _schedule_visible_manga_preview_tiles(self, *_args) -> None:
+        if not self._manga_preview_active:
+            return
+        self._queue_manga_preview_indexes(self._visible_manga_preview_indexes(), prioritize=True)
+
+    def _drain_manga_preview_queue(self) -> None:
+        if not self._manga_preview_active or not self._manga_preview_queue:
+            return
+        batch_size = 10
+        loaded = 0
+        while self._manga_preview_queue and loaded < batch_size:
+            index = self._manga_preview_queue.pop(0)
+            self._manga_preview_queued.discard(index)
+            if index < 0 or index >= len(self._manga_preview_tiles):
+                continue
+            tile = self._manga_preview_tiles[index]
+            if tile.preview_loaded:
+                continue
+            cached = self._manga_preview_pixmap_cache.get(tile.image_path)
+            if cached is None:
+                cached = _scaled_preview_pixmap(tile.image_path, tile.PREVIEW_WIDTH, tile.PREVIEW_HEIGHT)
+                self._manga_preview_pixmap_cache[tile.image_path] = cached
+            tile.set_preview_pixmap(cached)
+            loaded += 1
+        if self._manga_preview_queue:
+            self._manga_preview_loader_timer.start(0)
 
     def _sync_saved_marks_button(self):
         count = sum(int(value or 0) for value in self.scene_bookmark_counts.values())
@@ -1356,6 +1694,7 @@ class DetailPage(QWidget):
         dialog.exec()
         self.scene_bookmark_counts = self.scene_bookmark_store.counts_for_webtoon(self.webtoon.name)
         self._sync_saved_marks_button()
+        self._refresh_active_manga_preview_scene_markers()
         self._update_chapter_count_label()
         progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
         self._build_chapter_list(progress)
@@ -1373,6 +1712,7 @@ class DetailPage(QWidget):
         dialog.exec()
         self.scene_bookmark_counts = self.scene_bookmark_store.counts_for_webtoon(self.webtoon.name)
         self._sync_saved_marks_button()
+        self._refresh_active_manga_preview_scene_markers()
         self._update_chapter_count_label()
         progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
         self._build_chapter_list(progress)
@@ -1447,6 +1787,8 @@ class DetailPage(QWidget):
         logger.info("Detail page refreshed chapter list from disk for %s", self.webtoon.name)
         previous_display = list(self._chapter_display_order or self._ordered_chapters_for_display(self.webtoon.chapters))
         self.webtoon.chapters = chapter_dirs
+        if self._manga_preview_active and self._manga_preview_chapter not in chapter_dirs:
+            self._hide_manga_page_preview()
         if preserve_display_order or self._is_current_webtoon_updating():
             self._chapter_display_order = self._append_new_chapters_to_display_order(
                 previous_display,
@@ -1466,6 +1808,7 @@ class DetailPage(QWidget):
         progress = self.progress_store.get(self.webtoon.name) if self.progress_store else None
         self._update_chapter_count_label()
         self._build_chapter_list(progress)
+        self._maybe_auto_open_single_manga_preview()
         self._sync_chapter_batch_actions()
         return True
 
@@ -1484,7 +1827,65 @@ class DetailPage(QWidget):
             self.settings_store.clear_latest_new_chapter(self.webtoon.name)
             self.latest_new_chapter = None
         idx = self.webtoon.chapters.index(chapter)
+        if self._is_manga_webtoon():
+            self._open_manga_chapter_preview(chapter, idx)
+            return
         self.main_window.open_chapter_with_prompt(self.webtoon, idx)
+
+    def _chapter_image_paths(self, chapter: str) -> list[str]:
+        if self.webtoon is None or chapter not in self.webtoon.chapters:
+            return []
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        if not os.path.isdir(chapter_path):
+            return []
+        return sorted(
+            [
+                os.path.join(chapter_path, entry.name)
+                for entry in os.scandir(chapter_path)
+                if entry.is_file() and entry.name.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
+            ],
+            key=lambda path: _page_sort_key(os.path.basename(path)),
+        )
+
+    def _open_manga_chapter_preview(self, chapter: str, chapter_index: int) -> None:
+        image_paths = self._chapter_image_paths(chapter)
+        if not image_paths:
+            QMessageBox.information(
+                self,
+                "Chapter empty",
+                f"'{chapter}' has no readable images.",
+            )
+            return
+        self._manga_preview_chapter = chapter
+        self._manga_preview_index = int(chapter_index)
+        self._clear_manga_preview_grid()
+        self._manga_preview_pixmap_cache = {}
+        columns = self._manga_preview_columns
+        scene_counts = self._scene_counts_for_preview_chapter(chapter)
+        visible_pages = [(index, image_path) for index, image_path in enumerate(image_paths)]
+        if self.show_only_scene_marks:
+            visible_pages = [(index, image_path) for index, image_path in visible_pages if scene_counts.get(index, 0) > 0]
+        shown_pages = len(visible_pages)
+        total_pages = len(image_paths)
+        for visible_pos, (page_index, image_path) in enumerate(visible_pages):
+            tile = MangaPageTile(image_path, page_index, self.manga_preview_content)
+            tile.set_scene_count(scene_counts.get(page_index, 0))
+            tile.clicked.connect(lambda page_index, chapter_idx=chapter_index: self._open_manga_preview_page(chapter_idx, page_index))
+            self.manga_preview_grid.addWidget(tile, visible_pos // columns, visible_pos % columns)
+            self._manga_preview_tiles.append(tile)
+        self._set_manga_preview_visible(True)
+        self.manga_preview_scroll.verticalScrollBar().setValue(0)
+        self._queue_manga_preview_indexes(self._visible_manga_preview_indexes(), prioritize=True)
+        self._queue_manga_preview_indexes(list(range(len(self._manga_preview_tiles))))
+
+    def _open_manga_preview_page(self, chapter_index: int, page_index: int) -> None:
+        logger.info(
+            "Opening manga chapter page from inline detail preview: %s / %s page=%d",
+            self.webtoon.name if self.webtoon else "<none>",
+            self._manga_preview_chapter,
+            page_index,
+        )
+        self.main_window.open_chapter(self.webtoon, chapter_index, float(page_index))
 
     def _continue_reading(self):
         logger.info("Continue reading requested for %s", self.webtoon.name if self.webtoon else "<none>")
@@ -1511,6 +1912,14 @@ class DetailPage(QWidget):
             )
 
     def _go_back(self):
+        if self._manga_preview_active:
+            if self._single_manga_chapter():
+                logger.info("Leaving single-chapter manga preview for %s back to library", self.webtoon.name if self.webtoon else "<none>")
+                self.main_window.open_library()
+                return
+            logger.info("Leaving inline manga preview for %s", self.webtoon.name if self.webtoon else "<none>")
+            self._hide_manga_page_preview()
+            return
         logger.info("Returning from detail page to library")
         self.main_window.open_library()
 
