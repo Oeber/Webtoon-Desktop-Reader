@@ -34,6 +34,7 @@ from gui.viewer.viewer_support import (
     ChapterPreview,
     ContinueDialog,
     ImageLoader,
+    PAGE_COLUMN_W,
     PREVIEW_W,
     SPECIAL_CHAPTER_RE,
     VIEWER_AUTO_SCROLL_CURSOR_SIZE,
@@ -381,7 +382,7 @@ class ViewerPage(QWidget):
 
         self.preview = ChapterPreview(self.scroll, metrics_provider=self, scene_jump_callback=self._jump_to_current_scene_mark)
         self.manga_preview = ChapterPreview(self.scroll, metrics_provider=self, scene_jump_callback=self._jump_to_current_scene_mark)
-        self.manga_preview.set_display_mode("horizontal")
+        self.manga_preview.set_display_mode("pages_only")
         self.manga_preview.hide()
 
         self.text_progress_panel = QWidget()
@@ -431,9 +432,9 @@ class ViewerPage(QWidget):
         self.text_progress_panel.hide()
 
         reader_column.addWidget(self.scroll)
-        reader_column.addWidget(self.manga_preview)
         content_row.addLayout(reader_column, 1)
         content_row.addWidget(self.preview)
+        content_row.addWidget(self.manga_preview)
         content_row.addWidget(self.text_progress_panel)
         main_layout.addLayout(content_row)
 
@@ -668,8 +669,9 @@ class ViewerPage(QWidget):
         manga_mode = self._is_manga_image_mode()
         text_mode = self._chapter_mode == "text"
         preview_visible = self._minimap_visible and image_mode and not manga_mode
+        manga_preview_visible = self._minimap_visible and image_mode and manga_mode
         self.preview.setVisible(preview_visible)
-        self.manga_preview.setVisible(False)
+        self.manga_preview.setVisible(manga_preview_visible)
         self.text_progress_panel.setVisible(text_mode and self._text_progress_visible)
         self.preview.set_scene_marks_visible(self._scene_anchors_visible)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
@@ -681,7 +683,10 @@ class ViewerPage(QWidget):
         self.focus_mode_btn.setToolTip("(F) Focus mode on" if self._focus_mode_enabled else "(F) Focus mode off")
         self.text_progress_btn.setToolTip("(P) Text progress visible" if self._text_progress_visible else "(P) Text progress hidden")
         self.text_settings_btn.setToolTip("(T) Text reader settings")
-        self.minimap_btn.setToolTip("(M) Mini-map visible" if self._minimap_visible else "(M) Mini-map hidden")
+        if manga_mode:
+            self.minimap_btn.setToolTip("(M) Page tracker visible" if self._minimap_visible else "(M) Page tracker hidden")
+        else:
+            self.minimap_btn.setToolTip("(M) Mini-map visible" if self._minimap_visible else "(M) Mini-map hidden")
         self.anchors_btn.setToolTip("(A) Scene anchors visible" if self._scene_anchors_visible else "(A) Scene anchors hidden")
         self.minimap_btn.setEnabled(image_mode)
         self.anchors_btn.setEnabled(preview_visible)
@@ -788,7 +793,7 @@ class ViewerPage(QWidget):
             detail_line = "Text chapter"
         elif self._is_manga_image_mode():
             total_pages = max(1, len(self.image_labels))
-            shortcut_line = "(Left/Right) Page | ([ ]) Chapter | (S) Save | (G) List | (Esc) Exit"
+            shortcut_line = "(Left/Right/Up/Down) Page | (M) Tracker | ([ ]) Chapter | (S) Save | (G) List | (Esc) Exit"
             detail_line = f"Page {self._manga_page_index + 1} / {total_pages}"
         else:
             shortcut_line = "(F) Focus | (M) Map | (S) Save | (G) List | ([ ]) Chapter | (Esc) Exit"
@@ -2114,7 +2119,8 @@ class ViewerPage(QWidget):
         if index < 0 or index >= len(self.image_labels) or index in self._queued_preview_indexes:
             return
         self._queued_preview_indexes.add(index)
-        self.loader.load_preview(index, self.image_labels[index].img_path)
+        preview_w = max(50, PAGE_COLUMN_W - 8) if self._is_manga_image_mode() else 50
+        self.loader.load_preview(index, self.image_labels[index].img_path, max_w=preview_w)
 
     def _queue_initial_previews(self):
         eager_count = min(len(self.image_labels), PREVIEW_EAGER_COUNT)
@@ -2423,14 +2429,14 @@ class ViewerPage(QWidget):
         key = event.key()
         modifiers = event.modifiers()
         manga_mode = self._is_manga_image_mode()
-        move_down = key in (Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown) or (
+        move_down = ((not manga_mode) and key in (Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown)) or (
             key == Qt.Key_Space and not bool(modifiers & Qt.ShiftModifier)
         )
-        move_up = key in (Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp) or (
+        move_up = ((not manga_mode) and key in (Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp)) or (
             key == Qt.Key_Space and bool(modifiers & Qt.ShiftModifier)
         )
-        page_forward = manga_mode and key == Qt.Key_Right
-        page_back = manga_mode and key == Qt.Key_Left
+        page_forward = manga_mode and key in (Qt.Key_Right, Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown)
+        page_back = manga_mode and key in (Qt.Key_Left, Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp)
         chapter_forward = key in ((Qt.Key_BracketRight,) if manga_mode else (Qt.Key_Right, Qt.Key_BracketRight))
         chapter_back = key in ((Qt.Key_BracketLeft,) if manga_mode else (Qt.Key_Left, Qt.Key_BracketLeft))
         session_keys = {

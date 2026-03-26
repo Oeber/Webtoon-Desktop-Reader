@@ -18,6 +18,8 @@ from gui.common.styles import (
 FILMSTRIP_W = 40
 IMAGE_STRIP_W = 50
 PREVIEW_W = FILMSTRIP_W + IMAGE_STRIP_W
+HORIZONTAL_PREVIEW_H = 96
+PAGE_COLUMN_W = 112
 
 SPECIAL_CHAPTER_RE = re.compile(r"\b\d+\.\d+\b")
 
@@ -25,6 +27,7 @@ TILE_GAP = 2
 TILE_PADDING = 2
 TILE_MIN_H = 14
 TILE_MAX_H = 120
+QT_WIDGET_MAX = 16777215
 
 NUM_WORKERS = 8
 PREVIEW_WORKERS = 2
@@ -377,23 +380,35 @@ class ChapterPreview(QWidget):
         self._scene_marks_visible = True
 
     def set_display_mode(self, mode: str):
-        normalized = "horizontal" if str(mode).strip().casefold() == "horizontal" else "vertical"
+        requested = str(mode).strip().casefold()
+        if requested == "horizontal":
+            normalized = "horizontal"
+        elif requested in {"pages_only", "pages"}:
+            normalized = "pages_only"
+        else:
+            normalized = "vertical"
         if normalized == self._display_mode:
             return
         self._display_mode = normalized
         if normalized == "horizontal":
-            self.setFixedHeight(60)
-            self.setMinimumHeight(60)
-            self.setMaximumHeight(60)
+            self.setFixedHeight(HORIZONTAL_PREVIEW_H)
+            self.setMinimumHeight(HORIZONTAL_PREVIEW_H)
+            self.setMaximumHeight(HORIZONTAL_PREVIEW_H)
             self.setMinimumWidth(0)
-            self.setMaximumWidth(16777215)
-            self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            self.setMaximumWidth(QT_WIDGET_MAX)
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        elif normalized == "pages_only":
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(PAGE_COLUMN_W)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(QT_WIDGET_MAX)
+            self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         else:
             self.setFixedWidth(PREVIEW_W)
             self.setMinimumWidth(PREVIEW_W)
             self.setMaximumWidth(PREVIEW_W)
             self.setMinimumHeight(0)
-            self.setMaximumHeight(16777215)
+            self.setMaximumHeight(QT_WIDGET_MAX)
             self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.updateGeometry()
         self.update()
@@ -441,10 +456,12 @@ class ChapterPreview(QWidget):
 
     def _tile_rect(self, index: int, tile_h: int) -> QRect:
         y = index * (tile_h + TILE_GAP)
-        return QRect(TILE_PADDING, y, FILMSTRIP_W - TILE_PADDING * 2, tile_h)
+        tile_w = (self.width() if self._display_mode == "pages_only" else FILMSTRIP_W) - TILE_PADDING * 2
+        return QRect(TILE_PADDING, y, max(1, tile_w), tile_h)
 
     def _tile_index_at(self, pos: QPoint) -> int | None:
-        if pos.x() >= FILMSTRIP_W:
+        strip_w = self.width() if self._display_mode == "pages_only" else FILMSTRIP_W
+        if pos.x() >= strip_w:
             return None
         tile_h = self._tile_height()
         stride = tile_h + TILE_GAP
@@ -482,6 +499,13 @@ class ChapterPreview(QWidget):
             current_idx = self._current_image_index()
             self._paint_horizontal_strip(painter, current_idx)
             return
+        if self._display_mode == "pages_only":
+            painter.fillRect(self.rect(), QColor("#1a1a1a"))
+            if not self.image_labels:
+                return
+            current_idx = self._current_image_index()
+            self._paint_pages_only_strip(painter, current_idx)
+            return
         painter.fillRect(QRect(0, 0, FILMSTRIP_W, self.height()), QColor("#1a1a1a"))
         painter.fillRect(QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height()), QColor("#141414"))
         if not self.image_labels:
@@ -509,8 +533,92 @@ class ChapterPreview(QWidget):
         rect = self.rect().adjusted(10, 10, -10, -10)
         start, end = self._visible_page_window(current_idx)
         visible_count = max(1, end - start)
-        gap = 1
+        gap = 0
         return rect, start, end, visible_count, gap
+
+    def _horizontal_page_width(self, label, track_h: int) -> int:
+        natural_w = max(0, int(getattr(label, "_natural_width", 0) or 0))
+        natural_h = max(0, int(getattr(label, "_natural_height", 0) or 0))
+        if natural_w > 0 and natural_h > 0:
+            return max(1, int(track_h * (natural_w / natural_h)))
+        src = getattr(label, "_source_pixmap", None) or label.pixmap() or getattr(label, "_preview_pixmap", None)
+        if src and not src.isNull() and src.height() > 0:
+            return max(1, int(track_h * (src.width() / src.height())))
+        return max(1, track_h)
+
+    def _page_aspect_ratio(self, label) -> float:
+        natural_w = max(0, int(getattr(label, "_natural_width", 0) or 0))
+        natural_h = max(0, int(getattr(label, "_natural_height", 0) or 0))
+        if natural_w > 0 and natural_h > 0:
+            return natural_w / natural_h
+        src = getattr(label, "_source_pixmap", None) or label.pixmap() or getattr(label, "_preview_pixmap", None)
+        if src and not src.isNull() and src.height() > 0:
+            return src.width() / src.height()
+        return 0.7
+
+    def _pages_only_page_height(self, index: int, tile_w: int) -> int:
+        if index < 0 or index >= len(self.image_labels):
+            return max(TILE_MIN_H, tile_w)
+        ratio = max(0.05, float(self._page_aspect_ratio(self.image_labels[index]) or 0.7))
+        return max(TILE_MIN_H, int(tile_w / ratio))
+
+    def _horizontal_visible_indexes(self, current_idx: int, track_h: int, max_width: int) -> list[int]:
+        count = len(self.image_labels)
+        if count <= 0:
+            return []
+        current_idx = max(0, min(count - 1, int(current_idx)))
+        indexes = [current_idx]
+        total_width = self._horizontal_page_width(self.image_labels[current_idx], track_h)
+        left = current_idx - 1
+        right = current_idx + 1
+
+        while left >= 0 or right < count:
+            if right < count:
+                width = self._horizontal_page_width(self.image_labels[right], track_h)
+                if total_width + width <= max_width or len(indexes) == 1:
+                    indexes.append(right)
+                    total_width += width
+                    right += 1
+                else:
+                    right = count
+            if left >= 0:
+                width = self._horizontal_page_width(self.image_labels[left], track_h)
+                if total_width + width <= max_width or len(indexes) == 1:
+                    indexes.insert(0, left)
+                    total_width += width
+                    left -= 1
+                else:
+                    left = -1
+
+        return indexes
+
+    def _horizontal_page_rects(self, current_idx: int) -> tuple[QRect, list[tuple[int, QRect]]]:
+        rect, _start, _end, _visible_count, _gap = self._horizontal_strip_layout(current_idx)
+        if rect.width() <= 0 or rect.height() <= 0:
+            return rect, []
+
+        track_h = max(14, rect.height())
+        visible_indexes = self._horizontal_visible_indexes(current_idx, track_h, rect.width())
+        if not visible_indexes:
+            return rect, []
+
+        base_widths = [self._horizontal_page_width(self.image_labels[index], track_h) for index in visible_indexes]
+        total_width = max(1, sum(base_widths))
+        scale = min(1.0, rect.width() / total_width)
+        scaled_widths = [max(1, width * scale) for width in base_widths]
+
+        layouts: list[tuple[int, QRect]] = []
+        cursor = float(rect.left())
+        for offset, index in enumerate(visible_indexes):
+            width = scaled_widths[offset]
+            next_cursor = cursor + width
+            block_left = int(round(cursor))
+            block_right = int(round(next_cursor))
+            if offset == len(scaled_widths) - 1:
+                block_right = min(rect.right() + 1, max(block_left + 1, block_right))
+            layouts.append((index, QRect(block_left, rect.top(), max(1, block_right - block_left), track_h)))
+            cursor = next_cursor
+        return rect, layouts
 
     def _horizontal_block_rect(
         self,
@@ -532,43 +640,25 @@ class ChapterPreview(QWidget):
 
     def _paint_horizontal_strip(self, painter: QPainter, current_idx: int):
         count = len(self.image_labels)
-        rect, start, end, visible_count, gap = self._horizontal_strip_layout(current_idx)
+        rect, layouts = self._horizontal_page_rects(current_idx)
         if count <= 0 or rect.width() <= 0 or rect.height() <= 0:
             return
-
-        track_h = max(14, rect.height())
-        y = rect.top()
 
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor("#202020"))
         painter.drawRoundedRect(rect, 8, 8)
 
-        for offset, index in enumerate(range(start, end)):
-            block = self._horizontal_block_rect(rect, visible_count, gap, offset, y, track_h)
+        for index, block in layouts:
             label = self.image_labels[index]
             src = getattr(label, "_source_pixmap", None) or label.pixmap() or getattr(label, "_preview_pixmap", None)
-
-            page_rect = block.adjusted(0, 0, -1, -1)
+            page_rect = QRect(block)
 
             if src and not src.isNull():
-                fitted = src.scaled(
-                    max(1, page_rect.width()),
-                    max(1, page_rect.height()),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
-                draw_x = page_rect.left() + (page_rect.width() - fitted.width()) // 2
-                draw_y = page_rect.top() + (page_rect.height() - fitted.height()) // 2
-                painter.drawPixmap(draw_x, draw_y, fitted)
-                if index == current_idx:
-                    painter.fillRect(QRect(draw_x, draw_y, fitted.width(), fitted.height()), QColor(41, 121, 255, 48))
-
-            if index == current_idx and src and not src.isNull():
-                pen = QPen(QColor(41, 121, 255, 220))
-                pen.setWidth(2)
-                painter.setPen(pen)
-                painter.drawRoundedRect(page_rect, 2, 2)
-                painter.setPen(Qt.NoPen)
+                painter.drawPixmap(page_rect, src, src.rect())
+            else:
+                painter.fillRect(page_rect, QColor("#2a2a2a"))
+            if index == current_idx:
+                painter.fillRect(page_rect, QColor(41, 121, 255, 64))
 
     def _paint_filmstrip(self, painter: QPainter, current_idx: int):
         tile_h = self._tile_height()
@@ -599,6 +689,81 @@ class ChapterPreview(QWidget):
             else:
                 painter.setPen(QColor("#0e0e0e"))
                 painter.drawLine(rect.left(), rect.bottom() + 1, rect.right(), rect.bottom() + 1)
+
+    def _paint_pages_only_strip(self, painter: QPainter, current_idx: int):
+        layouts = self._pages_only_layout(current_idx)
+        for index, rect, full_h in layouts:
+            src = getattr(self.image_labels[index], "_source_pixmap", None) or getattr(self.image_labels[index], "_preview_pixmap", None)
+            if src and not src.isNull():
+                painter.fillRect(rect, QColor("#202020"))
+                scaled = src.scaled(
+                    max(1, rect.width()),
+                    max(1, full_h),
+                    Qt.IgnoreAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                painter.save()
+                painter.setClipRect(rect)
+                painter.drawPixmap(rect.left(), rect.top(), scaled)
+                painter.restore()
+            else:
+                painter.fillRect(rect, QColor("#2a2a2a"))
+            if index == current_idx:
+                painter.fillRect(rect, QColor(41, 121, 255, 64))
+                pen = QPen(QColor(41, 121, 255, 220))
+                pen.setWidth(1)
+                painter.setPen(pen)
+                painter.drawRect(rect.adjusted(0, 0, -1, -1))
+            else:
+                painter.setPen(QColor("#0e0e0e"))
+                painter.drawLine(rect.left(), rect.bottom() + 1, rect.right(), rect.bottom() + 1)
+
+    def _pages_only_layout(self, current_idx: int) -> list[tuple[int, QRect, int]]:
+        count = len(self.image_labels)
+        if count <= 0:
+            return []
+        current_idx = max(0, min(count - 1, int(current_idx)))
+        available_h = max(40, self.height() - 2 * TILE_PADDING)
+        tile_w = max(1, self.width() - TILE_PADDING * 2)
+        entries: list[tuple[int, int, int]] = []
+
+        def consumed_height(items: list[tuple[int, int, int]]) -> int:
+            if not items:
+                return 0
+            return sum(height for _idx, height, _full_h in items) + (len(items) - 1) * TILE_GAP
+
+        for index in range(current_idx, count):
+            full_h = self._pages_only_page_height(index, tile_w)
+            remaining = available_h - consumed_height(entries)
+            if remaining <= 0:
+                break
+            visible_h = min(full_h, remaining)
+            if visible_h <= 0:
+                break
+            entries.append((index, visible_h, full_h))
+            if visible_h < full_h:
+                break
+
+        prev_index = current_idx - 1
+        while prev_index >= 0:
+            remaining = available_h - consumed_height(entries)
+            if remaining <= 0:
+                break
+            full_h = self._pages_only_page_height(prev_index, tile_w)
+            visible_h = min(full_h, remaining)
+            if visible_h <= 0:
+                break
+            entries.insert(0, (prev_index, visible_h, full_h))
+            if visible_h < full_h:
+                break
+            prev_index -= 1
+
+        layouts: list[tuple[int, QRect, int]] = []
+        y = TILE_PADDING
+        for index, visible_h, full_h in entries:
+            layouts.append((index, QRect(TILE_PADDING, y, tile_w, visible_h), full_h))
+            y += visible_h + TILE_GAP
+        return layouts
 
     def _coverage(self, total_content_h: int, view_h: int) -> float:
         return 0.20
@@ -795,11 +960,26 @@ class ChapterPreview(QWidget):
             if index is not None:
                 self._jump_to_image(index)
             return
-        if pos.x() < FILMSTRIP_W:
+        if self._display_mode == "pages_only":
+            index = self._pages_only_index_at(pos)
+            if index is not None:
+                self._jump_to_image(index)
+            return
+        strip_w = self.width() if self._display_mode == "pages_only" else FILMSTRIP_W
+        if pos.x() < strip_w:
             idx = self._tile_index_at(pos)
             if idx is not None:
                 self._jump_to_image(idx)
             return
+
+    def _pages_only_index_at(self, pos: QPoint) -> int | None:
+        if pos.x() < 0 or pos.x() >= self.width():
+            return None
+        current_idx = self._current_image_index()
+        for index, rect, _full_h in self._pages_only_layout(current_idx):
+            if rect.contains(pos):
+                return index
+        return None
 
         scene_mark = self._scene_mark_at(pos)
         if scene_mark is not None and callable(self.scene_jump_callback):
@@ -812,13 +992,10 @@ class ChapterPreview(QWidget):
         if not self.image_labels:
             return None
         current_idx = self._current_image_index()
-        rect, start, end, visible_count, gap = self._horizontal_strip_layout(current_idx)
-        track_h = max(14, rect.height())
-        y = rect.top()
-        if pos.y() < y or pos.y() > y + track_h:
+        rect, layouts = self._horizontal_page_rects(current_idx)
+        if pos.y() < rect.top() or pos.y() > rect.bottom():
             return None
-        for offset, index in enumerate(range(start, end)):
-            block = self._horizontal_block_rect(rect, visible_count, gap, offset, y, track_h)
+        for index, block in layouts:
             if block.contains(pos):
                 return index
         return None
@@ -826,3 +1003,17 @@ class ChapterPreview(QWidget):
     def resizeEvent(self, event):
         self.update()
         super().resizeEvent(event)
+
+    def sizeHint(self) -> QSize:
+        if self._display_mode == "horizontal":
+            return QSize(0, HORIZONTAL_PREVIEW_H)
+        if self._display_mode == "pages_only":
+            return QSize(PAGE_COLUMN_W, 320)
+        return QSize(PREVIEW_W, 320)
+
+    def minimumSizeHint(self) -> QSize:
+        if self._display_mode == "horizontal":
+            return QSize(0, HORIZONTAL_PREVIEW_H)
+        if self._display_mode == "pages_only":
+            return QSize(PAGE_COLUMN_W, 160)
+        return QSize(PREVIEW_W, 160)
