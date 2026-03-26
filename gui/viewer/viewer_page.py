@@ -538,6 +538,7 @@ class ViewerPage(QWidget):
         self.scroll.verticalScrollBar().valueChanged.connect(self.preview.update)
         self.scroll.verticalScrollBar().valueChanged.connect(self._update_session_overlay)
         self.scroll.verticalScrollBar().valueChanged.connect(self._update_text_progress_indicator)
+        self.scroll.verticalScrollBar().actionTriggered.connect(self._on_scrollbar_action_triggered)
 
         self._progress_save_timer = QTimer()
         self._progress_save_timer.setSingleShot(True)
@@ -1176,6 +1177,13 @@ class ViewerPage(QWidget):
         self._restore_image_index = None
         self._restore_image_offset = 0.0
         self._restore_text_scroll = 0.0
+
+    def _on_scrollbar_action_triggered(self, _action: int) -> None:
+        # Some key presses can be handled by the focused scroll area or child widget
+        # instead of ViewerPage.keyPressEvent(). Clear pending restore there too so
+        # a late image restore cannot snap the user back to an older position.
+        if self._restore_image_index is not None and not self._applying_restore:
+            self._clear_pending_restore()
 
     def _apply_restore(self):
         idx = self._restore_image_index
