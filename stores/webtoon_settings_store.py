@@ -152,6 +152,7 @@ class WebtoonSettingsStore:
                 "last_update_at",
                 "update_mode",
                 "auto_download_limit",
+                "content_type",
             )
 
         conn = get_connection()
@@ -280,6 +281,16 @@ class WebtoonSettingsStore:
     def set_source_title(self, webtoon_name: str, source_title: str):
         self._set_scalar(webtoon_name, "source_title", source_title, log_message="Saving source title for %s: %s")
 
+    def get_content_type(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "content_type", default=None, coerce=str)
+
+    def set_content_type(self, webtoon_name: str, content_type: str):
+        normalized = str(content_type or "").strip() or None
+        if normalized is None:
+            self._clear_scalar(webtoon_name, "content_type", log_message="Clearing content type for %s")
+            return
+        self._set_scalar(webtoon_name, "content_type", normalized, log_message="Saving content type for %s: %s")
+
     def save_source_metadata(
         self,
         webtoon_name: str,
@@ -288,6 +299,7 @@ class WebtoonSettingsStore:
         source_site: str | None = None,
         source_series_id: str | None = None,
         source_title: str | None = None,
+        content_type: str | None = None,
     ):
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
@@ -297,10 +309,11 @@ class WebtoonSettingsStore:
             SET source_url = COALESCE(?, source_url),
                 source_site = COALESCE(?, source_site),
                 source_series_id = COALESCE(?, source_series_id),
-                source_title = COALESCE(?, source_title)
+                source_title = COALESCE(?, source_title),
+                content_type = COALESCE(?, content_type)
             WHERE webtoon_name = ?
             """,
-            (source_url, source_site, source_series_id, source_title, webtoon_name),
+            (source_url, source_site, source_series_id, source_title, content_type, webtoon_name),
         )
         conn.commit()
 
@@ -466,8 +479,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -486,6 +499,7 @@ class WebtoonSettingsStore:
                 row["remote_update_count"],
                 row["update_mode"],
                 row["auto_download_limit"],
+                row["content_type"],
             ),
         )
         conn.execute(

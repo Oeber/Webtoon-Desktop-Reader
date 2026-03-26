@@ -212,6 +212,7 @@ class ViewerPage(QWidget):
         self._resize_packed = None
         self._resize_anchor_px = 0
         self._applying_restore = False
+        self._manga_page_index = 0
         self._chapter_mode = "image"
         self._text_loaded_segments: list[dict] = []
         self._text_segment_bounds: list[dict] = []
@@ -369,12 +370,19 @@ class ViewerPage(QWidget):
         content_row.setContentsMargins(0, 0, 0, 0)
         content_row.setSpacing(0)
 
+        reader_column = QVBoxLayout()
+        reader_column.setContentsMargins(0, 0, 0, 0)
+        reader_column.setSpacing(0)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 
         self.preview = ChapterPreview(self.scroll, metrics_provider=self, scene_jump_callback=self._jump_to_current_scene_mark)
+        self.manga_preview = ChapterPreview(self.scroll, metrics_provider=self, scene_jump_callback=self._jump_to_current_scene_mark)
+        self.manga_preview.set_display_mode("horizontal")
+        self.manga_preview.hide()
 
         self.text_progress_panel = QWidget()
         self.text_progress_panel.setFixedWidth(PREVIEW_W)
@@ -422,7 +430,9 @@ class ViewerPage(QWidget):
         text_progress_layout.addStretch()
         self.text_progress_panel.hide()
 
-        content_row.addWidget(self.scroll)
+        reader_column.addWidget(self.scroll)
+        reader_column.addWidget(self.manga_preview)
+        content_row.addLayout(reader_column, 1)
         content_row.addWidget(self.preview)
         content_row.addWidget(self.text_progress_panel)
         main_layout.addLayout(content_row)
@@ -655,9 +665,11 @@ class ViewerPage(QWidget):
     def _apply_reader_session_state(self, *, persist: bool = True):
         self._apply_toolbar_visibility()
         image_mode = self._chapter_mode == "image"
+        manga_mode = self._is_manga_image_mode()
         text_mode = self._chapter_mode == "text"
-        preview_visible = self._minimap_visible and image_mode
+        preview_visible = self._minimap_visible and image_mode and not manga_mode
         self.preview.setVisible(preview_visible)
+        self.manga_preview.setVisible(False)
         self.text_progress_panel.setVisible(text_mode and self._text_progress_visible)
         self.preview.set_scene_marks_visible(self._scene_anchors_visible)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
@@ -673,7 +685,7 @@ class ViewerPage(QWidget):
         self.anchors_btn.setToolTip("(A) Scene anchors visible" if self._scene_anchors_visible else "(A) Scene anchors hidden")
         self.minimap_btn.setEnabled(image_mode)
         self.anchors_btn.setEnabled(preview_visible)
-        self.nav_toggle.setEnabled(image_mode)
+        self.nav_toggle.setEnabled(image_mode and not manga_mode)
         self.text_progress_btn.setEnabled(text_mode)
         self.text_settings_btn.setEnabled(text_mode)
         zoom_enabled = image_mode
@@ -691,7 +703,7 @@ class ViewerPage(QWidget):
             self._zoom_label,
             self._zoom_reset_btn,
         ):
-            widget.setVisible(image_mode)
+            widget.setVisible(image_mode and not manga_mode if widget in (self.nav_toggle, self.minimap_btn, self.anchors_btn) else image_mode)
         for widget in (self.save_scene_btn, self.scene_list_btn):
             widget.setVisible(image_mode or text_mode)
         for widget in (self.text_progress_btn, self.text_settings_btn):
@@ -764,6 +776,9 @@ class ViewerPage(QWidget):
         if self._chapter_mode == "text":
             bar = self.scroll.verticalScrollBar()
             progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
+        elif self._is_manga_image_mode():
+            total = max(1, len(self.image_labels))
+            progress = ((self._manga_page_index + 1) / total) if self.image_labels else 0.0
         else:
             total = max(1, len(self.image_labels))
             progress = max(0.0, min(1.0, self._current_packed_position() / total)) if self.image_labels else 0.0
@@ -771,6 +786,10 @@ class ViewerPage(QWidget):
         if self._chapter_mode == "text":
             shortcut_line = "(F) Focus | (P) Progress | (T) Text settings | ([ ]) Chapter | (Esc) Exit"
             detail_line = "Text chapter"
+        elif self._is_manga_image_mode():
+            total_pages = max(1, len(self.image_labels))
+            shortcut_line = "(Left/Right) Page | ([ ]) Chapter | (S) Save | (G) List | (Esc) Exit"
+            detail_line = f"Page {self._manga_page_index + 1} / {total_pages}"
         else:
             shortcut_line = "(F) Focus | (M) Map | (S) Save | (G) List | ([ ]) Chapter | (Esc) Exit"
             detail_line = f"Scenes {scene_count}"
@@ -786,6 +805,7 @@ class ViewerPage(QWidget):
         if not self.webtoon or not (0 <= self.current_chapter_index < len(self.webtoon.chapters)):
             self._chapter_scene_marks = []
             self.preview.set_scene_marks([])
+            self.manga_preview.set_scene_marks([])
             self.scene_list_btn.setToolTip("No saved bookmarks for this chapter")
             self.scene_list_btn.setEnabled(False)
             self.save_scene_btn.setToolTip("Save a bookmark for this chapter")
@@ -801,6 +821,7 @@ class ViewerPage(QWidget):
             )
             self._chapter_scene_marks = marks
             self.preview.set_scene_marks(marks)
+            self.manga_preview.set_scene_marks([])
             count = len(marks)
             self.scene_list_btn.setToolTip(f"(G) Open saved scenes for this chapter ({count})" if count else "(G) Open saved scenes for this chapter")
             self.scene_list_btn.setEnabled(True)
@@ -854,7 +875,78 @@ class ViewerPage(QWidget):
             self._set_zoom(load_setting(VIEWER_ZOOM_KEY, 0.5), rescale_existing=rescale_existing)
         self._zoom_reset_btn.setEnabled(self._zoom_override_active)
 
+    def _is_manga_image_mode(self) -> bool:
+        if self._chapter_mode != "image" or not self.webtoon:
+            return False
+        return str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
+
+    def _sync_manga_page_visibility(self) -> None:
+        if not self.image_labels:
+            self._manga_page_index = 0
+            return
+        current = max(0, min(len(self.image_labels) - 1, int(self._manga_page_index)))
+        self._manga_page_index = current
+        manga_mode = self._is_manga_image_mode()
+        for index, label in enumerate(self.image_labels):
+            label.setVisible((not manga_mode) or index == current)
+
+    def _set_manga_page(self, index: int, offset_frac: float = 0.0) -> bool:
+        if not self.image_labels:
+            self._manga_page_index = 0
+            return False
+        self._manga_page_index = max(0, min(len(self.image_labels) - 1, int(index)))
+        self._sync_manga_page_visibility()
+        start_index = max(0, self._manga_page_index - 1)
+        end_index = min(len(self.image_labels), self._manga_page_index + 2)
+        for probe in range(start_index, end_index):
+            self._queue_preview_index(probe)
+            label = self.image_labels[probe]
+            if getattr(label, "_source_pixmap", None) is None:
+                self.loader.load(probe, label.img_path, 0)
+        label = self.image_labels[self._manga_page_index]
+        height = self._label_heights[self._manga_page_index] if self._manga_page_index < len(self._label_heights) else self._scaled_label_height(label)
+        target_px = int(max(0.0, min(1.0, float(offset_frac or 0.0))) * max(0, height))
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(max(0, min(target_px, bar.maximum())))
+        self._update_session_overlay()
+        self.preview.update()
+        self.manga_preview.update()
+        return True
+
+    def _step_manga_page(self, delta: int) -> bool:
+        if not self._is_manga_image_mode() or not self.image_labels:
+            return False
+        next_index = self._manga_page_index + int(delta)
+        if next_index < 0 or next_index >= len(self.image_labels):
+            return False
+        self._set_manga_page(next_index, 0.0)
+        self._progress_save_timer.start()
+        return True
+
+    def current_preview_image_index(self) -> int:
+        if self._is_manga_image_mode():
+            return max(0, min(len(self.image_labels) - 1, int(self._manga_page_index))) if self.image_labels else 0
+        return self.image_index_at_offset(self.scroll.verticalScrollBar().value())
+
+    def jump_to_image_index(self, index: int) -> None:
+        if self._is_manga_image_mode():
+            self._set_manga_page(index, 0.0)
+            self._progress_save_timer.start()
+            return
+        cumulative = self.cumulative_height_before(index)
+        bar = self.scroll.verticalScrollBar()
+        bar.setValue(max(0, min(cumulative, bar.maximum())))
+
     def _current_packed_position(self) -> float:
+        if self._is_manga_image_mode():
+            if not self.image_labels:
+                return 0.0
+            index = max(0, min(len(self.image_labels) - 1, int(self._manga_page_index)))
+            label = self.image_labels[index]
+            height = self._label_heights[index] if index < len(self._label_heights) else self._scaled_label_height(label)
+            bar = self.scroll.verticalScrollBar()
+            offset_frac = (bar.value() / max(1, height)) if height > 0 else 0.0
+            return index + max(0.0, min(1.0, offset_frac))
         return self._packed_position_at(self.scroll.verticalScrollBar().value())
 
     def _scaled_label_height(self, label, zoom: float | None = None) -> int:
@@ -911,6 +1003,12 @@ class ViewerPage(QWidget):
     def _packed_position_at(self, scroll_top: int, zoom: float | None = None) -> float:
         if not self.image_labels:
             return 0.0
+        if self._is_manga_image_mode():
+            index = max(0, min(len(self.image_labels) - 1, int(self._manga_page_index)))
+            label = self.image_labels[index]
+            height = self._label_heights[index] if index < len(self._label_heights) else self._scaled_label_height(label, zoom)
+            offset_frac = (max(0, int(scroll_top)) / max(1, height)) if height > 0 else 0.0
+            return index + max(0.0, min(1.0, offset_frac))
         if zoom is None or abs(zoom - self._zoom) < 0.0001:
             idx = self.image_index_at_offset(scroll_top)
             cumulative = self.cumulative_height_before(idx)
@@ -930,6 +1028,13 @@ class ViewerPage(QWidget):
     def packed_to_content_offset(self, packed: float) -> int:
         if not self.image_labels:
             return 0
+        if self._is_manga_image_mode():
+            total = len(self.image_labels)
+            packed = max(0.0, float(packed))
+            idx = max(0, min(total - 1, int(packed)))
+            frac = max(0.0, min(1.0, packed - int(packed)))
+            height = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx])
+            return int(height * frac)
         total = len(self.image_labels)
         packed = max(0.0, float(packed))
         if packed >= total:
@@ -1189,6 +1294,14 @@ class ViewerPage(QWidget):
         idx = self._restore_image_index
         if idx is None or idx >= len(self.image_labels):
             return
+        if self._is_manga_image_mode():
+            self._applying_restore = True
+            try:
+                if self._jump_to_packed(idx, self._restore_image_offset):
+                    self._clear_pending_restore()
+            finally:
+                self._applying_restore = False
+            return
         for i in range(idx + 1):
             lbl = self.image_labels[i]
             if lbl.pixmap() is None or lbl.pixmap().isNull():
@@ -1201,6 +1314,8 @@ class ViewerPage(QWidget):
             self._applying_restore = False
 
     def _jump_to_packed(self, idx: int, offset_frac: float, anchor_px: int = 0) -> bool:
+        if self._is_manga_image_mode():
+            return self._set_manga_page(idx, offset_frac)
         cumulative = self.cumulative_height_before(idx)
         height = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx])
         target_px = cumulative + int(height * offset_frac) - max(0, anchor_px)
@@ -1250,6 +1365,7 @@ class ViewerPage(QWidget):
             self._did_immediate_first_paint = True
 
             self.preview.notify_image_loaded()
+            self.manga_preview.notify_image_loaded()
             self.check_visible_images()
             self._panel_warm_timer.start()
             self._hide_loading_overlay()
@@ -1288,6 +1404,7 @@ class ViewerPage(QWidget):
             self.container.setUpdatesEnabled(True)
 
         self.preview.notify_image_loaded()
+        self.manga_preview.notify_image_loaded()
         self._invalidate_panel_cache()
         self.check_visible_images()
         self._panel_warm_timer.start()
@@ -1370,7 +1487,10 @@ class ViewerPage(QWidget):
         self.update_nav_buttons()
 
         if self._chapter_mode == "image" and self._restore_image_index is None:
-            self.scroll.verticalScrollBar().setValue(0)
+            if self._is_manga_image_mode():
+                self._set_manga_page(0, 0.0)
+            else:
+                self.scroll.verticalScrollBar().setValue(0)
 
     def clear_images(self):
         self._batch_timer.stop()
@@ -1398,10 +1518,13 @@ class ViewerPage(QWidget):
             widget.img_path = ""
             self._label_pool.append(widget)
         self.image_labels = []
+        self._manga_page_index = 0
         self._reset_layout_metrics()
 
         self.preview.set_image_labels([])
+        self.manga_preview.set_image_labels([])
         self.preview.set_scene_marks([])
+        self.manga_preview.set_scene_marks([])
         self._chapter_scene_marks = []
         self.scene_list_btn.setToolTip("No saved scenes for this chapter")
         self.scene_list_btn.setEnabled(False)
@@ -1923,9 +2046,14 @@ class ViewerPage(QWidget):
             self.image_labels.append(label)
         self._label_heights = [label.height() for label in self.image_labels]
         self._rebuild_prefix_heights()
+        if self._is_manga_image_mode():
+            initial_page = self._restore_image_index if self._restore_image_index is not None else 0
+            self._manga_page_index = max(0, min(len(self.image_labels) - 1, int(initial_page)))
+            self._sync_manga_page_visibility()
         logger.info("Viewer queued %d images for %s / %s", len(self.image_labels), self.webtoon.name, chapter)
 
         self.preview.set_image_labels(self.image_labels)
+        self.manga_preview.set_image_labels(self.image_labels)
 
         self.check_visible_images()
         QTimer.singleShot(0, self.check_visible_images)
@@ -2019,16 +2147,19 @@ class ViewerPage(QWidget):
             self.loader.load(i, self.image_labels[i].img_path, 0)
 
     def check_visible_images(self):
-        viewport_top = self.scroll.verticalScrollBar().value()
-        viewport_bottom = viewport_top + self.scroll.viewport().height()
         if not self.image_labels:
             return
-
-        start_index = self.image_index_at_offset(max(0, viewport_top - LAZY_WINDOW))
-        end_index = min(
-            len(self.image_labels) - 1,
-            self.image_index_at_offset(viewport_bottom + LAZY_WINDOW),
-        )
+        if self._is_manga_image_mode():
+            start_index = max(0, self._manga_page_index - 1)
+            end_index = min(len(self.image_labels) - 1, self._manga_page_index + 1)
+        else:
+            viewport_top = self.scroll.verticalScrollBar().value()
+            viewport_bottom = viewport_top + self.scroll.viewport().height()
+            start_index = self.image_index_at_offset(max(0, viewport_top - LAZY_WINDOW))
+            end_index = min(
+                len(self.image_labels) - 1,
+                self.image_index_at_offset(viewport_bottom + LAZY_WINDOW),
+            )
 
         for i in range(start_index, end_index + 1):
             label = self.image_labels[i]
@@ -2266,6 +2397,7 @@ class ViewerPage(QWidget):
             self._set_label_height_cache(index, scaled_h)
             self._restore_layout_anchor(anchor)
         self.preview.notify_image_loaded()
+        self.manga_preview.notify_image_loaded()
 
     def _get_panel_ranges(self) -> list[tuple[int, int]]:
         if self._panel_ranges_dirty:
@@ -2290,14 +2422,17 @@ class ViewerPage(QWidget):
     def keyPressEvent(self, event):
         key = event.key()
         modifiers = event.modifiers()
+        manga_mode = self._is_manga_image_mode()
         move_down = key in (Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown) or (
             key == Qt.Key_Space and not bool(modifiers & Qt.ShiftModifier)
         )
         move_up = key in (Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp) or (
             key == Qt.Key_Space and bool(modifiers & Qt.ShiftModifier)
         )
-        chapter_forward = key in (Qt.Key_Right, Qt.Key_BracketRight)
-        chapter_back = key in (Qt.Key_Left, Qt.Key_BracketLeft)
+        page_forward = manga_mode and key == Qt.Key_Right
+        page_back = manga_mode and key == Qt.Key_Left
+        chapter_forward = key in ((Qt.Key_BracketRight,) if manga_mode else (Qt.Key_Right, Qt.Key_BracketRight))
+        chapter_back = key in ((Qt.Key_BracketLeft,) if manga_mode else (Qt.Key_Left, Qt.Key_BracketLeft))
         session_keys = {
             Qt.Key_M,
             Qt.Key_P,
@@ -2312,7 +2447,7 @@ class ViewerPage(QWidget):
         }
 
         if self._restore_image_index is not None and not self._applying_restore:
-            if move_down or move_up or chapter_forward or chapter_back or key in session_keys:
+            if move_down or move_up or page_forward or page_back or chapter_forward or chapter_back or key in session_keys:
                 self._clear_pending_restore()
 
         bar = self.scroll.verticalScrollBar()
@@ -2380,6 +2515,14 @@ class ViewerPage(QWidget):
                     self._jump_to_target(prev_target)
                 else:
                     bar.setValue(max(0, pos - int(view_h * 0.9)))
+
+        elif page_forward:
+            if self._step_manga_page(1):
+                self.setFocus()
+
+        elif page_back:
+            if self._step_manga_page(-1):
+                self.setFocus()
 
         elif chapter_forward:
             next_idx = self._next_chapter_index(self.current_chapter_index)

@@ -104,6 +104,7 @@ class DownloadTrackingStore:
                 source_site=getattr(series, "site", None),
                 source_series_id=getattr(series, "series_id", None),
                 source_title=getattr(series, "title", None),
+                content_type=getattr(series, "content_type", None),
             )
         except Exception as exc:
             logger.warning("Failed to save source metadata for '%s'", webtoon_name, exc_info=exc)

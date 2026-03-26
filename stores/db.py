@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -205,6 +205,20 @@ def _infer_legacy_schema_version(conn: sqlite3.Connection) -> int:
     }.issubset(download_history_columns) and {
         "update_mode",
         "auto_download_limit",
+        "content_type",
+    }.issubset(webtoon_settings_columns):
+        return 9
+
+    if {
+        "source_url",
+        "status",
+        "last_error",
+        "resume_payload",
+        "created_at",
+        "updated_at",
+    }.issubset(download_history_columns) and {
+        "update_mode",
+        "auto_download_limit",
     }.issubset(webtoon_settings_columns):
         return 7
 
@@ -261,6 +275,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         6: _migration_6_expand_download_history,
         7: _migration_7_add_update_modes_and_download_errors,
         8: _migration_8_create_scene_bookmarks,
+        9: _migration_9_add_content_type_to_webtoon_settings,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -298,7 +313,8 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
             latest_new_chapter  TEXT,
             remote_update_count INTEGER NOT NULL DEFAULT 0,
             update_mode         TEXT NOT NULL DEFAULT 'notify',
-            auto_download_limit INTEGER NOT NULL DEFAULT 0
+            auto_download_limit INTEGER NOT NULL DEFAULT 0,
+            content_type        TEXT
         );
 
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -446,6 +462,11 @@ def _migration_8_create_scene_bookmarks(conn: sqlite3.Connection) -> None:
             ON scene_bookmarks(webtoon_name, chapter, updated_at DESC, id DESC);
         """
     )
+
+
+
+def _migration_9_add_content_type_to_webtoon_settings(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "webtoon_settings", "content_type", "TEXT")
 
 
 

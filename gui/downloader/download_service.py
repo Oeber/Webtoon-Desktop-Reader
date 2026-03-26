@@ -601,7 +601,8 @@ class DownloadService(QObject):
         target_base = os.path.join(output_path, series_name)
         os.makedirs(target_base, exist_ok=True)
 
-        if str(getattr(scraper, "content_type", "webtoon") or "webtoon").strip().casefold() == "webnovel":
+        content_type = str(getattr(scraper, "content_type", "webtoon") or "webtoon").strip().casefold()
+        if content_type == "webnovel":
             return self._custom_webnovel_download(
                 scraper,
                 job,
@@ -625,7 +626,9 @@ class DownloadService(QObject):
                 if self._format_chapter_number(chapter.number) in existing
             )
 
-        self._emit_progress(job, series_name, completed_chapters, total_chapters)
+        use_page_progress = content_type == "manga" and len(chapter_list) == 1
+        if not use_page_progress:
+            self._emit_progress(job, series_name, completed_chapters, total_chapters)
 
         for chapter in chapter_list:
             if job.cancel_requested:
@@ -650,6 +653,9 @@ class DownloadService(QObject):
                 raise
             if not pages:
                 continue
+
+            if use_page_progress:
+                self._emit_progress(job, series_name, 0, len(pages))
 
             if chapter_num is not None:
                 chapter_dir_name = f"Chapter {chapter_num}"
@@ -694,10 +700,15 @@ class DownloadService(QObject):
                     raise
                 future_to_page[future] = page.image_url
 
+            if use_page_progress:
+                self._emit_progress(job, series_name, success_count, len(pages))
+
             for future in as_completed(future_to_page):
                 try:
                     future.result()
                     success_count += 1
+                    if use_page_progress:
+                        self._emit_progress(job, series_name, success_count, len(pages))
                 except DownloadCancelled:
                     shutil.rmtree(chapter_dir, ignore_errors=True)
                     raise
@@ -721,7 +732,8 @@ class DownloadService(QObject):
             any_chapter_succeeded = True
             latest_new_chapter_name = chapter_dir_name
             completed_chapters += 1
-            self._emit_progress(job, series_name, completed_chapters, total_chapters)
+            if not use_page_progress:
+                self._emit_progress(job, series_name, completed_chapters, total_chapters)
             self._emit_library_changed(series_name)
 
             if failure_count > 0:

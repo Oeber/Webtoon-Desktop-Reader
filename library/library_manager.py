@@ -43,7 +43,7 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
     library_entries = sorted(os.listdir(library_path))
     settings_rows = settings_store.get_rows(
         library_entries,
-        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter"),
+        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type"),
     )
 
     webtoons = []
@@ -108,7 +108,15 @@ def build_webtoon_from_folder(
     if not chapters:
         return None
 
-    settings_row = settings_row or {}
+    settings_row = dict(settings_row or {})
+    if not settings_row or "content_type" not in settings_row:
+        settings_row.update(
+            settings_store.get_rows(
+                [webtoon_name],
+                columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type"),
+            ).get(webtoon_name, {})
+        )
+    stored_content_type = str(settings_row.get("content_type") or "").strip().casefold()
     first_image = _first_chapter_image_path(webtoon_path, chapters)
     if first_image:
         thumbnail = resolve_thumbnail_path(
@@ -117,10 +125,16 @@ def build_webtoon_from_folder(
             settings_store,
             settings_row=settings_row,
         )
-        content_type = "webtoon"
+        if stored_content_type in {"manga", "webtoon"}:
+            content_type = stored_content_type
+        else:
+            content_type = "webtoon"
     else:
         thumbnail = preferred_thumbnail_path(webtoon_name, settings_store, settings_row=settings_row) or ""
-        content_type = "webnovel"
+        if stored_content_type in {"webnovel", "manga", "webtoon"}:
+            content_type = stored_content_type
+        else:
+            content_type = "webnovel"
 
     return Webtoon(
         webtoon_name,

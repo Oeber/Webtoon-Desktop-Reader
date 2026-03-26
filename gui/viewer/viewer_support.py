@@ -5,7 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from PySide6.QtCore import QObject, QPoint, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QCursor, QImage, QImageReader, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
 from core.app_logging import get_logger
 from gui.common.styles import (
@@ -367,12 +367,36 @@ class ChapterPreview(QWidget):
         self.metrics_provider = metrics_provider
         self.scene_jump_callback = scene_jump_callback
         self.image_labels = []
+        self._display_mode = "vertical"
         self.setFixedWidth(PREVIEW_W)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
         self.setCursor(Qt.PointingHandCursor)
         self._dragging = False
         self._zoom = 1.0
         self._scene_marks: list[dict] = []
         self._scene_marks_visible = True
+
+    def set_display_mode(self, mode: str):
+        normalized = "horizontal" if str(mode).strip().casefold() == "horizontal" else "vertical"
+        if normalized == self._display_mode:
+            return
+        self._display_mode = normalized
+        if normalized == "horizontal":
+            self.setFixedHeight(60)
+            self.setMinimumHeight(60)
+            self.setMaximumHeight(60)
+            self.setMinimumWidth(0)
+            self.setMaximumWidth(16777215)
+            self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        else:
+            self.setFixedWidth(PREVIEW_W)
+            self.setMinimumWidth(PREVIEW_W)
+            self.setMaximumWidth(PREVIEW_W)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+        self.updateGeometry()
+        self.update()
 
     def set_zoom(self, zoom: float):
         self._zoom = zoom
@@ -434,6 +458,8 @@ class ChapterPreview(QWidget):
     def _current_image_index(self) -> int:
         if not self.image_labels:
             return 0
+        if self.metrics_provider is not None and hasattr(self.metrics_provider, "current_preview_image_index"):
+            return int(self.metrics_provider.current_preview_image_index())
         scroll_top = self.scroll_area.verticalScrollBar().value()
         if self.metrics_provider is not None:
             return self.metrics_provider.image_index_at_offset(scroll_top)
@@ -449,6 +475,13 @@ class ChapterPreview(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform)
         painter.setRenderHint(QPainter.Antialiasing)
+        if self._display_mode == "horizontal":
+            painter.fillRect(self.rect(), QColor("#141414"))
+            if not self.image_labels:
+                return
+            current_idx = self._current_image_index()
+            self._paint_horizontal_strip(painter, current_idx)
+            return
         painter.fillRect(QRect(0, 0, FILMSTRIP_W, self.height()), QColor("#1a1a1a"))
         painter.fillRect(QRect(FILMSTRIP_W, 0, IMAGE_STRIP_W, self.height()), QColor("#141414"))
         if not self.image_labels:
@@ -456,6 +489,86 @@ class ChapterPreview(QWidget):
         current_idx = self._current_image_index()
         self._paint_filmstrip(painter, current_idx)
         self._paint_image_strip(painter, current_idx)
+
+    def _visible_page_window(self, current_idx: int) -> tuple[int, int]:
+        count = len(self.image_labels)
+        if count <= 0:
+            return (0, 0)
+        slot_w = 10
+        gap = 1
+        usable_w = max(60, self.width() - 28)
+        max_slots = max(7, usable_w // (slot_w + gap))
+        max_slots = min(max_slots, 18)
+        max_slots = min(count, max_slots)
+        start = max(0, current_idx - (max_slots // 2))
+        end = min(count, start + max_slots)
+        start = max(0, end - max_slots)
+        return start, end
+
+    def _horizontal_strip_layout(self, current_idx: int) -> tuple[QRect, int, int, int, int]:
+        rect = self.rect().adjusted(10, 10, -10, -10)
+        start, end = self._visible_page_window(current_idx)
+        visible_count = max(1, end - start)
+        gap = 1
+        return rect, start, end, visible_count, gap
+
+    def _horizontal_block_rect(
+        self,
+        rect: QRect,
+        visible_count: int,
+        gap: int,
+        offset: int,
+        y: int,
+        track_h: int,
+    ) -> QRect:
+        if visible_count <= 0:
+            return QRect()
+        step = rect.width() / visible_count
+        left = rect.left() + round(offset * step)
+        right = rect.left() + round((offset + 1) * step)
+        if offset < visible_count - 1:
+            right -= gap
+        return QRect(left, y, max(1, right - left), track_h)
+
+    def _paint_horizontal_strip(self, painter: QPainter, current_idx: int):
+        count = len(self.image_labels)
+        rect, start, end, visible_count, gap = self._horizontal_strip_layout(current_idx)
+        if count <= 0 or rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        track_h = max(14, rect.height())
+        y = rect.top()
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#202020"))
+        painter.drawRoundedRect(rect, 8, 8)
+
+        for offset, index in enumerate(range(start, end)):
+            block = self._horizontal_block_rect(rect, visible_count, gap, offset, y, track_h)
+            label = self.image_labels[index]
+            src = getattr(label, "_source_pixmap", None) or label.pixmap() or getattr(label, "_preview_pixmap", None)
+
+            page_rect = block.adjusted(0, 0, -1, -1)
+
+            if src and not src.isNull():
+                fitted = src.scaled(
+                    max(1, page_rect.width()),
+                    max(1, page_rect.height()),
+                    Qt.KeepAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+                draw_x = page_rect.left() + (page_rect.width() - fitted.width()) // 2
+                draw_y = page_rect.top() + (page_rect.height() - fitted.height()) // 2
+                painter.drawPixmap(draw_x, draw_y, fitted)
+                if index == current_idx:
+                    painter.fillRect(QRect(draw_x, draw_y, fitted.width(), fitted.height()), QColor(41, 121, 255, 48))
+
+            if index == current_idx and src and not src.isNull():
+                pen = QPen(QColor(41, 121, 255, 220))
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.drawRoundedRect(page_rect, 2, 2)
+                painter.setPen(Qt.NoPen)
 
     def _paint_filmstrip(self, painter: QPainter, current_idx: int):
         tile_h = self._tile_height()
@@ -632,6 +745,9 @@ class ChapterPreview(QWidget):
     def _jump_to_image(self, index: int):
         if not self.image_labels or index >= len(self.image_labels):
             return
+        if self.metrics_provider is not None and hasattr(self.metrics_provider, "jump_to_image_index"):
+            self.metrics_provider.jump_to_image_index(index)
+            return
         if self.metrics_provider is not None:
             cumulative = self.metrics_provider.cumulative_height_before(index)
         else:
@@ -640,6 +756,8 @@ class ChapterPreview(QWidget):
         bar.setValue(max(0, min(cumulative, bar.maximum())))
 
     def _scrub_strip_to_y(self, widget_y: int):
+        if self._display_mode == "horizontal":
+            return
         if not self.image_labels:
             return
         total_content_h = self._total_content_height()
@@ -672,6 +790,11 @@ class ChapterPreview(QWidget):
             self._dragging = False
 
     def _handle_pos(self, pos: QPoint):
+        if self._display_mode == "horizontal":
+            index = self._horizontal_index_at(pos)
+            if index is not None:
+                self._jump_to_image(index)
+            return
         if pos.x() < FILMSTRIP_W:
             idx = self._tile_index_at(pos)
             if idx is not None:
@@ -684,6 +807,21 @@ class ChapterPreview(QWidget):
             return
 
         self._scrub_strip_to_y(pos.y())
+
+    def _horizontal_index_at(self, pos: QPoint) -> int | None:
+        if not self.image_labels:
+            return None
+        current_idx = self._current_image_index()
+        rect, start, end, visible_count, gap = self._horizontal_strip_layout(current_idx)
+        track_h = max(14, rect.height())
+        y = rect.top()
+        if pos.y() < y or pos.y() > y + track_h:
+            return None
+        for offset, index in enumerate(range(start, end)):
+            block = self._horizontal_block_rect(rect, visible_count, gap, offset, y, track_h)
+            if block.contains(pos):
+                return index
+        return None
 
     def resizeEvent(self, event):
         self.update()
