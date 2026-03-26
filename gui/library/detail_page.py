@@ -2,6 +2,8 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 
 from core.app_logging import get_logger
 from requests.exceptions import RequestException
@@ -9,7 +11,7 @@ from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QScrollArea, QToolButton, QMessageBox, QGridLayout, QFrame
 )
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QPainterPath, QFont, QPen, QColor
+from PySide6.QtGui import QIcon, QPixmap, QPainter, QPainterPath, QFont, QPen, QColor, QImageReader, QImage
 from PySide6.QtCore import Qt, QPoint, QSize, QTimer, QObject, Signal
 
 import qtawesome as qta
@@ -75,6 +77,9 @@ logger = get_logger(__name__)
 
 
 SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
+MANGA_PREVIEW_PIXMAP_CACHE_LIMIT = 192
+MANGA_PREVIEW_TILE_BATCH_SIZE = 24
+MANGA_PREVIEW_INFLIGHT_LIMIT = 4
 
 
 # Small circular progress indicator
@@ -147,6 +152,30 @@ class RemoteSeriesLoader(QObject):
         threading.Thread(target=worker, daemon=True).start()
 
 
+class MangaPreviewImageLoader(QObject):
+    loaded = Signal(int, int, QImage)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._executor = ThreadPoolExecutor(max_workers=2)
+        self._queued: set[tuple[int, int]] = set()
+
+    def load(self, generation: int, index: int, path: str, width: int, height: int, radius: int = 12) -> None:
+        key = (int(generation), int(index))
+        if key in self._queued:
+            return
+        self._queued.add(key)
+
+        def worker():
+            try:
+                image = _scaled_preview_image(path, width, height, radius)
+                self.loaded.emit(int(generation), int(index), image)
+            finally:
+                self._queued.discard(key)
+
+        self._executor.submit(worker)
+
+
 def _page_sort_key(name: str):
     match = re.search(r"(\d+(?:\.\d+)?)", name)
     if match:
@@ -157,10 +186,23 @@ def _page_sort_key(name: str):
     return (1, float("inf"), name.lower())
 
 
-def _scaled_preview_pixmap(path: str, width: int, height: int, radius: int = 12) -> QPixmap:
-    pixmap = QPixmap(path)
-    if pixmap.isNull():
-        placeholder = QPixmap(width, height)
+def _scaled_preview_image(path: str, width: int, height: int, radius: int = 12) -> QImage:
+    image = QImage()
+    reader = QImageReader(path)
+    size = reader.size()
+    if size.isValid() and size.width() > 0 and size.height() > 0:
+        src_w = size.width()
+        src_h = size.height()
+        scale = max(width / src_w, height / src_h)
+        target_w = max(width, int(src_w * scale))
+        target_h = max(height, int(src_h * scale))
+        reader.setScaledSize(QSize(target_w, target_h))
+        image = reader.read()
+
+    if image.isNull():
+        image = QImage(path)
+    if image.isNull():
+        placeholder = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
         placeholder.fill(QColor("#171111"))
         painter = QPainter(placeholder)
         painter.setPen(QColor("#9b7670"))
@@ -168,11 +210,12 @@ def _scaled_preview_pixmap(path: str, width: int, height: int, radius: int = 12)
         painter.end()
         return placeholder
 
+    pixmap = QPixmap.fromImage(image)
     scaled = pixmap.scaled(width, height, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
     x = max(0, (scaled.width() - width) // 2)
     y = max(0, (scaled.height() - height) // 2)
     cropped = scaled.copy(x, y, width, height)
-    rounded = QPixmap(width, height)
+    rounded = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
     rounded.fill(Qt.transparent)
     painter = QPainter(rounded)
     painter.setRenderHint(QPainter.Antialiasing)
@@ -182,6 +225,10 @@ def _scaled_preview_pixmap(path: str, width: int, height: int, radius: int = 12)
     painter.drawPixmap(0, 0, cropped)
     painter.end()
     return rounded
+
+
+def _scaled_preview_pixmap(path: str, width: int, height: int, radius: int = 12) -> QPixmap:
+    return QPixmap.fromImage(_scaled_preview_image(path, width, height, radius))
 
 
 def _preview_placeholder_pixmap(width: int, height: int, radius: int = 12) -> QPixmap:
@@ -344,12 +391,20 @@ class DetailPage(QWidget):
         self._manga_preview_index = -1
         self._manga_preview_columns = 6
         self._manga_preview_tiles: list[MangaPageTile] = []
+        self._manga_preview_pending_tiles: list[tuple[int, str, int, int, int]] = []
         self._manga_preview_queue: list[int] = []
         self._manga_preview_queued: set[int] = set()
-        self._manga_preview_pixmap_cache: dict[str, QPixmap] = {}
+        self._manga_preview_loading: set[int] = set()
+        self._manga_preview_generation = 0
+        self._manga_preview_pixmap_cache: OrderedDict[tuple[str, int, int, int, int, int], QPixmap] = OrderedDict()
         self._manga_preview_loader_timer = QTimer(self)
         self._manga_preview_loader_timer.setSingleShot(True)
         self._manga_preview_loader_timer.timeout.connect(self._drain_manga_preview_queue)
+        self._manga_preview_image_loader = MangaPreviewImageLoader(self)
+        self._manga_preview_image_loader.loaded.connect(self._on_manga_preview_image_loaded)
+        self._manga_preview_build_timer = QTimer(self)
+        self._manga_preview_build_timer.setSingleShot(True)
+        self._manga_preview_build_timer.timeout.connect(self._drain_manga_preview_tile_build)
 
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -1583,9 +1638,12 @@ class DetailPage(QWidget):
         self.manga_preview_panel.setVisible(visible)
 
     def _clear_manga_preview_grid(self) -> None:
+        self._manga_preview_build_timer.stop()
+        self._manga_preview_pending_tiles = []
         self._manga_preview_loader_timer.stop()
         self._manga_preview_queue.clear()
         self._manga_preview_queued.clear()
+        self._manga_preview_loading.clear()
         self._manga_preview_tiles = []
         while self.manga_preview_grid.count():
             item = self.manga_preview_grid.takeAt(0)
@@ -1617,7 +1675,7 @@ class DetailPage(QWidget):
             if index < 0 or index >= len(self._manga_preview_tiles):
                 continue
             tile = self._manga_preview_tiles[index]
-            if tile.preview_loaded or index in self._manga_preview_queued:
+            if tile.preview_loaded or index in self._manga_preview_queued or index in self._manga_preview_loading:
                 continue
             self._manga_preview_queued.add(index)
             pending.append(index)
@@ -1629,6 +1687,40 @@ class DetailPage(QWidget):
             self._manga_preview_queue.extend(pending)
         if not self._manga_preview_loader_timer.isActive():
             self._manga_preview_loader_timer.start(0)
+
+    def _drain_manga_preview_tile_build(self) -> None:
+        if not self._manga_preview_active or not self._manga_preview_pending_tiles:
+            return
+        loaded = 0
+        batch = []
+        while self._manga_preview_pending_tiles and loaded < MANGA_PREVIEW_TILE_BATCH_SIZE:
+            batch.append(self._manga_preview_pending_tiles.pop(0))
+            loaded += 1
+
+        if batch:
+            self._append_manga_preview_tiles(batch, self._manga_preview_index)
+
+        self._queue_manga_preview_indexes(self._visible_manga_preview_indexes(), prioritize=True)
+        if self._manga_preview_pending_tiles:
+            self._manga_preview_build_timer.start(0)
+
+    def _append_manga_preview_tiles(
+        self,
+        entries: list[tuple[int, str, int, int]],
+        chapter_index: int,
+    ) -> None:
+        for visible_pos, image_path, page_index, scene_count in entries:
+            tile = MangaPageTile(image_path, page_index, self.manga_preview_content)
+            tile.set_scene_count(scene_count)
+            tile.clicked.connect(
+                lambda page_index, chapter_idx=chapter_index: self._open_manga_preview_page(chapter_idx, page_index)
+            )
+            self.manga_preview_grid.addWidget(
+                tile,
+                visible_pos // self._manga_preview_columns,
+                visible_pos % self._manga_preview_columns,
+            )
+            self._manga_preview_tiles.append(tile)
 
     def _visible_manga_preview_indexes(self) -> list[int]:
         if not self._manga_preview_tiles:
@@ -1655,9 +1747,7 @@ class DetailPage(QWidget):
     def _drain_manga_preview_queue(self) -> None:
         if not self._manga_preview_active or not self._manga_preview_queue:
             return
-        batch_size = 10
-        loaded = 0
-        while self._manga_preview_queue and loaded < batch_size:
+        while self._manga_preview_queue and len(self._manga_preview_loading) < MANGA_PREVIEW_INFLIGHT_LIMIT:
             index = self._manga_preview_queue.pop(0)
             self._manga_preview_queued.discard(index)
             if index < 0 or index >= len(self._manga_preview_tiles):
@@ -1665,12 +1755,68 @@ class DetailPage(QWidget):
             tile = self._manga_preview_tiles[index]
             if tile.preview_loaded:
                 continue
-            cached = self._manga_preview_pixmap_cache.get(tile.image_path)
-            if cached is None:
-                cached = _scaled_preview_pixmap(tile.image_path, tile.PREVIEW_WIDTH, tile.PREVIEW_HEIGHT)
-                self._manga_preview_pixmap_cache[tile.image_path] = cached
-            tile.set_preview_pixmap(cached)
-            loaded += 1
+            cached = self._manga_preview_pixmap_for_tile(tile)
+            if cached is not None:
+                tile.set_preview_pixmap(cached)
+                continue
+            self._manga_preview_loading.add(index)
+            self._manga_preview_image_loader.load(
+                self._manga_preview_generation,
+                index,
+                tile.image_path,
+                tile.PREVIEW_WIDTH,
+                tile.PREVIEW_HEIGHT,
+            )
+        if self._manga_preview_queue and len(self._manga_preview_loading) < MANGA_PREVIEW_INFLIGHT_LIMIT:
+            self._manga_preview_loader_timer.start(0)
+
+    def _manga_preview_cache_key(self, path: str, width: int, height: int) -> tuple[str, int, int, int, int, int]:
+        try:
+            stat = os.stat(path)
+            mtime_ns = int(stat.st_mtime_ns)
+            file_size = int(stat.st_size)
+        except OSError:
+            mtime_ns = 0
+            file_size = 0
+        return (str(path or ""), int(width), int(height), 12, mtime_ns, file_size)
+
+    def _manga_preview_pixmap_for_tile(self, tile: MangaPageTile) -> QPixmap | None:
+        cache_key = self._manga_preview_cache_key(
+            tile.image_path,
+            tile.PREVIEW_WIDTH,
+            tile.PREVIEW_HEIGHT,
+        )
+        cached = self._manga_preview_pixmap_cache.get(cache_key)
+        if cached is not None:
+            self._manga_preview_pixmap_cache.move_to_end(cache_key)
+            return cached
+        return None
+
+    def _store_manga_preview_pixmap(self, tile: MangaPageTile, pixmap: QPixmap) -> None:
+        cache_key = self._manga_preview_cache_key(
+            tile.image_path,
+            tile.PREVIEW_WIDTH,
+            tile.PREVIEW_HEIGHT,
+        )
+        self._manga_preview_pixmap_cache[cache_key] = pixmap
+        self._manga_preview_pixmap_cache.move_to_end(cache_key)
+        while len(self._manga_preview_pixmap_cache) > MANGA_PREVIEW_PIXMAP_CACHE_LIMIT:
+            self._manga_preview_pixmap_cache.popitem(last=False)
+
+    def _on_manga_preview_image_loaded(self, generation: int, index: int, image: QImage) -> None:
+        if generation != self._manga_preview_generation:
+            return
+        self._manga_preview_loading.discard(index)
+        if index < 0 or index >= len(self._manga_preview_tiles):
+            return
+        tile = self._manga_preview_tiles[index]
+        if tile.preview_loaded:
+            return
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            return
+        self._store_manga_preview_pixmap(tile, pixmap)
+        tile.set_preview_pixmap(pixmap)
         if self._manga_preview_queue:
             self._manga_preview_loader_timer.start(0)
 
@@ -1858,25 +2004,26 @@ class DetailPage(QWidget):
             return
         self._manga_preview_chapter = chapter
         self._manga_preview_index = int(chapter_index)
+        self._manga_preview_generation += 1
         self._clear_manga_preview_grid()
-        self._manga_preview_pixmap_cache = {}
         columns = self._manga_preview_columns
         scene_counts = self._scene_counts_for_preview_chapter(chapter)
         visible_pages = [(index, image_path) for index, image_path in enumerate(image_paths)]
         if self.show_only_scene_marks:
             visible_pages = [(index, image_path) for index, image_path in visible_pages if scene_counts.get(index, 0) > 0]
-        shown_pages = len(visible_pages)
-        total_pages = len(image_paths)
-        for visible_pos, (page_index, image_path) in enumerate(visible_pages):
-            tile = MangaPageTile(image_path, page_index, self.manga_preview_content)
-            tile.set_scene_count(scene_counts.get(page_index, 0))
-            tile.clicked.connect(lambda page_index, chapter_idx=chapter_index: self._open_manga_preview_page(chapter_idx, page_index))
-            self.manga_preview_grid.addWidget(tile, visible_pos // columns, visible_pos % columns)
-            self._manga_preview_tiles.append(tile)
+        tile_entries = [
+            (visible_pos, image_path, page_index, scene_counts.get(page_index, 0))
+            for visible_pos, (page_index, image_path) in enumerate(visible_pages)
+        ]
+        first_batch = tile_entries[:MANGA_PREVIEW_TILE_BATCH_SIZE]
+        remaining = tile_entries[MANGA_PREVIEW_TILE_BATCH_SIZE:]
+        self._append_manga_preview_tiles(first_batch, chapter_index)
+        self._manga_preview_pending_tiles = list(remaining)
         self._set_manga_preview_visible(True)
         self.manga_preview_scroll.verticalScrollBar().setValue(0)
         self._queue_manga_preview_indexes(self._visible_manga_preview_indexes(), prioritize=True)
-        self._queue_manga_preview_indexes(list(range(len(self._manga_preview_tiles))))
+        if self._manga_preview_pending_tiles:
+            self._manga_preview_build_timer.start(0)
 
     def _open_manga_preview_page(self, chapter_index: int, page_index: int) -> None:
         logger.info(

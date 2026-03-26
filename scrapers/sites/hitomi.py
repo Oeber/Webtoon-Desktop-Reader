@@ -18,6 +18,7 @@ class HitomiScraper(BaseScraper):
 
     BASE = "https://hitomi.la"
     CDN_BASE = "https://ltn.gold-usergeneratedcontent.net"
+    asset_download_workers = 3
 
     GALLERY_PATH_RE = re.compile(
         r"^/(?:doujinshi|manga|cg|imageset|gamecg|artistcg)/.+-(\d+)(?:\.html)?/?$",
@@ -31,6 +32,7 @@ class HitomiScraper(BaseScraper):
     def __init__(self):
         self._gg_base_path: str | None = None
         self._gg_zero_values: set[int] | None = None
+        self._asset_candidates: dict[str, list[str]] = {}
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -122,7 +124,7 @@ class HitomiScraper(BaseScraper):
         return self._normalize_gallery_url(url)
 
     def download_asset(self, url: str, dest_path: str) -> bool:
-        data = self._fetch_binary(url)
+        data = self._fetch_binary(url, candidate_urls=self._asset_candidates.get(url))
         if not data:
             return False
         with open(dest_path, "wb") as handle:
@@ -130,7 +132,7 @@ class HitomiScraper(BaseScraper):
         return True
 
     def fetch_cover(self, url: str, headers: dict[str, str] | None = None) -> bytes | None:
-        return self._fetch_binary(url, headers=headers)
+        return self._fetch_binary(url, headers=headers, candidate_urls=self._asset_candidates.get(url))
 
     def _normalize_gallery_url(self, url: str) -> str:
         parsed = urlparse(url)
@@ -193,13 +195,24 @@ class HitomiScraper(BaseScraper):
         return f"{self._gg_base()}{suffix}/{image_hash}"
 
     def _build_primary_image_url(self, image: dict) -> str:
+        candidates = self._build_image_candidates(image)
+        if not candidates:
+            return ""
+        primary_url = candidates[0]
+        self._asset_candidates[primary_url] = candidates
+        return primary_url
+
+    def _build_image_candidates(self, image: dict) -> list[str]:
         image_hash = str((image or {}).get("hash") or "").strip()
         name = str((image or {}).get("name") or "").strip()
         if not image_hash or not name or "." not in name:
-            return ""
+            return []
         path = self._full_path_from_hash(image_hash)
         host = self._webp_host_for_hash(image_hash)
-        return f"https://{host}/{path}.webp"
+        candidates = [f"https://{host}/{path}.webp"]
+
+        # Preserve order while dropping duplicates.
+        return list(dict.fromkeys(candidates))
 
     def _download_candidates(self, url: str) -> list[str]:
         parsed = urlparse(url)
@@ -214,9 +227,14 @@ class HitomiScraper(BaseScraper):
             return [url, url.replace("://2.gold-usergeneratedcontent.net/", "://1.gold-usergeneratedcontent.net/", 1)]
         return [url]
 
-    def _fetch_binary(self, url: str, headers: dict[str, str] | None = None) -> bytes | None:
-        candidates = self._download_candidates(url)
-        rounds = 3
+    def _fetch_binary(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        candidate_urls: list[str] | None = None,
+    ) -> bytes | None:
+        candidates = list(dict.fromkeys((candidate_urls or []) + self._download_candidates(url)))
+        rounds = 4
         for attempt in range(rounds):
             for candidate in candidates:
                 response = None
@@ -231,5 +249,5 @@ class HitomiScraper(BaseScraper):
                     if response is not None:
                         response.close()
             if attempt < rounds - 1:
-                time.sleep(0.4 * (attempt + 1))
+                time.sleep(0.35 * (attempt + 1))
         return None

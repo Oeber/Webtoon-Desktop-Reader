@@ -667,7 +667,8 @@ class DownloadService(QObject):
 
             success_count = 0
             failure_count = 0
-            executor = self._get_job_executor(job, max_workers=8)
+            max_workers = int(getattr(scraper, "asset_download_workers", 8) or 8)
+            executor = self._get_job_executor(job, max_workers=max_workers)
             future_to_page = {}
             for page in pages:
                 if job.cancel_requested:
