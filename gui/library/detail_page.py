@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QToolButton, QMessageBox, QGridLayout, QFrame
 )
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QPainterPath, QFont, QPen, QColor, QImageReader, QImage
-from PySide6.QtCore import Qt, QPoint, QSize, QTimer, QObject, Signal
+from PySide6.QtCore import Qt, QPoint, QSize, QTimer, QObject, Signal, QCoreApplication
 
 import qtawesome as qta
 
@@ -131,23 +131,40 @@ class RemoteSeriesLoader(QObject):
             return "The site took too long to respond."
         return message or "Network request failed."
 
+    def _is_shutting_down(self) -> bool:
+        app = QCoreApplication.instance()
+        return bool(app is None or QCoreApplication.closingDown())
+
+    def _emit_loaded(self, request_id: int, series, error: str) -> None:
+        if self._is_shutting_down():
+            return
+        try:
+            self.loaded.emit(request_id, series, error)
+        except RuntimeError:
+            logger.info("Skipping remote series result delivery during detail-page shutdown")
+
     def load(self, request_id: int, source_url: str):
         def worker():
+            if self._is_shutting_down():
+                return
             try:
                 scraper = get_scraper(source_url)
                 if scraper is None:
                     raise ScraperError("This series source does not support chapter checks.")
                 series_url = source_url if not scraper.is_chapter_url(source_url) else scraper.series_url_from_chapter_url(source_url)
                 series = scraper.get_series_info(series_url)
-                self.loaded.emit(request_id, series, "")
+                self._emit_loaded(request_id, series, "")
             except ScraperError as e:
-                self.loaded.emit(request_id, None, str(e))
+                self._emit_loaded(request_id, None, str(e))
             except RequestException as e:
                 logger.warning("Remote chapter lookup request failed for %s: %s", source_url, e)
-                self.loaded.emit(request_id, None, self._format_request_error(e))
+                self._emit_loaded(request_id, None, self._format_request_error(e))
             except Exception as e:
+                if self._is_shutting_down() and "interpreter shutdown" in str(e).casefold():
+                    logger.info("Skipping remote chapter lookup failure because the app is shutting down")
+                    return
                 logger.exception("Unexpected remote chapter lookup failure")
-                self.loaded.emit(request_id, None, str(e))
+                self._emit_loaded(request_id, None, str(e))
 
         threading.Thread(target=worker, daemon=True).start()
 

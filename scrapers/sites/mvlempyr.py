@@ -662,9 +662,18 @@ class MvlempyrScraper(BaseScraper):
         """Check multiple chapter numbers concurrently."""
         if not chapter_numbers:
             return {}
-        with ThreadPoolExecutor(max_workers=min(len(chapter_numbers), 4)) as pool:
-            futures = {pool.submit(self._chapter_exists, series_id, n): n for n in chapter_numbers}
-            return {futures[f]: f.result() for f in as_completed(futures)}
+        try:
+            with ThreadPoolExecutor(max_workers=min(len(chapter_numbers), 4)) as pool:
+                futures = {pool.submit(self._chapter_exists, series_id, n): n for n in chapter_numbers}
+                return {futures[f]: f.result() for f in as_completed(futures)}
+        except RuntimeError as exc:
+            if "interpreter shutdown" in str(exc).casefold():
+                logger.info(
+                    "Skipping MVLEMPYR chapter probe during interpreter shutdown for series_id=%s",
+                    series_id,
+                )
+                return {}
+            raise
 
     def _chapter_exists(self, series_id: str, chapter_number: int) -> bool:
         url = f"{self.BASE}/chapter/{series_id}-{int(chapter_number)}"
