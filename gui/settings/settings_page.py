@@ -4,9 +4,10 @@ import re
 import time
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QDesktopServices, QFont, QTextCursor
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QTextCursor
 from PySide6.QtWidgets import (
     QCheckBox,
+    QColorDialog,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QListView,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QTabWidget,
     QTextEdit,
     QVBoxLayout,
@@ -78,6 +80,16 @@ from stores.settings_store import (
     LIBRARY_UPDATE_LAST_RESULT_KEY,
     LIBRARY_USE_CATEGORIES_KEY,
     VIEWER_AUTO_SKIP_KEY,
+    VIEWER_FOCUS_MODE_KEY,
+    VIEWER_MINIMAP_VISIBLE_KEY,
+    VIEWER_SCENE_ANCHORS_VISIBLE_KEY,
+    VIEWER_TEXT_PROGRESS_VISIBLE_KEY,
+    VIEWER_TEXT_SIZE_KEY,
+    VIEWER_TEXT_PAGE_COLOR_KEY,
+    VIEWER_TEXT_COLOR_KEY,
+    VIEWER_MANGA_LAYOUT_KEY,
+    VIEWER_MANGA_SPREAD_PARITY_KEY,
+    VIEWER_MANGA_FIT_MODE_KEY,
     VIEWER_ZOOM_KEY,
     load_default_discovery_provider,
     load_library_path,
@@ -378,6 +390,7 @@ class SettingsPage(QWidget):
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(TAB_STYLE)
         self.tabs.addTab(self._build_general_tab(), "General")
+        self.tabs.addTab(self._build_reader_tab(), "Reader")
         self.tabs.addTab(self._build_scrapers_tab(), "Scrapers")
         self.tabs.addTab(self._build_logs_tab(), "Logs")
         self.tabs.currentChanged.connect(self._on_tab_changed)
@@ -649,6 +662,39 @@ class SettingsPage(QWidget):
 
         layout.addWidget(library_updates_card)
 
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 2, 0, 0)
+        actions_row.setSpacing(12)
+
+        reset_btn = QPushButton("Reset Defaults")
+        reset_btn.setStyleSheet(BUTTON_STYLE)
+        reset_btn.setFixedWidth(148)
+        reset_btn.clicked.connect(self._reset)
+        actions_row.addWidget(reset_btn)
+        actions_row.addStretch()
+        layout.addLayout(actions_row)
+
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        layout.addWidget(self.status_label)
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setStyleSheet(TRANSPARENT_SCROLL_AREA_STYLE)
+        scroll.setWidget(page)
+        return scroll
+
+    def _build_reader_tab(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet(TRANSPARENT_BG_STYLE)
+
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(0, 8, 0, 0)
+        layout.setSpacing(16)
+        layout.setAlignment(Qt.AlignTop)
+
         reader_card, reader_layout = self._build_card()
         reader_header = QHBoxLayout()
         reader_header.setContentsMargins(0, 0, 0, 0)
@@ -660,11 +706,34 @@ class SettingsPage(QWidget):
         reader_header.addStretch()
         reader_layout.addLayout(reader_header)
 
+        reader_help = QLabel("Set the app-wide defaults used when a title does not already have its own saved reader preferences.")
+        reader_help.setWordWrap(True)
+        reader_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        reader_layout.addWidget(reader_help)
+
         self.auto_skip_checkbox = QCheckBox("Enable auto panel skip")
         self.auto_skip_checkbox.setChecked(load_setting(VIEWER_AUTO_SKIP_KEY, True))
         self.auto_skip_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.auto_skip_checkbox.toggled.connect(self._on_auto_skip_changed)
         reader_layout.addWidget(self.auto_skip_checkbox)
+
+        self.focus_mode_checkbox = QCheckBox("Start readers in focus mode")
+        self.focus_mode_checkbox.setChecked(load_setting(VIEWER_FOCUS_MODE_KEY, False))
+        self.focus_mode_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.focus_mode_checkbox.toggled.connect(self._on_focus_mode_changed)
+        reader_layout.addWidget(self.focus_mode_checkbox)
+
+        self.minimap_checkbox = QCheckBox("Show mini-map / page tracker by default")
+        self.minimap_checkbox.setChecked(load_setting(VIEWER_MINIMAP_VISIBLE_KEY, True))
+        self.minimap_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.minimap_checkbox.toggled.connect(self._on_minimap_changed)
+        reader_layout.addWidget(self.minimap_checkbox)
+
+        self.scene_anchors_checkbox = QCheckBox("Show saved scene anchors by default")
+        self.scene_anchors_checkbox.setChecked(load_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, True))
+        self.scene_anchors_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.scene_anchors_checkbox.toggled.connect(self._on_scene_anchors_changed)
+        reader_layout.addWidget(self.scene_anchors_checkbox)
 
         zoom_row = QHBoxLayout()
         zoom_row.setSpacing(10)
@@ -690,6 +759,82 @@ class SettingsPage(QWidget):
         zoom_row.addWidget(self.zoom_value_label)
         reader_layout.addLayout(zoom_row)
 
+        manga_defaults_label = QLabel("Manga")
+        manga_defaults_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        reader_layout.addWidget(manga_defaults_label)
+
+        manga_layout_row = QHBoxLayout()
+        manga_layout_row.setSpacing(10)
+        manga_layout_text = QLabel("Page layout")
+        manga_layout_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        manga_layout_text.setFixedWidth(100)
+        self.manga_layout_combo = QComboBox()
+        self.manga_layout_combo.setStyleSheet(INPUT_STYLE)
+        self.manga_layout_combo.addItem("Single Page", ("single", "odd"))
+        self.manga_layout_combo.addItem("Double Page (Odds)", ("double", "odd"))
+        self.manga_layout_combo.addItem("Double Page (Evens)", ("double", "even"))
+        current_layout = (
+            str(load_setting(VIEWER_MANGA_LAYOUT_KEY, "single") or "single"),
+            str(load_setting(VIEWER_MANGA_SPREAD_PARITY_KEY, "odd") or "odd"),
+        )
+        self.manga_layout_combo.setCurrentIndex(max(0, self.manga_layout_combo.findData(current_layout)))
+        self.manga_layout_combo.currentIndexChanged.connect(self._on_manga_layout_defaults_changed)
+        manga_layout_row.addWidget(manga_layout_text)
+        manga_layout_row.addWidget(self.manga_layout_combo, 1)
+        reader_layout.addLayout(manga_layout_row)
+
+        manga_fit_row = QHBoxLayout()
+        manga_fit_row.setSpacing(10)
+        manga_fit_text = QLabel("Scale")
+        manga_fit_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        manga_fit_text.setFixedWidth(100)
+        self.manga_fit_combo = QComboBox()
+        self.manga_fit_combo.setStyleSheet(INPUT_STYLE)
+        self.manga_fit_combo.addItem("Fit Width", "width")
+        self.manga_fit_combo.addItem("Fit Height", "height")
+        self.manga_fit_combo.setCurrentIndex(max(0, self.manga_fit_combo.findData(str(load_setting(VIEWER_MANGA_FIT_MODE_KEY, "width") or "width"))))
+        self.manga_fit_combo.currentIndexChanged.connect(self._on_manga_layout_defaults_changed)
+        manga_fit_row.addWidget(manga_fit_text)
+        manga_fit_row.addWidget(self.manga_fit_combo, 1)
+        reader_layout.addLayout(manga_fit_row)
+
+        novel_defaults_label = QLabel("Novels")
+        novel_defaults_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        reader_layout.addWidget(novel_defaults_label)
+
+        self.text_progress_checkbox = QCheckBox("Show text chapter progress by default")
+        self.text_progress_checkbox.setChecked(load_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, True))
+        self.text_progress_checkbox.setStyleSheet(CHECKBOX_STYLE)
+        self.text_progress_checkbox.toggled.connect(self._on_text_progress_changed)
+        reader_layout.addWidget(self.text_progress_checkbox)
+
+        text_size_row = QHBoxLayout()
+        text_size_row.setSpacing(10)
+        text_size_text = QLabel("Text size")
+        text_size_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        text_size_text.setFixedWidth(100)
+        self.text_size_spin = QSpinBox()
+        self.text_size_spin.setRange(12, 32)
+        self.text_size_spin.setValue(int(load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18))
+        self.text_size_spin.setStyleSheet(INPUT_STYLE)
+        self.text_size_spin.valueChanged.connect(self._on_text_style_defaults_changed)
+        text_size_row.addWidget(text_size_text)
+        text_size_row.addWidget(self.text_size_spin)
+        text_size_row.addStretch()
+        reader_layout.addLayout(text_size_row)
+
+        self.page_color_button = QPushButton()
+        self.page_color_button.setStyleSheet(BUTTON_STYLE)
+        self.page_color_button.clicked.connect(lambda: self._pick_reader_color("page"))
+        reader_layout.addLayout(self._build_color_setting_row("Page color", self.page_color_button, lambda: self._reset_reader_color("page")))
+
+        self.text_color_button = QPushButton()
+        self.text_color_button.setStyleSheet(BUTTON_STYLE)
+        self.text_color_button.clicked.connect(lambda: self._pick_reader_color("text"))
+        reader_layout.addLayout(self._build_color_setting_row("Text color", self.text_color_button, lambda: self._reset_reader_color("text")))
+
+        self._refresh_reader_color_buttons()
+
         layout.addWidget(reader_card)
 
         actions_row = QHBoxLayout()
@@ -704,9 +849,9 @@ class SettingsPage(QWidget):
         actions_row.addStretch()
         layout.addLayout(actions_row)
 
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
-        layout.addWidget(self.status_label)
+        self.reader_status_label = QLabel("")
+        self.reader_status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        layout.addWidget(self.reader_status_label)
         layout.addStretch()
 
         scroll = QScrollArea()
@@ -715,6 +860,105 @@ class SettingsPage(QWidget):
         scroll.setStyleSheet(TRANSPARENT_SCROLL_AREA_STYLE)
         scroll.setWidget(page)
         return scroll
+
+    def _build_color_setting_row(self, label_text: str, button: QPushButton, reset_callback) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        label = QLabel(label_text)
+        label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        label.setFixedWidth(100)
+        row.addWidget(label)
+        row.addWidget(button)
+        reset_btn = QPushButton("Reset")
+        reset_btn.setStyleSheet(BUTTON_STYLE)
+        reset_btn.setFixedWidth(64)
+        reset_btn.clicked.connect(reset_callback)
+        row.addWidget(reset_btn)
+        row.addStretch()
+        return row
+
+    def _refresh_reader_color_buttons(self):
+        self._set_reader_color_button(self.page_color_button, str(load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c"))
+        self._set_reader_color_button(self.text_color_button, str(load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5"))
+
+    def _set_reader_color_button(self, button: QPushButton, color_value: str):
+        color = QColor(str(color_value or "#000000"))
+        if not color.isValid():
+            color = QColor("#000000")
+        luminance = (0.299 * color.red()) + (0.587 * color.green()) + (0.114 * color.blue())
+        text_color = "#111111" if luminance > 160 else "#ffffff"
+        button.setText(color.name().upper())
+        button.setStyleSheet(
+            f"background:{color.name()}; color:{text_color}; border:1px solid rgba(255,255,255,0.10); border-radius:6px; padding:6px 12px;"
+        )
+
+    def _pick_reader_color(self, target: str):
+        key = VIEWER_TEXT_PAGE_COLOR_KEY if target == "page" else VIEWER_TEXT_COLOR_KEY
+        title = "Choose page color" if target == "page" else "Choose text color"
+        current = QColor(str(load_setting(key, "#140e0c" if target == "page" else "#f6ece5") or ""))
+        color = QColorDialog.getColor(current, self, title)
+        if not color.isValid():
+            return
+        save_setting(key, color.name())
+        logger.info("Reader %s color changed: %s", target, color.name())
+        self._refresh_reader_color_buttons()
+        self._apply_text_defaults_to_active_viewer()
+        self._set_settings_status("Reader settings saved.")
+
+    def _reset_reader_color(self, target: str):
+        key = VIEWER_TEXT_PAGE_COLOR_KEY if target == "page" else VIEWER_TEXT_COLOR_KEY
+        default = "#140e0c" if target == "page" else "#f6ece5"
+        save_setting(key, default)
+        logger.info("Reader %s color reset: %s", target, default)
+        self._refresh_reader_color_buttons()
+        self._apply_text_defaults_to_active_viewer()
+        self._set_settings_status("Reader settings saved.")
+
+    def _apply_text_defaults_to_active_viewer(self):
+        viewer = getattr(self.main_window, "viewer", None)
+        if viewer is None or self._viewer_uses_saved_text_overrides(viewer):
+            return
+        viewer._text_font_size = int(load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
+        viewer._text_page_color = str(load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
+        viewer._text_color = str(load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
+        viewer._apply_text_reader_style()
+        if hasattr(viewer, "_sync_text_content_height"):
+            viewer._sync_text_content_height()
+
+    def _viewer_uses_saved_text_overrides(self, viewer) -> bool:
+        if viewer is None or not getattr(viewer, "webtoon", None):
+            return False
+        webtoon_name = getattr(viewer.webtoon, "name", "")
+        if not webtoon_name:
+            return False
+        return any((
+            viewer.settings_store.get_text_font_size(webtoon_name) is not None,
+            bool(str(viewer.settings_store.get_text_page_color(webtoon_name) or "").strip()),
+            bool(str(viewer.settings_store.get_text_color(webtoon_name) or "").strip()),
+        ))
+
+    def _viewer_uses_saved_manga_overrides(self, viewer) -> bool:
+        if viewer is None or not getattr(viewer, "webtoon", None):
+            return False
+        webtoon_name = getattr(viewer.webtoon, "name", "")
+        if not webtoon_name:
+            return False
+        has_view = bool(str(viewer.settings_store.get_manga_view_mode(webtoon_name) or "").strip())
+        has_fit = bool(str(viewer.settings_store.get_manga_fit_mode(webtoon_name) or "").strip())
+        return has_view or has_fit
+
+    def _apply_manga_defaults_to_active_viewer(self):
+        viewer = getattr(self.main_window, "viewer", None)
+        if viewer is None or self._viewer_uses_saved_manga_overrides(viewer):
+            return
+        layout_mode, spread_parity = self.manga_layout_combo.currentData() or ("single", "odd")
+        viewer._manga_layout_mode = viewer._normalize_manga_layout(layout_mode)
+        viewer._manga_spread_parity = viewer._normalize_manga_spread_parity(spread_parity)
+        viewer._manga_fit_mode = viewer._normalize_manga_fit_mode(self.manga_fit_combo.currentData() or "width")
+        if getattr(viewer, "webtoon", None) and getattr(viewer, "image_labels", None) and viewer._is_manga_image_mode():
+            viewer.rescale_images(previous_zoom=viewer._zoom)
+            viewer._sync_manga_page_visibility()
+        viewer._apply_reader_session_state()
 
     def _build_scrapers_tab(self) -> QWidget:
         page = QWidget()
@@ -832,8 +1076,20 @@ class SettingsPage(QWidget):
     def _reset(self):
         logger.info("Resetting settings to defaults")
         self.path_input.setText(DEFAULT_LIBRARY_PATH)
-        save_setting(VIEWER_AUTO_SKIP_KEY, True)
-        save_setting(VIEWER_ZOOM_KEY, 0.5)
+        save_settings({
+            VIEWER_AUTO_SKIP_KEY: True,
+            VIEWER_FOCUS_MODE_KEY: False,
+            VIEWER_MINIMAP_VISIBLE_KEY: True,
+            VIEWER_SCENE_ANCHORS_VISIBLE_KEY: True,
+            VIEWER_TEXT_PROGRESS_VISIBLE_KEY: True,
+            VIEWER_TEXT_SIZE_KEY: 18,
+            VIEWER_TEXT_PAGE_COLOR_KEY: "#140e0c",
+            VIEWER_TEXT_COLOR_KEY: "#f6ece5",
+            VIEWER_MANGA_LAYOUT_KEY: "single",
+            VIEWER_MANGA_SPREAD_PARITY_KEY: "odd",
+            VIEWER_MANGA_FIT_MODE_KEY: "width",
+            VIEWER_ZOOM_KEY: 0.5,
+        })
         save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
         save_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True)
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True)
@@ -850,6 +1106,36 @@ class SettingsPage(QWidget):
         self.auto_skip_checkbox.blockSignals(True)
         self.auto_skip_checkbox.setChecked(True)
         self.auto_skip_checkbox.blockSignals(False)
+
+        self.focus_mode_checkbox.blockSignals(True)
+        self.focus_mode_checkbox.setChecked(False)
+        self.focus_mode_checkbox.blockSignals(False)
+
+        self.minimap_checkbox.blockSignals(True)
+        self.minimap_checkbox.setChecked(True)
+        self.minimap_checkbox.blockSignals(False)
+
+        self.scene_anchors_checkbox.blockSignals(True)
+        self.scene_anchors_checkbox.setChecked(True)
+        self.scene_anchors_checkbox.blockSignals(False)
+
+        self.text_progress_checkbox.blockSignals(True)
+        self.text_progress_checkbox.setChecked(True)
+        self.text_progress_checkbox.blockSignals(False)
+
+        self.text_size_spin.blockSignals(True)
+        self.text_size_spin.setValue(18)
+        self.text_size_spin.blockSignals(False)
+
+        self.manga_layout_combo.blockSignals(True)
+        self.manga_layout_combo.setCurrentIndex(0)
+        self.manga_layout_combo.blockSignals(False)
+
+        self.manga_fit_combo.blockSignals(True)
+        self.manga_fit_combo.setCurrentIndex(0)
+        self.manga_fit_combo.blockSignals(False)
+
+        self._refresh_reader_color_buttons()
 
         self.use_categories_checkbox.blockSignals(True)
         self.use_categories_checkbox.setChecked(True)
@@ -904,6 +1190,10 @@ class SettingsPage(QWidget):
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
             viewer.auto_skip_enabled = True
+            viewer._focus_mode_enabled = False
+            viewer._minimap_visible = True
+            viewer._scene_anchors_visible = True
+            viewer._text_progress_visible = True
             if hasattr(viewer, "nav_toggle"):
                 viewer.nav_toggle.blockSignals(True)
                 viewer.nav_toggle.setChecked(True)
@@ -919,7 +1209,11 @@ class SettingsPage(QWidget):
                 viewer._zoom_label.setText("50%")
             if hasattr(viewer, "preview"):
                 viewer.preview.set_zoom(0.5)
-            if getattr(viewer, "image_labels", None):
+            self._apply_text_defaults_to_active_viewer()
+            self._apply_manga_defaults_to_active_viewer()
+            if hasattr(viewer, "_apply_reader_session_state"):
+                viewer._apply_reader_session_state()
+            if getattr(viewer, "image_labels", None) and not viewer._is_manga_image_mode():
                 viewer.rescale_images()
 
         self._save(DEFAULT_LIBRARY_PATH)
@@ -939,6 +1233,69 @@ class SettingsPage(QWidget):
                 viewer.nav_toggle.setChecked(checked)
                 viewer.nav_toggle.setText("Auto Skip" if checked else "Standard")
                 viewer.nav_toggle.blockSignals(False)
+
+    def _on_focus_mode_changed(self, checked: bool):
+        save_setting(VIEWER_FOCUS_MODE_KEY, checked)
+        logger.info("Viewer focus mode default changed: %s", checked)
+        self._set_settings_status("Reader settings saved.")
+
+        viewer = getattr(self.main_window, "viewer", None)
+        if viewer is not None:
+            viewer._focus_mode_enabled = bool(checked)
+            viewer._apply_reader_session_state()
+
+    def _on_minimap_changed(self, checked: bool):
+        save_setting(VIEWER_MINIMAP_VISIBLE_KEY, checked)
+        logger.info("Viewer minimap default changed: %s", checked)
+        self._set_settings_status("Reader settings saved.")
+
+        viewer = getattr(self.main_window, "viewer", None)
+        if viewer is not None:
+            viewer._minimap_visible = bool(checked)
+            viewer._apply_reader_session_state()
+
+    def _on_scene_anchors_changed(self, checked: bool):
+        save_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, checked)
+        logger.info("Viewer scene anchor default changed: %s", checked)
+        self._set_settings_status("Reader settings saved.")
+
+        viewer = getattr(self.main_window, "viewer", None)
+        if viewer is not None:
+            viewer._scene_anchors_visible = bool(checked)
+            viewer._apply_reader_session_state()
+
+    def _on_text_progress_changed(self, checked: bool):
+        save_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, checked)
+        logger.info("Viewer text progress default changed: %s", checked)
+        self._set_settings_status("Reader settings saved.")
+
+        viewer = getattr(self.main_window, "viewer", None)
+        if viewer is not None:
+            viewer._text_progress_visible = bool(checked)
+            viewer._apply_reader_session_state()
+
+    def _on_text_style_defaults_changed(self, value: int):
+        save_setting(VIEWER_TEXT_SIZE_KEY, int(value))
+        logger.info("Viewer text size default changed: %s", value)
+        self._apply_text_defaults_to_active_viewer()
+        self._set_settings_status("Reader settings saved.")
+
+    def _on_manga_layout_defaults_changed(self, _index: int):
+        layout_mode, spread_parity = self.manga_layout_combo.currentData() or ("single", "odd")
+        fit_mode = str(self.manga_fit_combo.currentData() or "width")
+        save_settings({
+            VIEWER_MANGA_LAYOUT_KEY: str(layout_mode),
+            VIEWER_MANGA_SPREAD_PARITY_KEY: str(spread_parity),
+            VIEWER_MANGA_FIT_MODE_KEY: fit_mode,
+        })
+        logger.info(
+            "Viewer manga defaults changed: layout=%s parity=%s fit=%s",
+            layout_mode,
+            spread_parity,
+            fit_mode,
+        )
+        self._apply_manga_defaults_to_active_viewer()
+        self._set_settings_status("Reader settings saved.")
 
     def _on_zoom_changed(self, value: int):
         zoom = value / 100.0
@@ -1050,6 +1407,9 @@ class SettingsPage(QWidget):
 
     def _set_settings_status(self, message: str):
         self.status_label.setText(message)
+        reader_status_label = getattr(self, "reader_status_label", None)
+        if reader_status_label is not None:
+            reader_status_label.setText(message)
         scrapers_status_label = getattr(self, "scrapers_status_label", None)
         if scrapers_status_label is not None:
             scrapers_status_label.setText(message)

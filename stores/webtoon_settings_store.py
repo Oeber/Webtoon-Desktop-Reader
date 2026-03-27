@@ -303,6 +303,35 @@ class WebtoonSettingsStore:
             self._clear_scalar(webtoon_name, "manga_fit_mode", log_message="Clearing manga fit mode for %s")
             return
         self._set_scalar(webtoon_name, "manga_fit_mode", normalized, log_message="Saving manga fit mode for %s: %s")
+
+    def get_text_font_size(self, webtoon_name: str) -> int | None:
+        return self._get_scalar(webtoon_name, "text_font_size", default=None, coerce=int)
+
+    def set_text_font_size(self, webtoon_name: str, text_size: int | None):
+        if text_size is None:
+            self._clear_scalar(webtoon_name, "text_font_size", log_message="Clearing text font size for %s")
+            return
+        self._set_scalar(webtoon_name, "text_font_size", int(text_size), log_message="Saving text font size for %s: %s")
+
+    def get_text_page_color(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "text_page_color", default=None, coerce=str)
+
+    def set_text_page_color(self, webtoon_name: str, color: str | None):
+        normalized = str(color or "").strip() or None
+        if normalized is None:
+            self._clear_scalar(webtoon_name, "text_page_color", log_message="Clearing text page color for %s")
+            return
+        self._set_scalar(webtoon_name, "text_page_color", normalized, log_message="Saving text page color for %s: %s")
+
+    def get_text_color(self, webtoon_name: str) -> str | None:
+        return self._get_scalar(webtoon_name, "text_color", default=None, coerce=str)
+
+    def set_text_color(self, webtoon_name: str, color: str | None):
+        normalized = str(color or "").strip() or None
+        if normalized is None:
+            self._clear_scalar(webtoon_name, "text_color", log_message="Clearing text color for %s")
+            return
+        self._set_scalar(webtoon_name, "text_color", normalized, log_message="Saving text color for %s: %s")
     def set_content_type(self, webtoon_name: str, content_type: str):
         normalized = str(content_type or "").strip() or None
         if normalized is None:

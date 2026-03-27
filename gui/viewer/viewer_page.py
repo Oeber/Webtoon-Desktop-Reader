@@ -64,6 +64,9 @@ from stores.settings_store import (
     VIEWER_TEXT_PROGRESS_VISIBLE_KEY,
     VIEWER_TEXT_SIZE_KEY,
     VIEWER_ZOOM_KEY,
+    VIEWER_MANGA_LAYOUT_KEY,
+    VIEWER_MANGA_SPREAD_PARITY_KEY,
+    VIEWER_MANGA_FIT_MODE_KEY,
     load_setting,
     save_setting,
     save_settings,
@@ -78,14 +81,12 @@ SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 VIEWER_TOOLBAR_ICON_SIZE = QSize(16, 16)
 VIEWER_TOOLBAR_BUTTON_SIZE = 30
 VIEWER_TOOLBAR_TRIGGER_HEIGHT = 96
-VIEWER_MANGA_LAYOUT_KEY = "viewer_manga_layout"
-VIEWER_MANGA_SPREAD_PARITY_KEY = "viewer_manga_spread_parity"
 MANGA_SPREAD_GAP = 0
 logger = get_logger(__name__)
 
 
 class TextReaderSettingsDialog(QDialog):
-    def __init__(self, *, text_size: int, page_color: str, text_color: str, parent=None):
+    def __init__(self, *, text_size: int, page_color: str, text_color: str, on_change=None, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Text Reader Settings")
         self.setModal(True)
@@ -95,6 +96,12 @@ class TextReaderSettingsDialog(QDialog):
         self._default_text_color = "#f6ece5"
         self._page_color = str(page_color or self._default_page_color)
         self._text_color = str(text_color or self._default_text_color)
+        self._initial_values = {
+            "text_size": max(12, min(32, int(text_size))),
+            "page_color": self._page_color,
+            "text_color": self._text_color,
+        }
+        self._on_change = on_change
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -104,7 +111,8 @@ class TextReaderSettingsDialog(QDialog):
         size_label = QLabel("Text size")
         self.size_spin = QSpinBox()
         self.size_spin.setRange(12, 32)
-        self.size_spin.setValue(max(12, min(32, int(text_size))))
+        self.size_spin.setValue(self._initial_values["text_size"])
+        self.size_spin.valueChanged.connect(lambda _value: self._emit_live_change())
         size_row.addWidget(size_label)
         size_row.addStretch()
         size_row.addWidget(self.size_spin)
@@ -136,6 +144,7 @@ class TextReaderSettingsDialog(QDialog):
 
         self._refresh_color_buttons()
         self._update_preview()
+        self._emit_live_change()
 
     def _build_color_row(self, label_text: str, button: QPushButton, reset_callback) -> QHBoxLayout:
         row = QHBoxLayout()
@@ -155,6 +164,7 @@ class TextReaderSettingsDialog(QDialog):
             self._page_color = color.name()
             self._refresh_color_buttons()
             self._update_preview()
+            self._emit_live_change()
 
     def _pick_text_color(self):
         color = QColorDialog.getColor(QColor(self._text_color), self, "Choose text color")
@@ -162,16 +172,19 @@ class TextReaderSettingsDialog(QDialog):
             self._text_color = color.name()
             self._refresh_color_buttons()
             self._update_preview()
+            self._emit_live_change()
 
     def _reset_page_color(self):
         self._page_color = self._default_page_color
         self._refresh_color_buttons()
         self._update_preview()
+        self._emit_live_change()
 
     def _reset_text_color(self):
         self._text_color = self._default_text_color
         self._refresh_color_buttons()
         self._update_preview()
+        self._emit_live_change()
 
     def _refresh_color_buttons(self):
         self.page_color_btn.setText(self._page_color.upper())
@@ -193,8 +206,18 @@ class TextReaderSettingsDialog(QDialog):
         luminance = (0.299 * color.red()) + (0.587 * color.green()) + (0.114 * color.blue())
         return "#111111" if luminance > 160 else "#ffffff"
 
+    def _emit_live_change(self):
+        if callable(self._on_change):
+            self._on_change(self.values)
+
+    def reject(self):
+        if callable(self._on_change):
+            self._on_change(dict(self._initial_values))
+        super().reject()
+
     def accept(self):
         self._update_preview()
+        self._emit_live_change()
         super().accept()
 
     @property
@@ -410,9 +433,9 @@ class ViewerPage(QWidget):
         self._minimap_visible = bool(load_setting(VIEWER_MINIMAP_VISIBLE_KEY, True))
         self._scene_anchors_visible = bool(load_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, True))
         self._text_progress_visible = bool(load_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, True))
-        self._manga_layout_mode = "single"
-        self._manga_spread_parity = "odd"
-        self._manga_fit_mode = "width"
+        self._manga_layout_mode = self._normalize_manga_layout(load_setting(VIEWER_MANGA_LAYOUT_KEY, "single"))
+        self._manga_spread_parity = self._normalize_manga_spread_parity(load_setting(VIEWER_MANGA_SPREAD_PARITY_KEY, "odd"))
+        self._manga_fit_mode = self._normalize_manga_fit_mode(load_setting(VIEWER_MANGA_FIT_MODE_KEY, "width"))
         self._text_font_size = int(load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
         self._text_page_color = str(load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
         self._text_color = str(load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
@@ -910,22 +933,29 @@ class ViewerPage(QWidget):
             text_size=self._text_font_size,
             page_color=self._text_page_color,
             text_color=self._text_color,
+            on_change=self._preview_text_reader_settings,
             parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
+            self.setFocus()
             return
         values = dialog.values
-        self._text_font_size = int(values["text_size"])
-        self._text_page_color = str(values["page_color"])
-        self._text_color = str(values["text_color"])
-        save_settings({
-            VIEWER_TEXT_SIZE_KEY: self._text_font_size,
-            VIEWER_TEXT_PAGE_COLOR_KEY: self._text_page_color,
-            VIEWER_TEXT_COLOR_KEY: self._text_color,
-        })
+        self._apply_text_reader_values(values)
+        if self.webtoon:
+            self.settings_store.set_text_font_size(self.webtoon.name, self._text_font_size)
+            self.settings_store.set_text_page_color(self.webtoon.name, self._text_page_color)
+            self.settings_store.set_text_color(self.webtoon.name, self._text_color)
+        self.setFocus()
+
+    def _preview_text_reader_settings(self, values: dict):
+        self._apply_text_reader_values(values)
+
+    def _apply_text_reader_values(self, values: dict):
+        self._text_font_size = int(values.get("text_size", self._text_font_size) or self._text_font_size)
+        self._text_page_color = str(values.get("page_color", self._text_page_color) or self._text_page_color)
+        self._text_color = str(values.get("text_color", self._text_color) or self._text_color)
         self._apply_text_reader_style()
         self._sync_text_content_height()
-        self.setFocus()
 
     def _toggle_minimap(self, checked: bool):
         self._minimap_visible = bool(checked)
@@ -1088,11 +1118,26 @@ class ViewerPage(QWidget):
         else:
             self._zoom_override_active = False
             self._set_zoom(load_setting(VIEWER_ZOOM_KEY, 0.5), rescale_existing=rescale_existing)
-        self._manga_layout_mode = self._normalize_manga_layout(self.settings_store.get_manga_view_mode(webtoon.name) or "single")
-        self._manga_spread_parity = self._normalize_manga_spread_parity("even" if self._manga_layout_mode == "double_even" else "odd")
-        if self._manga_layout_mode == "double_even":
+        default_layout = self._normalize_manga_layout(load_setting(VIEWER_MANGA_LAYOUT_KEY, "single"))
+        default_parity = self._normalize_manga_spread_parity(load_setting(VIEWER_MANGA_SPREAD_PARITY_KEY, "odd"))
+        default_fit = self._normalize_manga_fit_mode(load_setting(VIEWER_MANGA_FIT_MODE_KEY, "width"))
+        saved_view_mode = str(self.settings_store.get_manga_view_mode(webtoon.name) or "").strip().casefold()
+        if saved_view_mode == "double_even":
             self._manga_layout_mode = "double"
-        self._manga_fit_mode = self._normalize_manga_fit_mode(self.settings_store.get_manga_fit_mode(webtoon.name) or "width")
+            self._manga_spread_parity = "even"
+        elif saved_view_mode == "double":
+            self._manga_layout_mode = "double"
+            self._manga_spread_parity = "odd"
+        elif saved_view_mode == "single":
+            self._manga_layout_mode = "single"
+            self._manga_spread_parity = default_parity
+        else:
+            self._manga_layout_mode = default_layout
+            self._manga_spread_parity = default_parity
+        self._manga_fit_mode = self._normalize_manga_fit_mode(self.settings_store.get_manga_fit_mode(webtoon.name) or default_fit)
+        self._text_font_size = int(self.settings_store.get_text_font_size(webtoon.name) or load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
+        self._text_page_color = str(self.settings_store.get_text_page_color(webtoon.name) or load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
+        self._text_color = str(self.settings_store.get_text_color(webtoon.name) or load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
         self._zoom_reset_btn.setEnabled(self._zoom_override_active)
 
     @staticmethod
