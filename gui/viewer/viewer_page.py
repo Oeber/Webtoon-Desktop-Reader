@@ -1769,8 +1769,17 @@ class ViewerPage(QWidget):
         idx = max(0, min(len(self.image_labels) - 1, int(packed)))
         self._jump_to_packed(idx, packed - int(packed))
 
-    def _on_image_ready(self, index: int, pixmap: QPixmap):
+    def _on_image_ready(self, index: int, path: str, pixmap: QPixmap):
         if index >= len(self.image_labels):
+            return
+        label = self.image_labels[index]
+        if str(getattr(label, "img_path", "") or "") != str(path or ""):
+            logger.info(
+                "Ignoring stale viewer image load index=%d expected=%s got=%s",
+                index,
+                getattr(label, "img_path", ""),
+                path,
+            )
             return
         self._chapter_load_loaded += 1
         self._update_loading_overlay()
@@ -1778,7 +1787,6 @@ class ViewerPage(QWidget):
         # Only do one immediate paint per chapter load.
         # Everything else should go through the batch path so restore logic runs.
         if not self._did_immediate_first_paint and not self._pending_batch:
-            label = self.image_labels[index]
             label._source_pixmap = pixmap
             label._natural_width = pixmap.width()
             label._natural_height = pixmap.height()
@@ -2834,11 +2842,19 @@ class ViewerPage(QWidget):
         self._panel_ranges = ranges
         self._panel_ranges_dirty = False
 
-    def _on_preview_ready(self, index: int, pixmap: QPixmap, natural_w: int, natural_h: int):
+    def _on_preview_ready(self, index: int, path: str, pixmap: QPixmap, natural_w: int, natural_h: int):
         """Thumbnail arrived - store it and set correct label height if not yet loaded."""
         if index >= len(self.image_labels):
             return
         label = self.image_labels[index]
+        if str(getattr(label, "img_path", "") or "") != str(path or ""):
+            logger.info(
+                "Ignoring stale viewer preview load index=%d expected=%s got=%s",
+                index,
+                getattr(label, "img_path", ""),
+                path,
+            )
+            return
         label._preview_pixmap = pixmap
         label._natural_width = natural_w
         label._natural_height = natural_h

@@ -90,8 +90,8 @@ def format_bytes(size: int) -> str:
 
 
 class ImageLoader(QObject):
-    image_ready = Signal(int, QPixmap)
-    preview_ready = Signal(int, QPixmap, int, int)
+    image_ready = Signal(int, str, QPixmap)
+    preview_ready = Signal(int, str, QPixmap, int, int)
     panel_ranges_ready = Signal(int, list)
 
     def __init__(self):
@@ -100,8 +100,8 @@ class ImageLoader(QObject):
         self.preview_executor = ThreadPoolExecutor(max_workers=PREVIEW_WORKERS)
         self.panel_executor = ThreadPoolExecutor(max_workers=PANEL_WORKERS)
         self._cancelled = False
-        self._queued = set()
-        self._preview_queued = set()
+        self._queued: set[tuple[int, str]] = set()
+        self._preview_queued: set[tuple[int, str]] = set()
         self._panel_range_cache: dict[str, list[tuple[float, float]]] = {}
 
     def cancel(self):
@@ -119,18 +119,21 @@ class ImageLoader(QObject):
         self.panel_executor.shutdown(wait=False, cancel_futures=True)
 
     def load(self, index: int, path: str, width: int):
-        if index in self._queued:
+        key = (int(index), str(path or ""))
+        if key in self._queued:
             return
-        self._queued.add(index)
+        self._queued.add(key)
         self.executor.submit(self._load_task, index, path)
 
     def load_preview(self, index: int, path: str, max_w: int = 50):
-        if index in self._preview_queued or index in self._queued:
+        key = (int(index), str(path or ""))
+        if key in self._preview_queued or key in self._queued:
             return
-        self._preview_queued.add(index)
+        self._preview_queued.add(key)
         self.preview_executor.submit(self._preview_task, index, path, max_w)
 
     def _load_task(self, index: int, path: str):
+        key = (int(index), str(path or ""))
         try:
             if self._cancelled:
                 return
@@ -156,11 +159,12 @@ class ImageLoader(QObject):
                 elapsed_ms,
             )
             if not self._cancelled:
-                self.image_ready.emit(index, pixmap)
+                self.image_ready.emit(index, path, pixmap)
         finally:
-            self._queued.discard(index)
+            self._queued.discard(key)
 
     def _preview_task(self, index: int, path: str, max_w: int):
+        key = (int(index), str(path or ""))
         try:
             if self._cancelled:
                 return
@@ -190,9 +194,9 @@ class ImageLoader(QObject):
                 thumb = pixmap if natural_w <= max_w else pixmap.scaledToWidth(max_w, Qt.SmoothTransformation)
 
             if not self._cancelled:
-                self.preview_ready.emit(index, thumb, natural_w, natural_h)
+                self.preview_ready.emit(index, path, thumb, natural_w, natural_h)
         finally:
-            self._preview_queued.discard(index)
+            self._preview_queued.discard(key)
 
     def build_panel_ranges(self, generation: int, payload: list):
         self.panel_executor.submit(self._panel_task, generation, payload)
