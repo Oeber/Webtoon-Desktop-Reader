@@ -1,10 +1,11 @@
 import threading
 
 import qtawesome as qta
-from PySide6.QtCore import QObject, Qt, QSize, Signal
-from PySide6.QtGui import QFont, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QObject, Qt, QSize, Signal, QTimer
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -50,6 +51,7 @@ from gui.common.styles import (
 )
 from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.discovery.cover_loader import DiscoveryCoverLoader
+from gui.library.detail_page import MangaPageTile
 from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.models import CatalogSeries
@@ -70,6 +72,13 @@ class DiscoverySeriesLoader(QObject):
                 scraper = get_scraper(url)
                 series_url = url if not scraper.is_chapter_url(url) else scraper.series_url_from_chapter_url(url)
                 series = scraper.get_series_info(series_url)
+                if str(getattr(series, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga":
+                    for chapter in getattr(series, "chapters", []) or []:
+                        try:
+                            chapter.pages = scraper.get_chapter_pages(chapter.url)
+                        except Exception as exc:
+                            logger.warning("Discovery manga page load failed for %s", chapter.url, exc_info=exc)
+                            chapter.pages = []
                 self.loaded.emit(request_id, series, "")
             except ScraperError as e:
                 self.loaded.emit(request_id, None, str(e))
@@ -81,6 +90,9 @@ class DiscoverySeriesLoader(QObject):
 
 
 class DiscoveryDetailPage(QWidget):
+    MANGA_PAGE_RENDER_BATCH_SIZE = 24
+    MANGA_PAGE_COLUMNS = 6
+
     def __init__(self, main_window):
         super().__init__()
         self.main_window = main_window
@@ -92,7 +104,15 @@ class DiscoveryDetailPage(QWidget):
         self._series_loader.loaded.connect(self._on_series_loaded)
         self._cover_loader = DiscoveryCoverLoader(self)
         self._cover_loader.loaded.connect(self._on_cover_loaded)
+        self._page_preview_loader = DiscoveryCoverLoader(self)
+        self._page_preview_loader.loaded.connect(self._on_page_preview_loaded)
         self._providers_by_site = {provider.site_name: provider for provider in get_all_discovery_providers()}
+        self._pending_manga_page_entries = []
+        self._manga_page_grid = None
+        self._manga_page_render_token = 0
+        self._manga_page_render_timer = QTimer(self)
+        self._manga_page_render_timer.setSingleShot(True)
+        self._manga_page_render_timer.timeout.connect(self._render_next_manga_page_batch)
 
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -178,9 +198,9 @@ class DiscoveryDetailPage(QWidget):
         section_header.setStyleSheet(SECTION_HEADER_PANEL_STYLE)
         sh_layout = QHBoxLayout(section_header)
         sh_layout.setContentsMargins(32, 20, 32, 8)
-        chapters_lbl = QLabel("CHAPTERS")
-        chapters_lbl.setStyleSheet(SECTION_CAPTION_STYLE)
-        sh_layout.addWidget(chapters_lbl)
+        self.section_caption_label = QLabel("CHAPTERS")
+        self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
+        sh_layout.addWidget(self.section_caption_label)
         sh_layout.addStretch()
         self.hide_specials_checkbox = QCheckBox("Hide filler")
         self.hide_specials_checkbox.toggled.connect(self._rebuild_chapter_list)
@@ -235,10 +255,11 @@ class DiscoveryDetailPage(QWidget):
         self.series = None
         self._selected_urls.clear()
         self._request_id += 1
+        self._cancel_pending_manga_page_render()
 
         self.title_label.setText(getattr(entry, "title", "") or "Untitled")
         self.author_label.setText(getattr(entry, "author", "") or "Unknown author")
-        self.chapter_count_label.setText(self._format_chapter_count(getattr(entry, "total_chapters", None)))
+        self.chapter_count_label.setText(self._entry_count_text(entry))
         self.description_label.setText(getattr(entry, "description", "") or "Loading series details...")
         self.status_label.setText("Loading chapters...")
         self.status_label.show()
@@ -249,31 +270,67 @@ class DiscoveryDetailPage(QWidget):
         if getattr(entry, "cover_url", ""):
             provider = self._providers_by_site.get(str(getattr(entry, "site", "") or "").strip())
             self._cover_loader.load(self, entry.cover_url, getattr(entry, "cover_headers", {}) or {}, provider)
+        self._refresh_mode_state()
         self._rebuild_chapter_list()
         self._series_loader.load(self._request_id, entry)
 
     def _on_cover_loaded(self, widget, data, error: str):
         if widget is not self or error or not data:
             return
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(data):
+        pixmap = self._rounded_pixmap_from_bytes(data, THUMB_W, THUMB_H, RADIUS)
+        if pixmap.isNull():
             return
-        pixmap = pixmap.scaled(THUMB_W, THUMB_H, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        x = max(0, (pixmap.width() - THUMB_W) // 2)
-        y = max(0, (pixmap.height() - THUMB_H) // 2)
-        pixmap = pixmap.copy(x, y, THUMB_W, THUMB_H)
-        rounded = QPixmap(THUMB_W, THUMB_H)
+        self.thumb_label.setPixmap(pixmap)
+        self.thumb_label.setText("")
+
+    def _on_page_preview_loaded(self, widget, data, error: str):
+        if not isinstance(widget, MangaPageTile) or error or not data:
+            return
+        pixmap = self._rounded_pixmap_from_bytes(
+            data,
+            widget.PREVIEW_WIDTH,
+            widget.PREVIEW_HEIGHT,
+            12,
+            fill_color="#1d1514",
+            border_color="#3c2522",
+        )
+        if pixmap.isNull():
+            return
+        widget.set_preview_pixmap(pixmap)
+
+    def _rounded_pixmap_from_bytes(
+        self,
+        data: bytes,
+        width: int,
+        height: int,
+        radius: int,
+        *,
+        fill_color: str | None = None,
+        border_color: str | None = None,
+    ) -> QPixmap:
+        source = QPixmap()
+        if not source.loadFromData(data):
+            return QPixmap()
+        scaled = source.scaled(width, height, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        x = max(0, (scaled.width() - width) // 2)
+        y = max(0, (scaled.height() - height) // 2)
+        cropped = scaled.copy(x, y, width, height)
+        rounded = QPixmap(width, height)
         rounded.fill(Qt.transparent)
         painter = QPainter(rounded)
         painter.setRenderHint(QPainter.Antialiasing)
         path = QPainterPath()
-        path.addRoundedRect(0, 0, THUMB_W, THUMB_H, RADIUS, RADIUS)
+        path.addRoundedRect(0, 0, width, height, radius, radius)
+        if fill_color:
+            painter.fillPath(path, QColor(fill_color))
         painter.setClipPath(path)
-        painter.drawPixmap(0, 0, pixmap)
+        painter.drawPixmap(0, 0, cropped)
+        painter.setClipping(False)
+        if border_color:
+            painter.setPen(QPen(QColor(border_color), 1))
+            painter.drawPath(path)
         painter.end()
-        self.thumb_label.setPixmap(rounded)
-        self.thumb_label.setText("")
-
+        return rounded
     def _on_series_loaded(self, request_id: int, series, error: str):
         if request_id != self._request_id:
             return
@@ -292,10 +349,11 @@ class DiscoveryDetailPage(QWidget):
         self.series = series
         self.title_label.setText(getattr(series, "title", "") or self.title_label.text())
         self.author_label.setText(getattr(series, "author", None) or self.author_label.text())
-        self.chapter_count_label.setText(self._format_chapter_count(len(getattr(series, "chapters", []) or [])))
-        self.description_label.setText(getattr(series, "description", "") or "No description available.")
+        self.chapter_count_label.setText(self._series_count_text(series))
+        self.description_label.setText(self._merged_description(series))
         self.status_label.hide()
         self.download_all_btn.setEnabled(True)
+        self._refresh_mode_state()
         self._rebuild_chapter_list()
 
     def _visible_chapters(self):
@@ -304,7 +362,25 @@ class DiscoveryDetailPage(QWidget):
             chapters = [chapter for chapter in chapters if not SPECIAL_CHAPTER_RE.search(chapter.title or "")]
         return chapters
 
+    def _is_manga_series(self) -> bool:
+        return str(getattr(self.series, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
+
+    def _visible_manga_pages(self):
+        pages = []
+        for chapter in self._visible_chapters():
+            for page in list(getattr(chapter, "pages", []) or []):
+                pages.append((chapter, page))
+        return pages
+
+    def _refresh_mode_state(self) -> None:
+        manga = self._is_manga_series() if self.series is not None else False
+        self.section_caption_label.setText("PAGES" if manga else "CHAPTERS")
+        self.hide_specials_checkbox.setVisible(not manga)
+        self.batch_bar.setVisible((not manga) and bool(self._selected_urls))
+        self.download_all_btn.setText("Download All Pages" if manga else "Download All Chapters")
+
     def _rebuild_chapter_list(self):
+        self._cancel_pending_manga_page_render()
         while self.chapter_list_layout.count():
             item = self.chapter_list_layout.takeAt(0)
             widget = item.widget()
@@ -320,6 +396,28 @@ class DiscoveryDetailPage(QWidget):
 
         valid_urls = {chapter.url for chapter in getattr(self.series, "chapters", []) or []}
         self._selected_urls &= valid_urls
+        if self._is_manga_series():
+            page_entries = self._visible_manga_pages()
+            if not page_entries:
+                label = QLabel("No pages available.")
+                label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
+                self.chapter_list_layout.addWidget(label)
+                self._sync_selection_state()
+                return
+            self._selected_urls.clear()
+            page_grid_host = QWidget()
+            page_grid = QGridLayout(page_grid_host)
+            page_grid.setContentsMargins(0, 8, 0, 8)
+            page_grid.setHorizontalSpacing(12)
+            page_grid.setVerticalSpacing(12)
+            self._manga_page_grid = page_grid
+            self._pending_manga_page_entries = list(page_entries)
+            self._manga_page_render_token += 1
+            self.chapter_list_layout.addWidget(page_grid_host)
+            self._manga_page_render_timer.start(0)
+            self._sync_selection_state()
+            return
+
         chapters = self._visible_chapters()
         if not chapters:
             label = QLabel("No chapters available.")
@@ -331,6 +429,59 @@ class DiscoveryDetailPage(QWidget):
         for chapter in chapters:
             self.chapter_list_layout.addWidget(self._make_chapter_row(chapter))
         self._sync_selection_state()
+
+    def _make_manga_page_tile(self, chapter, page):
+        page_number = max(1, int(getattr(page, "index", 0) or 0))
+        image_url = str(getattr(page, "image_url", "") or "")
+        tile = MangaPageTile(image_url, page_number, self.chapter_list_widget)
+        tile.setCursor(Qt.ArrowCursor)
+        tile.setToolTip(f"{chapter.title or chapter.url}\nPage {page_number}")
+        if image_url:
+            headers = self._page_preview_headers(image_url)
+            provider = self._page_preview_provider(chapter)
+            self._page_preview_loader.load(tile, image_url, headers, provider)
+        return tile
+
+    def _page_preview_headers(self, image_url: str) -> dict[str, str]:
+        if self.series is not None:
+            try:
+                scraper = get_scraper(getattr(self.series, "url", "") or getattr(self.entry, "url", ""))
+                request_headers = getattr(scraper, "get_request_headers", None)
+                if callable(request_headers):
+                    return dict(request_headers(image_url) or {})
+            except Exception:
+                logger.debug("Discovery page preview header build failed for %s", image_url, exc_info=True)
+        return {}
+
+    def _page_preview_provider(self, chapter):
+        try:
+            return get_scraper(chapter.url)
+        except Exception:
+            return None
+
+    def _cancel_pending_manga_page_render(self) -> None:
+        self._manga_page_render_timer.stop()
+        self._pending_manga_page_entries = []
+        self._manga_page_grid = None
+        self._manga_page_render_token += 1
+
+    def _render_next_manga_page_batch(self) -> None:
+        grid = self._manga_page_grid
+        if grid is None or not self._pending_manga_page_entries:
+            return
+
+        columns = self.MANGA_PAGE_COLUMNS
+        start_index = grid.count()
+        batch = self._pending_manga_page_entries[:self.MANGA_PAGE_RENDER_BATCH_SIZE]
+        self._pending_manga_page_entries = self._pending_manga_page_entries[self.MANGA_PAGE_RENDER_BATCH_SIZE:]
+
+        for offset, (chapter, page) in enumerate(batch):
+            index = start_index + offset
+            tile = self._make_manga_page_tile(chapter, page)
+            grid.addWidget(tile, index // columns, index % columns, Qt.AlignTop)
+
+        if self._pending_manga_page_entries:
+            self._manga_page_render_timer.start(0)
 
     def _make_chapter_row(self, chapter):
         row = QWidget()
@@ -435,7 +586,9 @@ class DiscoveryDetailPage(QWidget):
     def _sync_selection_state(self):
         selected = len(self._selected_urls)
         self.selection_label.setText(f"{selected} selected")
-        self.download_selected_btn.setEnabled(self.series is not None and selected > 0)
+        manga = self._is_manga_series() if self.series is not None else False
+        self.batch_bar.setVisible((not manga) and selected > 0)
+        self.download_selected_btn.setEnabled((self.series is not None) and (not manga) and selected > 0)
 
     def _download_all(self):
         if self.series is None:
@@ -475,11 +628,54 @@ class DiscoveryDetailPage(QWidget):
         text = " ".join(str(error or "").casefold().split())
         return "cloudflare" in text or "anti-bot" in text
 
+    def _merged_description(self, series) -> str:
+        parts = []
+        for raw in (
+            getattr(self.entry, "description", None),
+            getattr(series, "description", None),
+        ):
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            for piece in text.split(" | "):
+                normalized = " ".join(piece.split()).strip()
+                if normalized and normalized not in parts:
+                    parts.append(normalized)
+        if not parts:
+            return "No description available."
+        return " | ".join(parts)
+
+    def _entry_count_text(self, entry) -> str:
+        count_text = self._format_chapter_count(getattr(entry, "total_chapters", None))
+        if count_text:
+            return count_text
+        return " ".join(str(getattr(entry, "latest_chapter", "") or "").split()).strip()
+
+    def _series_count_text(self, series) -> str:
+        if self._is_manga_series():
+            page_total = 0
+            for chapter in list(getattr(series, "chapters", []) or []):
+                page_total += len(list(getattr(chapter, "pages", []) or []))
+            if page_total > 0:
+                return "1 page" if page_total == 1 else f"{page_total} pages"
+        return self._format_chapter_count(len(getattr(series, "chapters", []) or []))
+
     def _format_chapter_count(self, count: int | None) -> str:
         if not count:
             return ""
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"
+
+
+
+
+
+
+
+
+
+
+
 
 

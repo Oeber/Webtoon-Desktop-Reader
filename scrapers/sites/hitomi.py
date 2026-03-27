@@ -51,10 +51,10 @@ class HitomiScraper(BaseScraper):
             "Accept-Language": "en-US,en;q=0.9",
         }
 
-    def get_series_info(self, url: str) -> SeriesInfo:
+    def get_series_info(self, url: str, session=None) -> SeriesInfo:
         gallery_url = self._normalize_gallery_url(url)
         gallery_id = self._extract_gallery_id(gallery_url)
-        info = self._fetch_galleryinfo(gallery_id)
+        info = self._fetch_galleryinfo(gallery_id, session=session)
 
         title = str(info.get("japanese_title") or info.get("title") or f"Gallery {gallery_id}").strip()
         artists = info.get("artists") or []
@@ -89,7 +89,7 @@ class HitomiScraper(BaseScraper):
                 url=gallery_url,
             )
         ]
-        cover_url = self._build_primary_image_url(files[0]) if files else None
+        cover_url = self._build_primary_image_url(files[0], session=session) if files else None
 
         return SeriesInfo(
             site=self.site_name,
@@ -104,14 +104,14 @@ class HitomiScraper(BaseScraper):
             chapters=chapters,
         )
 
-    def get_chapter_pages(self, chapter_url: str) -> list[PageInfo]:
+    def get_chapter_pages(self, chapter_url: str, session=None) -> list[PageInfo]:
         gallery_url = self._normalize_gallery_url(chapter_url)
         gallery_id = self._extract_gallery_id(gallery_url)
-        info = self._fetch_galleryinfo(gallery_id)
+        info = self._fetch_galleryinfo(gallery_id, session=session)
         files = info.get("files") or []
         pages: list[PageInfo] = []
         for index, image in enumerate(files, start=1):
-            image_url = self._build_primary_image_url(image)
+            image_url = self._build_primary_image_url(image, session=session)
             if not image_url:
                 continue
             pages.append(PageInfo(index=index, image_url=image_url))
@@ -147,9 +147,10 @@ class HitomiScraper(BaseScraper):
             raise ScraperError(f"Could not determine Hitomi gallery id from: {url}")
         return match.group(1)
 
-    def _fetch_galleryinfo(self, gallery_id: str) -> dict:
+    def _fetch_galleryinfo(self, gallery_id: str, session=None) -> dict:
         script_url = f"{self.CDN_BASE}/galleries/{gallery_id}.js"
-        response = requests.get(script_url, headers=self.get_request_headers(script_url), timeout=20)
+        client = session or requests
+        response = client.get(script_url, headers=self.get_request_headers(script_url), timeout=20)
         response.raise_for_status()
         text = str(response.text or "").strip()
         match = self.GALLERY_INFO_RE.search(text)
@@ -160,10 +161,11 @@ class HitomiScraper(BaseScraper):
         except json.JSONDecodeError as exc:
             raise ScraperError("Hitomi gallery metadata was invalid JSON.") from exc
 
-    def _gg_base(self) -> str:
+    def _gg_base(self, session=None) -> str:
         if self._gg_base_path is not None and self._gg_zero_values is not None:
             return self._gg_base_path
-        response = requests.get(f"{self.CDN_BASE}/gg.js", headers=self.get_request_headers(self.BASE), timeout=20)
+        client = session or requests
+        response = client.get(f"{self.CDN_BASE}/gg.js", headers=self.get_request_headers(self.BASE), timeout=20)
         response.raise_for_status()
         text = str(response.text or "")
         match = self.GG_B_RE.search(text)
@@ -177,38 +179,38 @@ class HitomiScraper(BaseScraper):
         self._gg_zero_values = zero_values
         return self._gg_base_path
 
-    def _webp_host_for_hash(self, image_hash: str) -> str:
+    def _webp_host_for_hash(self, image_hash: str, session=None) -> str:
         match = re.search(r"(..)(.)$", str(image_hash or ""))
         if not match:
             raise ScraperError("Hitomi image hash was invalid.")
         g_value = int(match.group(2) + match.group(1), 16)
-        self._gg_base()
+        self._gg_base(session=session)
         zero_values = self._gg_zero_values or set()
         suffix = 1 if g_value in zero_values else 2
         return f"w{suffix}.gold-usergeneratedcontent.net"
 
-    def _full_path_from_hash(self, image_hash: str) -> str:
+    def _full_path_from_hash(self, image_hash: str, session=None) -> str:
         match = re.search(r"(..)(.)$", str(image_hash or ""))
         if not match:
             raise ScraperError("Hitomi image hash was invalid.")
         suffix = int(match.group(2) + match.group(1), 16)
-        return f"{self._gg_base()}{suffix}/{image_hash}"
+        return f"{self._gg_base(session=session)}{suffix}/{image_hash}"
 
-    def _build_primary_image_url(self, image: dict) -> str:
-        candidates = self._build_image_candidates(image)
+    def _build_primary_image_url(self, image: dict, session=None) -> str:
+        candidates = self._build_image_candidates(image, session=session)
         if not candidates:
             return ""
         primary_url = candidates[0]
         self._asset_candidates[primary_url] = candidates
         return primary_url
 
-    def _build_image_candidates(self, image: dict) -> list[str]:
+    def _build_image_candidates(self, image: dict, session=None) -> list[str]:
         image_hash = str((image or {}).get("hash") or "").strip()
         name = str((image or {}).get("name") or "").strip()
         if not image_hash or not name or "." not in name:
             return []
-        path = self._full_path_from_hash(image_hash)
-        host = self._webp_host_for_hash(image_hash)
+        path = self._full_path_from_hash(image_hash, session=session)
+        host = self._webp_host_for_hash(image_hash, session=session)
         candidates = [f"https://{host}/{path}.webp"]
 
         # Preserve order while dropping duplicates.
