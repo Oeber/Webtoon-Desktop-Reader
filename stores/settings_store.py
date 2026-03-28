@@ -48,6 +48,7 @@ VIEWER_TEXT_COLOR_KEY = "viewer_text_color"
 VIEWER_MANGA_LAYOUT_KEY = "viewer_manga_layout"
 VIEWER_MANGA_SPREAD_PARITY_KEY = "viewer_manga_spread_parity"
 VIEWER_MANGA_FIT_MODE_KEY = "viewer_manga_fit_mode"
+VIEWER_NAV_DIRECTION_KEY = "viewer_nav_direction"
 DISCOVERY_DEFAULT_PROVIDER_KEY = "discovery_default_provider"
 LIBRARY_PATH_KEY = "library_path"
 

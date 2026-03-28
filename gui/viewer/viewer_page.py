@@ -67,6 +67,7 @@ from stores.settings_store import (
     VIEWER_MANGA_LAYOUT_KEY,
     VIEWER_MANGA_SPREAD_PARITY_KEY,
     VIEWER_MANGA_FIT_MODE_KEY,
+    VIEWER_NAV_DIRECTION_KEY,
     load_setting,
     save_setting,
     save_settings,
@@ -230,7 +231,7 @@ class TextReaderSettingsDialog(QDialog):
 
 
 class MangaReaderSettingsDialog(QDialog):
-    def __init__(self, *, layout_mode: str, spread_parity: str, fit_mode: str, parent=None):
+    def __init__(self, *, layout_mode: str, spread_parity: str, fit_mode: str, nav_direction: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Manga Reader Settings")
         self.setModal(True)
@@ -268,6 +269,7 @@ class MangaReaderSettingsDialog(QDialog):
         self._layout_mode = "double" if str(layout_mode or "").strip().casefold() == "double" else "single"
         self._spread_parity = "even" if str(spread_parity or "").strip().casefold() == "even" else "odd"
         self._fit_mode = "height" if str(fit_mode or "").strip().casefold() == "height" else "width"
+        self._nav_direction = "rtl" if str(nav_direction or "").strip().casefold() == "rtl" else "ltr"
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -290,8 +292,10 @@ class MangaReaderSettingsDialog(QDialog):
         self.mode_combo.addItem("Single Page", ("single", "odd"))
         self.mode_combo.addItem("Double Page (Odds)", ("double", "odd"))
         self.mode_combo.addItem("Double Page (Evens)", ("double", "even"))
-        selected_value = (self._layout_mode, self._spread_parity)
-        self.mode_combo.setCurrentIndex(max(0, self.mode_combo.findData(selected_value)))
+        if self._layout_mode == "double":
+            self.mode_combo.setCurrentIndex(2 if self._spread_parity == "even" else 1)
+        else:
+            self.mode_combo.setCurrentIndex(0)
         page_row.addWidget(self.mode_combo)
         page_layout.addLayout(page_row)
         layout.addWidget(page_group)
@@ -311,6 +315,22 @@ class MangaReaderSettingsDialog(QDialog):
         fit_row.addWidget(self.fit_combo)
         fit_layout.addLayout(fit_row)
         layout.addWidget(fit_group)
+
+        nav_group = QGroupBox("Navigation")
+        nav_layout = QVBoxLayout(nav_group)
+        nav_layout.setContentsMargins(12, 12, 12, 12)
+        nav_layout.setSpacing(8)
+        nav_row = QHBoxLayout()
+        nav_row.addWidget(QLabel("Direction"))
+        nav_row.addStretch()
+        self.nav_combo = QComboBox()
+        self.nav_combo.setFixedWidth(170)
+        self.nav_combo.addItem("Left to Right", "ltr")
+        self.nav_combo.addItem("Right to Left", "rtl")
+        self.nav_combo.setCurrentIndex(max(0, self.nav_combo.findData(self._nav_direction)))
+        nav_row.addWidget(self.nav_combo)
+        nav_layout.addLayout(nav_row)
+        layout.addWidget(nav_group)
 
         note = QLabel("Single-page mode keeps the active page centered.")
         note.setWordWrap(True)
@@ -356,6 +376,7 @@ class MangaReaderSettingsDialog(QDialog):
             "layout_mode": str(layout_mode),
             "spread_parity": str(spread_parity),
             "fit_mode": str(self.fit_combo.currentData() or "width"),
+            "nav_direction": str(self.nav_combo.currentData() or "ltr"),
         }
 
 
@@ -436,6 +457,7 @@ class ViewerPage(QWidget):
         self._manga_layout_mode = self._normalize_manga_layout(load_setting(VIEWER_MANGA_LAYOUT_KEY, "single"))
         self._manga_spread_parity = self._normalize_manga_spread_parity(load_setting(VIEWER_MANGA_SPREAD_PARITY_KEY, "odd"))
         self._manga_fit_mode = self._normalize_manga_fit_mode(load_setting(VIEWER_MANGA_FIT_MODE_KEY, "width"))
+        self._nav_direction = self._normalize_nav_direction(load_setting(VIEWER_NAV_DIRECTION_KEY, "ltr"))
         self._text_font_size = int(load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
         self._text_page_color = str(load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
         self._text_color = str(load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
@@ -469,8 +491,8 @@ class ViewerPage(QWidget):
         self.top_bar_widget.installEventFilter(self)
 
         self.back_button = self._make_toolbar_button("fa5s.arrow-left", "(Esc) Back to details", self.go_back)
-        self.prev_button = self._make_toolbar_button("fa5s.chevron-left", "([) Previous chapter", self.prev_chapter)
-        self.next_button = self._make_toolbar_button("fa5s.chevron-right", "] Next chapter", self.next_chapter)
+        self.prev_button = self._make_toolbar_button("fa5s.chevron-left", "", self._on_left_nav_button)
+        self.next_button = self._make_toolbar_button("fa5s.chevron-right", "", self._on_right_nav_button)
 
         self.chapter_selector = QComboBox()
         self.chapter_selector.setFocusPolicy(Qt.NoFocus)
@@ -495,6 +517,7 @@ class ViewerPage(QWidget):
         self.manga_settings_btn = self._make_toolbar_button("fa5s.book-open", "(T) Manga reader settings", self._open_manga_reader_settings)
         self.anchors_btn = self._make_toolbar_button("fa5s.map-pin", "(A) Show or hide saved scene anchors on the mini-map", self._toggle_scene_anchors, checkable=True)
         self.anchors_btn.setChecked(self._scene_anchors_visible)
+        self._sync_horizontal_navigation_ui()
         self.zoom_out_btn = self._make_toolbar_button("fa5s.search-minus", "(-) Decrease image width", self._zoom_out)
         self.zoom_in_btn = self._make_toolbar_button("fa5s.search-plus", "(+) Increase image width", self._zoom_in)
 
@@ -967,6 +990,7 @@ class ViewerPage(QWidget):
             layout_mode=self._manga_layout_mode,
             spread_parity=self._manga_spread_parity,
             fit_mode=self._manga_fit_mode,
+            nav_direction=self._nav_direction,
             parent=self,
         )
         if dialog.exec() != QDialog.Accepted:
@@ -975,19 +999,24 @@ class ViewerPage(QWidget):
         next_mode = self._normalize_manga_layout(values.get("layout_mode"))
         next_parity = self._normalize_manga_spread_parity(values.get("spread_parity"))
         next_fit = self._normalize_manga_fit_mode(values.get("fit_mode"))
+        next_nav_direction = self._normalize_nav_direction(values.get("nav_direction"))
         changed = (
             (next_mode != self._manga_layout_mode)
             or (next_parity != self._manga_spread_parity)
             or (next_fit != self._manga_fit_mode)
+            or (next_nav_direction != self._nav_direction)
         )
         self._manga_layout_mode = next_mode
         self._manga_spread_parity = next_parity
         self._manga_fit_mode = next_fit
+        self._nav_direction = next_nav_direction
         if changed:
+            save_setting(VIEWER_NAV_DIRECTION_KEY, self._nav_direction)
             if self.webtoon:
                 view_mode_value = "double_even" if self._manga_layout_mode == "double" and self._manga_spread_parity == "even" else self._manga_layout_mode
                 self.settings_store.set_manga_view_mode(self.webtoon.name, view_mode_value)
                 self.settings_store.set_manga_fit_mode(self.webtoon.name, self._manga_fit_mode)
+            self._sync_horizontal_navigation_ui()
             if self._is_manga_image_mode() and self.image_labels:
                 self.rescale_images(previous_zoom=self._zoom)
             self._sync_manga_page_visibility()
@@ -1135,6 +1164,8 @@ class ViewerPage(QWidget):
             self._manga_layout_mode = default_layout
             self._manga_spread_parity = default_parity
         self._manga_fit_mode = self._normalize_manga_fit_mode(self.settings_store.get_manga_fit_mode(webtoon.name) or default_fit)
+        self._nav_direction = self._normalize_nav_direction(load_setting(VIEWER_NAV_DIRECTION_KEY, "ltr"))
+        self._sync_horizontal_navigation_ui()
         self._text_font_size = int(self.settings_store.get_text_font_size(webtoon.name) or load_setting(VIEWER_TEXT_SIZE_KEY, 18) or 18)
         self._text_page_color = str(self.settings_store.get_text_page_color(webtoon.name) or load_setting(VIEWER_TEXT_PAGE_COLOR_KEY, "#140e0c") or "#140e0c")
         self._text_color = str(self.settings_store.get_text_color(webtoon.name) or load_setting(VIEWER_TEXT_COLOR_KEY, "#f6ece5") or "#f6ece5")
@@ -1151,6 +1182,37 @@ class ViewerPage(QWidget):
     @staticmethod
     def _normalize_manga_fit_mode(value) -> str:
         return "height" if str(value or "").strip().casefold() == "height" else "width"
+
+    @staticmethod
+    def _normalize_nav_direction(value) -> str:
+        return "rtl" if str(value or "").strip().casefold() == "rtl" else "ltr"
+
+    def _horizontal_forward_key(self):
+        return Qt.Key_Left if self._nav_direction == "rtl" else Qt.Key_Right
+
+    def _horizontal_back_key(self):
+        return Qt.Key_Right if self._nav_direction == "rtl" else Qt.Key_Left
+
+    def _sync_horizontal_navigation_ui(self) -> None:
+        if not hasattr(self, "prev_button") or not hasattr(self, "next_button"):
+            return
+        left_action = "Next chapter" if self._nav_direction == "rtl" else "Previous chapter"
+        right_action = "Previous chapter" if self._nav_direction == "rtl" else "Next chapter"
+        self.prev_button.setToolTip(f"([) {left_action}")
+        self.next_button.setToolTip(f"] {right_action}")
+        self.update_nav_buttons()
+
+    def _on_left_nav_button(self):
+        if self._nav_direction == "rtl":
+            self.next_chapter()
+        else:
+            self.prev_chapter()
+
+    def _on_right_nav_button(self):
+        if self._nav_direction == "rtl":
+            self.prev_chapter()
+        else:
+            self.next_chapter()
 
     def _is_manga_image_mode(self) -> bool:
         if self._chapter_mode != "image" or not self.webtoon:
@@ -2773,8 +2835,18 @@ class ViewerPage(QWidget):
         self._sync_chapter_selector_visibility()
 
     def update_nav_buttons(self):
-        self.prev_button.setEnabled(self._prev_chapter_index(self.current_chapter_index) is not None)
-        self.next_button.setEnabled(self._next_chapter_index(self.current_chapter_index) is not None)
+        if not getattr(self, "webtoon", None):
+            self.prev_button.setEnabled(False)
+            self.next_button.setEnabled(False)
+            return
+        prev_available = self._prev_chapter_index(self.current_chapter_index) is not None
+        next_available = self._next_chapter_index(self.current_chapter_index) is not None
+        if self._nav_direction == "rtl":
+            self.prev_button.setEnabled(next_available)
+            self.next_button.setEnabled(prev_available)
+        else:
+            self.prev_button.setEnabled(prev_available)
+            self.next_button.setEnabled(next_available)
 
     def _clear_zoom_override(self):
         if not self.webtoon:
@@ -2901,10 +2973,12 @@ class ViewerPage(QWidget):
         move_up = ((not manga_mode) and key in (Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp)) or (
             key == Qt.Key_Space and bool(modifiers & Qt.ShiftModifier)
         )
-        page_forward = manga_mode and key in (Qt.Key_Right, Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown)
-        page_back = manga_mode and key in (Qt.Key_Left, Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp)
-        chapter_forward = key in ((Qt.Key_BracketRight,) if manga_mode else (Qt.Key_Right, Qt.Key_BracketRight))
-        chapter_back = key in ((Qt.Key_BracketLeft,) if manga_mode else (Qt.Key_Left, Qt.Key_BracketLeft))
+        forward_key = self._horizontal_forward_key()
+        back_key = self._horizontal_back_key()
+        page_forward = manga_mode and key in (forward_key, Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown)
+        page_back = manga_mode and key in (back_key, Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp)
+        chapter_forward = key in ((Qt.Key_BracketRight,) if manga_mode else (forward_key, Qt.Key_BracketRight))
+        chapter_back = key in ((Qt.Key_BracketLeft,) if manga_mode else (back_key, Qt.Key_BracketLeft))
         session_keys = {
             Qt.Key_M,
             Qt.Key_P,

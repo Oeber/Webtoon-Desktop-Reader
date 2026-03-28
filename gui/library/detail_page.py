@@ -9,7 +9,7 @@ from core.app_logging import get_logger
 from requests.exceptions import RequestException
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QScrollArea, QToolButton, QMessageBox, QGridLayout, QFrame
+    QPushButton, QScrollArea, QToolButton, QMessageBox, QGridLayout, QFrame, QSizePolicy
 )
 from PySide6.QtGui import QIcon, QPixmap, QPainter, QPainterPath, QFont, QPen, QColor, QImageReader, QImage
 from PySide6.QtCore import Qt, QPoint, QSize, QTimer, QObject, Signal, QCoreApplication
@@ -275,32 +275,20 @@ class MangaPageTile(QFrame):
         self._preview_loaded = False
         self._scene_count = 0
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(
-            f"""
-            QFrame {{
-                background: {SURFACE};
-                border: 1px solid {BORDER};
-                border-radius: 14px;
-            }}
-            QFrame:hover {{
-                border-color: #ff8a7a;
-                background: #211615;
-            }}
-            QLabel {{
-                background: transparent;
-                color: {TEXT};
-            }}
-            """
-        )
+        self.setFrameShape(QFrame.NoFrame)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setFixedSize(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
+        self.setStyleSheet("QFrame { background: transparent; border: none; }")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
         self.preview_label = QLabel()
         self.preview_label.setAlignment(Qt.AlignCenter)
         self.preview_label.setFixedSize(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT)
         self.preview_label.setPixmap(_preview_placeholder_pixmap(self.PREVIEW_WIDTH, self.PREVIEW_HEIGHT))
+        self._apply_preview_frame()
         layout.addWidget(self.preview_label, 0, Qt.AlignCenter)
 
     def set_preview_pixmap(self, pixmap: QPixmap) -> None:
@@ -315,42 +303,20 @@ class MangaPageTile(QFrame):
 
     def set_scene_count(self, count: int) -> None:
         self._scene_count = max(0, int(count))
-        if self._scene_count > 0:
-            self.setStyleSheet(
-                f"""
-                QFrame {{
-                    background: {SURFACE};
-                    border: 1px solid #c5352f;
-                    border-radius: 14px;
-                }}
-                QFrame:hover {{
-                    border-color: #ff8a7a;
-                    background: #211615;
-                }}
-                QLabel {{
-                    background: transparent;
-                    color: {TEXT};
-                }}
-                """
-            )
-        else:
-            self.setStyleSheet(
-                f"""
-                QFrame {{
-                    background: {SURFACE};
-                    border: 1px solid {BORDER};
-                    border-radius: 14px;
-                }}
-                QFrame:hover {{
-                    border-color: #ff8a7a;
-                    background: #211615;
-                }}
-                QLabel {{
-                    background: transparent;
-                    color: {TEXT};
-                }}
-                """
-            )
+        self._apply_preview_frame()
+
+    def _apply_preview_frame(self) -> None:
+        border = "2px solid #c5352f" if self._scene_count > 0 else "none"
+        self.preview_label.setStyleSheet(
+            f"""
+            QLabel {{
+                background: transparent;
+                color: {TEXT};
+                border: {border};
+                border-radius: 12px;
+            }}
+            """
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -406,7 +372,7 @@ class DetailPage(QWidget):
         self._manga_preview_active = False
         self._manga_preview_chapter = ""
         self._manga_preview_index = -1
-        self._manga_preview_columns = 6
+        self._manga_preview_columns = 1
         self._manga_preview_tiles: list[MangaPageTile] = []
         self._manga_preview_pending_tiles: list[tuple[int, str, int, int, int]] = []
         self._manga_preview_queue: list[int] = []
@@ -703,9 +669,14 @@ class DetailPage(QWidget):
         self.manga_preview_grid.setContentsMargins(0, 8, 0, 8)
         self.manga_preview_grid.setHorizontalSpacing(12)
         self.manga_preview_grid.setVerticalSpacing(12)
+        self.manga_preview_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.manga_preview_scroll.setWidget(self.manga_preview_content)
         self.manga_preview_panel.hide()
         root.addWidget(self.manga_preview_panel, 1)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_manga_preview_layout()
 
     def _chapter_selection_visible(self) -> bool:
         return bool(self.selected_chapters)
@@ -1668,6 +1639,35 @@ class DetailPage(QWidget):
             if widget is not None:
                 widget.deleteLater()
 
+    def _manga_preview_column_count(self) -> int:
+        viewport = self.manga_preview_scroll.viewport()
+        available_width = max(0, viewport.width())
+        tile_width = MangaPageTile.PREVIEW_WIDTH
+        spacing = self.manga_preview_grid.horizontalSpacing()
+        if available_width <= 0 or tile_width <= 0:
+            return 1
+        return max(1, int((available_width + spacing) // (tile_width + spacing)))
+
+    def _refresh_manga_preview_layout(self) -> None:
+        columns = self._manga_preview_column_count()
+        if columns == self._manga_preview_columns:
+            return
+        self._manga_preview_columns = columns
+        self._relayout_manga_preview_tiles()
+
+    def _relayout_manga_preview_tiles(self) -> None:
+        if not self._manga_preview_tiles:
+            return
+        columns = max(1, self._manga_preview_columns)
+        for tile in self._manga_preview_tiles:
+            self.manga_preview_grid.removeWidget(tile)
+        for index, tile in enumerate(self._manga_preview_tiles):
+            self.manga_preview_grid.addWidget(
+                tile,
+                index // columns,
+                index % columns,
+            )
+
     def _hide_manga_page_preview(self) -> None:
         self._manga_preview_chapter = ""
         self._manga_preview_index = -1
@@ -2023,7 +2023,7 @@ class DetailPage(QWidget):
         self._manga_preview_index = int(chapter_index)
         self._manga_preview_generation += 1
         self._clear_manga_preview_grid()
-        columns = self._manga_preview_columns
+        self._manga_preview_columns = self._manga_preview_column_count()
         scene_counts = self._scene_counts_for_preview_chapter(chapter)
         visible_pages = [(index, image_path) for index, image_path in enumerate(image_paths)]
         if self.show_only_scene_marks:
@@ -2037,6 +2037,7 @@ class DetailPage(QWidget):
         self._append_manga_preview_tiles(first_batch, chapter_index)
         self._manga_preview_pending_tiles = list(remaining)
         self._set_manga_preview_visible(True)
+        QTimer.singleShot(0, self._refresh_manga_preview_layout)
         self.manga_preview_scroll.verticalScrollBar().setValue(0)
         self._queue_manga_preview_indexes(self._visible_manga_preview_indexes(), prioritize=True)
         if self._manga_preview_pending_tiles:
@@ -2310,7 +2311,3 @@ class DetailPage(QWidget):
     def _start_from_beginning(self): 
         logger.info("Start from beginning requested for %s", self.webtoon.name if self.webtoon else "<none>")
         self.main_window.open_chapter(self.webtoon, 0)
-
-
-
-

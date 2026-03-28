@@ -90,6 +90,7 @@ from stores.settings_store import (
     VIEWER_MANGA_LAYOUT_KEY,
     VIEWER_MANGA_SPREAD_PARITY_KEY,
     VIEWER_MANGA_FIT_MODE_KEY,
+    VIEWER_NAV_DIRECTION_KEY,
     VIEWER_ZOOM_KEY,
     load_default_discovery_provider,
     load_library_path,
@@ -798,6 +799,21 @@ class SettingsPage(QWidget):
         manga_fit_row.addWidget(self.manga_fit_combo, 1)
         reader_layout.addLayout(manga_fit_row)
 
+        manga_nav_row = QHBoxLayout()
+        manga_nav_row.setSpacing(10)
+        manga_nav_text = QLabel("Navigation")
+        manga_nav_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        manga_nav_text.setFixedWidth(100)
+        self.manga_nav_combo = QComboBox()
+        self.manga_nav_combo.setStyleSheet(INPUT_STYLE)
+        self.manga_nav_combo.addItem("Left to Right", "ltr")
+        self.manga_nav_combo.addItem("Right to Left", "rtl")
+        self.manga_nav_combo.setCurrentIndex(max(0, self.manga_nav_combo.findData(str(load_setting(VIEWER_NAV_DIRECTION_KEY, "ltr") or "ltr"))))
+        self.manga_nav_combo.currentIndexChanged.connect(self._on_manga_navigation_defaults_changed)
+        manga_nav_row.addWidget(manga_nav_text)
+        manga_nav_row.addWidget(self.manga_nav_combo, 1)
+        reader_layout.addLayout(manga_nav_row)
+
         novel_defaults_label = QLabel("Novels")
         novel_defaults_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         reader_layout.addWidget(novel_defaults_label)
@@ -949,14 +965,20 @@ class SettingsPage(QWidget):
 
     def _apply_manga_defaults_to_active_viewer(self):
         viewer = getattr(self.main_window, "viewer", None)
-        if viewer is None or self._viewer_uses_saved_manga_overrides(viewer):
+        if viewer is None:
             return
+        uses_saved_manga_overrides = self._viewer_uses_saved_manga_overrides(viewer)
         layout_mode, spread_parity = self.manga_layout_combo.currentData() or ("single", "odd")
-        viewer._manga_layout_mode = viewer._normalize_manga_layout(layout_mode)
-        viewer._manga_spread_parity = viewer._normalize_manga_spread_parity(spread_parity)
-        viewer._manga_fit_mode = viewer._normalize_manga_fit_mode(self.manga_fit_combo.currentData() or "width")
+        if not uses_saved_manga_overrides:
+            viewer._manga_layout_mode = viewer._normalize_manga_layout(layout_mode)
+            viewer._manga_spread_parity = viewer._normalize_manga_spread_parity(spread_parity)
+            viewer._manga_fit_mode = viewer._normalize_manga_fit_mode(self.manga_fit_combo.currentData() or "width")
+        viewer._nav_direction = viewer._normalize_nav_direction(self.manga_nav_combo.currentData() or "ltr")
+        if hasattr(viewer, "_sync_horizontal_navigation_ui"):
+            viewer._sync_horizontal_navigation_ui()
         if getattr(viewer, "webtoon", None) and getattr(viewer, "image_labels", None) and viewer._is_manga_image_mode():
-            viewer.rescale_images(previous_zoom=viewer._zoom)
+            if not uses_saved_manga_overrides:
+                viewer.rescale_images(previous_zoom=viewer._zoom)
             viewer._sync_manga_page_visibility()
         viewer._apply_reader_session_state()
 
@@ -1088,6 +1110,7 @@ class SettingsPage(QWidget):
             VIEWER_MANGA_LAYOUT_KEY: "single",
             VIEWER_MANGA_SPREAD_PARITY_KEY: "odd",
             VIEWER_MANGA_FIT_MODE_KEY: "width",
+            VIEWER_NAV_DIRECTION_KEY: "ltr",
             VIEWER_ZOOM_KEY: 0.5,
         })
         save_setting(LIBRARY_USE_CATEGORIES_KEY, True)
@@ -1134,6 +1157,10 @@ class SettingsPage(QWidget):
         self.manga_fit_combo.blockSignals(True)
         self.manga_fit_combo.setCurrentIndex(0)
         self.manga_fit_combo.blockSignals(False)
+
+        self.manga_nav_combo.blockSignals(True)
+        self.manga_nav_combo.setCurrentIndex(0)
+        self.manga_nav_combo.blockSignals(False)
 
         self._refresh_reader_color_buttons()
 
@@ -1194,6 +1221,9 @@ class SettingsPage(QWidget):
             viewer._minimap_visible = True
             viewer._scene_anchors_visible = True
             viewer._text_progress_visible = True
+            viewer._nav_direction = viewer._normalize_nav_direction("ltr")
+            if hasattr(viewer, "_sync_horizontal_navigation_ui"):
+                viewer._sync_horizontal_navigation_ui()
             if hasattr(viewer, "nav_toggle"):
                 viewer.nav_toggle.blockSignals(True)
                 viewer.nav_toggle.setChecked(True)
@@ -1294,6 +1324,13 @@ class SettingsPage(QWidget):
             spread_parity,
             fit_mode,
         )
+        self._apply_manga_defaults_to_active_viewer()
+        self._set_settings_status("Reader settings saved.")
+
+    def _on_manga_navigation_defaults_changed(self, _index: int):
+        direction = str(self.manga_nav_combo.currentData() or "ltr")
+        save_setting(VIEWER_NAV_DIRECTION_KEY, direction)
+        logger.info("Viewer manga navigation default changed: %s", direction)
         self._apply_manga_defaults_to_active_viewer()
         self._set_settings_status("Reader settings saved.")
 

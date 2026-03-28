@@ -91,7 +91,7 @@ class DiscoverySeriesLoader(QObject):
 
 class DiscoveryDetailPage(QWidget):
     MANGA_PAGE_RENDER_BATCH_SIZE = 24
-    MANGA_PAGE_COLUMNS = 6
+    MANGA_PAGE_MIN_COLUMNS = 1
 
     def __init__(self, main_window):
         super().__init__()
@@ -113,6 +113,7 @@ class DiscoveryDetailPage(QWidget):
         self._manga_page_render_timer = QTimer(self)
         self._manga_page_render_timer.setSingleShot(True)
         self._manga_page_render_timer.timeout.connect(self._render_next_manga_page_batch)
+        self._manga_page_columns = self.MANGA_PAGE_MIN_COLUMNS
 
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -249,6 +250,10 @@ class DiscoveryDetailPage(QWidget):
         self.chapter_scroll.setWidget(self.chapter_list_widget)
         root.addWidget(self.chapter_scroll, 1)
         root.addWidget(self.batch_bar)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._refresh_manga_page_layout()
 
     def load_entry(self, entry: CatalogSeries):
         self.entry = entry
@@ -410,11 +415,13 @@ class DiscoveryDetailPage(QWidget):
             page_grid.setContentsMargins(0, 8, 0, 8)
             page_grid.setHorizontalSpacing(12)
             page_grid.setVerticalSpacing(12)
+            page_grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
             self._manga_page_grid = page_grid
             self._pending_manga_page_entries = list(page_entries)
             self._manga_page_render_token += 1
             self.chapter_list_layout.addWidget(page_grid_host)
             self._manga_page_render_timer.start(0)
+            QTimer.singleShot(0, self._refresh_manga_page_layout)
             self._sync_selection_state()
             return
 
@@ -465,12 +472,46 @@ class DiscoveryDetailPage(QWidget):
         self._manga_page_grid = None
         self._manga_page_render_token += 1
 
+    def _manga_page_column_count(self) -> int:
+        viewport = self.chapter_scroll.viewport()
+        available_width = max(0, viewport.width())
+        tile_width = MangaPageTile.PREVIEW_WIDTH
+        spacing = 12
+        if available_width <= 0 or tile_width <= 0:
+            return self.MANGA_PAGE_MIN_COLUMNS
+        columns = max(1, (available_width + spacing) // (tile_width + spacing))
+        return max(self.MANGA_PAGE_MIN_COLUMNS, int(columns))
+
+    def _refresh_manga_page_layout(self) -> None:
+        columns = self._manga_page_column_count()
+        if columns == self._manga_page_columns:
+            return
+        self._manga_page_columns = columns
+        self._relayout_manga_page_grid()
+
+    def _relayout_manga_page_grid(self) -> None:
+        grid = self._manga_page_grid
+        if grid is None:
+            return
+        columns = max(1, self._manga_page_columns)
+        widgets = []
+        for index in range(grid.count()):
+            item = grid.itemAt(index)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widgets.append(widget)
+        for widget in widgets:
+            grid.removeWidget(widget)
+        for index, widget in enumerate(widgets):
+            grid.addWidget(widget, index // columns, index % columns, Qt.AlignTop)
+
     def _render_next_manga_page_batch(self) -> None:
         grid = self._manga_page_grid
         if grid is None or not self._pending_manga_page_entries:
             return
 
-        columns = self.MANGA_PAGE_COLUMNS
+        columns = self._manga_page_column_count()
+        self._manga_page_columns = columns
         start_index = grid.count()
         batch = self._pending_manga_page_entries[:self.MANGA_PAGE_RENDER_BATCH_SIZE]
         self._pending_manga_page_entries = self._pending_manga_page_entries[self.MANGA_PAGE_RENDER_BATCH_SIZE:]
@@ -666,16 +707,3 @@ class DiscoveryDetailPage(QWidget):
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"
-
-
-
-
-
-
-
-
-
-
-
-
-
