@@ -37,6 +37,22 @@ class DownloadHistoryStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_entry(self, kind: str, name: str) -> dict | None:
+        normalized_kind = str(kind or "").strip()
+        normalized_name = str(name or "").strip()
+        if not normalized_kind or not normalized_name:
+            return None
+        with self._lock:
+            row = get_connection().execute(
+                """
+                SELECT kind, name, source_url, status, last_error, resume_payload, created_at, updated_at
+                FROM download_history
+                WHERE kind = ? AND name = ?
+                """,
+                (normalized_kind, normalized_name),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
     def upsert(self, kind: str, name: str, status: str, source_url: str = "", last_error: str = ""):
         name = (name or "").strip()
         if not kind or not name:

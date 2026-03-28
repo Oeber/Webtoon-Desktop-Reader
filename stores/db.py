@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -278,6 +278,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         9: _migration_9_add_content_type_to_webtoon_settings,
         10: _migration_10_add_manga_reader_settings,
         11: _migration_11_add_text_reader_settings,
+        12: _migration_12_create_notifications,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -359,6 +360,26 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_scene_bookmarks_lookup
             ON scene_bookmarks(webtoon_name, chapter, updated_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS notifications (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind           TEXT NOT NULL,
+            title          TEXT NOT NULL,
+            message        TEXT NOT NULL DEFAULT '',
+            severity       TEXT NOT NULL DEFAULT 'info',
+            webtoon_name   TEXT NOT NULL DEFAULT '',
+            source_url     TEXT NOT NULL DEFAULT '',
+            site_name      TEXT NOT NULL DEFAULT '',
+            action_payload TEXT NOT NULL DEFAULT '',
+            is_read        INTEGER NOT NULL DEFAULT 0,
+            created_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_created_at
+            ON notifications(created_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_is_read
+            ON notifications(is_read, created_at DESC, id DESC);
         """
     )
 
@@ -485,6 +506,32 @@ def _migration_11_add_text_reader_settings(conn: sqlite3.Connection) -> None:
     _add_column_if_missing(conn, "webtoon_settings", "text_font_size", "INTEGER")
     _add_column_if_missing(conn, "webtoon_settings", "text_page_color", "TEXT")
     _add_column_if_missing(conn, "webtoon_settings", "text_color", "TEXT")
+
+
+def _migration_12_create_notifications(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS notifications (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            kind           TEXT NOT NULL,
+            title          TEXT NOT NULL,
+            message        TEXT NOT NULL DEFAULT '',
+            severity       TEXT NOT NULL DEFAULT 'info',
+            webtoon_name   TEXT NOT NULL DEFAULT '',
+            source_url     TEXT NOT NULL DEFAULT '',
+            site_name      TEXT NOT NULL DEFAULT '',
+            action_payload TEXT NOT NULL DEFAULT '',
+            is_read        INTEGER NOT NULL DEFAULT 0,
+            created_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_created_at
+            ON notifications(created_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_notifications_is_read
+            ON notifications(is_read, created_at DESC, id DESC);
+        """
+    )
 
 
 def _add_column_if_missing(conn: sqlite3.Connection, table_name: str, column_name: str, column_def: str) -> None:
