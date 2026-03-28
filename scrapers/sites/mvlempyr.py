@@ -380,6 +380,18 @@ class MvlempyrScraper(BaseScraper):
             if len(best) >= 2:
                 return best
 
+            # If the page exposes a believable total, prefer synthesizing from it
+            # instead of paying for chapter-existence probes during lightweight loads.
+            if total_hint and total_hint > len(best) and self._can_synthesize_chapters(series_id):
+                synthesized = self._synthesize_chapters(series_id, total_hint)
+                debug_payload["synthesized_from_total_hint"] = len(synthesized)
+                logger.info(
+                    "MVLEMPYR synthesized chapter list from total hint series_id=%s total=%s",
+                    series_id,
+                    len(synthesized),
+                )
+                return synthesized
+
             # Only probe/synthesize when the real result is weak.
             if self._can_synthesize_chapters(series_id):
                 logger.info("MVLEMPYR chapter list weak for series_id=%s; probing chapter count", series_id)
