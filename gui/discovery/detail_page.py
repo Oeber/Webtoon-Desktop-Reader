@@ -72,7 +72,10 @@ class DiscoverySeriesLoader(QObject):
                 scraper = get_scraper(url)
                 series_url = url if not scraper.is_chapter_url(url) else scraper.series_url_from_chapter_url(url)
                 series = scraper.get_series_info(series_url)
-                if str(getattr(series, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga":
+                if (
+                    str(getattr(series, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
+                    and len(getattr(series, "chapters", []) or []) == 1
+                ):
                     for chapter in getattr(series, "chapters", []) or []:
                         try:
                             chapter.pages = scraper.get_chapter_pages(chapter.url)
@@ -359,16 +362,18 @@ class DiscoveryDetailPage(QWidget):
         self.status_label.hide()
         self.download_all_btn.setEnabled(True)
         self._refresh_mode_state()
-        self._rebuild_chapter_list()
-
-    def _visible_chapters(self):
+        self._rebuild_chapter_list()    def _visible_chapters(self):
         chapters = list(getattr(self.series, "chapters", []) or [])
         if self.hide_specials_checkbox.isChecked():
             chapters = [chapter for chapter in chapters if not SPECIAL_CHAPTER_RE.search(chapter.title or "")]
         return chapters
 
     def _is_manga_series(self) -> bool:
-        return str(getattr(self.series, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
+        if self.series is None:
+            return False
+        if str(getattr(self.series, "content_type", "webtoon") or "webtoon").strip().casefold() != "manga":
+            return False
+        return len(getattr(self.series, "chapters", []) or []) == 1
 
     def _visible_manga_pages(self):
         pages = []
@@ -707,3 +712,4 @@ class DiscoveryDetailPage(QWidget):
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"
+
