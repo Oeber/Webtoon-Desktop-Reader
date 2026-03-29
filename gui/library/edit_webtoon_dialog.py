@@ -41,11 +41,11 @@ from PySide6.QtWidgets import (
 from gui.library.thumbnail_dialog import ThumbnailDialog
 from gui.settings.scraper_config_dialog import ScraperConfigDialog
 from scrapers.registry import get_all_scrapers_including_disabled
+from stores.scraper_settings_store import load_scraper_default_config
 from stores.settings_store import (
     LIBRARY_USE_CATEGORIES_KEY,
     VIEWER_ZOOM_KEY,
     load_library_path,
-    load_scraper_default_config,
     load_setting,
 )
 from library.library_categories import load_custom_categories, save_custom_categories
@@ -485,8 +485,3 @@ class EditWebtoonDialog(QDialog):
 
         self.deleted = True
         self.accept()
-
-
-
-
-

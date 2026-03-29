@@ -8,7 +8,7 @@ from scrapers.base import ScraperError
 from scrapers.discovery_base import BaseDiscoveryProvider
 from scrapers.models import CatalogPage, CatalogSeries
 from scrapers.sites.mangadex import MangaDexScraper
-from stores.settings_store import load_scraper_default_config
+from stores.scraper_settings_store import load_scraper_default_config
 
 
 class MangaDexDiscoveryProvider(BaseDiscoveryProvider):

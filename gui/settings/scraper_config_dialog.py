@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QPushButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -33,12 +34,26 @@ from gui.common.styles import (
 
 class ScraperConfigDialog(QDialog):
 
-    def __init__(self, scraper_class, current_config: dict | None = None, parent=None):
+    def __init__(
+        self,
+        scraper_class,
+        current_config: dict | None = None,
+        *,
+        reset_values: dict | None = None,
+        reset_label: str = "",
+        parent=None,
+    ):
         super().__init__(parent)
         self.scraper_class = scraper_class
         self.fields = list(scraper_class.get_source_config_fields())
         self._widgets: dict[str, object] = {}
         self._defaults = scraper_class.normalize_source_config(current_config)
+        self._reset_values = (
+            scraper_class.normalize_source_config(reset_values)
+            if isinstance(reset_values, dict)
+            else None
+        )
+        self._reset_label = str(reset_label or "").strip()
 
         display_name = str(getattr(scraper_class, "site_display_name", "") or getattr(scraper_class, "site_name", "Source")).strip()
         self.setWindowTitle(f"{display_name} Settings")
@@ -75,6 +90,11 @@ class ScraperConfigDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Save)
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self.accept)
+        if self._reset_values is not None and self._reset_label:
+            reset_button = QPushButton(self._reset_label)
+            reset_button.setStyleSheet(BUTTON_STYLE)
+            reset_button.clicked.connect(self._reset_to_defaults)
+            buttons.addButton(reset_button, QDialogButtonBox.ResetRole)
         buttons.button(QDialogButtonBox.Save).setText("Save")
         buttons.button(QDialogButtonBox.Save).setStyleSheet(BUTTON_STYLE)
         buttons.button(QDialogButtonBox.Cancel).setText("Cancel")
@@ -151,14 +171,13 @@ class ScraperConfigDialog(QDialog):
                 """
                 + VERTICAL_SCROLLBAR_STYLE
             )
-            selected = {str(item) for item in (value or [])}
             for option in field.options:
                 item = QListWidgetItem(option.label)
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setData(Qt.UserRole, option.value)
-                item.setCheckState(Qt.Checked if option.value in selected else Qt.Unchecked)
                 widget.addItem(item)
             widget.setMinimumHeight(max(120, min(220, 32 * max(3, widget.count()))))
+            self._set_widget_value(field, widget, value)
             return widget
 
         widget = QLineEdit()
@@ -166,6 +185,35 @@ class ScraperConfigDialog(QDialog):
         widget.setPlaceholderText(field.placeholder or "")
         widget.setText(str(value or ""))
         return widget
+
+    def _set_widget_value(self, field, widget, value):
+        if field.control == "boolean":
+            widget.setChecked(bool(value))
+            return
+        if field.control == "integer":
+            widget.setValue(int(value if value is not None else field.default or 0))
+            return
+        if field.control == "select":
+            index = widget.findData(value)
+            widget.setCurrentIndex(max(0, index))
+            return
+        if field.control == "multi_select":
+            selected = {str(item) for item in (value or [])}
+            for index in range(widget.count()):
+                item = widget.item(index)
+                option_value = str(item.data(Qt.UserRole) or "")
+                item.setCheckState(Qt.Checked if option_value in selected else Qt.Unchecked)
+            return
+        widget.setText(str(value or ""))
+
+    def _reset_to_defaults(self):
+        if self._reset_values is None:
+            return
+        for field in self.fields:
+            widget = self._widgets.get(field.key)
+            if widget is None:
+                continue
+            self._set_widget_value(field, widget, self._reset_values.get(field.key, field.default))
 
     def config_values(self) -> dict:
         values = {}

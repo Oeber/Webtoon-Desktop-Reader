@@ -71,7 +71,8 @@ from scrapers.registry import get_scraper, is_scraper_enabled_for_url
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
-from stores.settings_store import load_library_path, load_scraper_default_config
+from stores.scraper_settings_store import load_scraper_default_config
+from stores.settings_store import load_library_path
 
 logger = get_logger(__name__)
 

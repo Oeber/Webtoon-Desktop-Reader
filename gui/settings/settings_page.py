@@ -59,6 +59,11 @@ from scrapers.site_availability import (
 from scrapers.site_reliability import badge_for_site, record_site_check
 from core.site_session import site_base_url
 from gui.settings.scraper_config_dialog import ScraperConfigDialog
+from stores.scraper_settings_store import (
+    load_scraper_default_config,
+    reset_scraper_default_config,
+    save_scraper_default_config,
+)
 from stores.settings_store import (
     APP_UPDATE_CHECK_ON_STARTUP_KEY,
     APP_UPDATE_LAST_ASSET_URL_KEY,
@@ -97,11 +102,9 @@ from stores.settings_store import (
     VIEWER_ZOOM_KEY,
     load_default_discovery_provider,
     load_library_path,
-    load_scraper_default_config,
     load_setting,
     save_default_discovery_provider,
     save_library_path,
-    save_scraper_default_config,
     save_setting,
     save_settings,
 )
@@ -1470,10 +1473,20 @@ class SettingsPage(QWidget):
         if scraper is None or not scraper.get_source_config_fields():
             self._set_settings_status("This source does not expose custom settings.")
             return
-        dialog = ScraperConfigDialog(type(scraper), load_scraper_default_config(site_name), parent=self)
+        dialog = ScraperConfigDialog(
+            type(scraper),
+            load_scraper_default_config(site_name),
+            reset_values=type(scraper).default_source_config(),
+            reset_label="Reset Defaults",
+            parent=self,
+        )
         if dialog.exec() != QDialog.Accepted:
             return
-        save_scraper_default_config(site_name, dialog.config_values())
+        config = dialog.config_values()
+        if config == type(scraper).default_source_config():
+            reset_scraper_default_config(site_name)
+        else:
+            save_scraper_default_config(site_name, config)
         self._set_settings_status(f"Saved default settings for {getattr(scraper, 'site_display_name', site_name)}.")
 
     def _source_rows(self) -> list[dict]:
@@ -2260,20 +2273,3 @@ class SettingsPage(QWidget):
     def _open_releases_page(self):
         logger.info("Opening releases page url=%s", GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -1,4 +1,4 @@
-﻿import math
+import math
 import re
 import hashlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,7 +12,7 @@ from scrapers.base import ScraperError
 from scrapers.discovery_base import BaseDiscoveryProvider
 from scrapers.models import CatalogPage, CatalogSeries
 from scrapers.sites.hitomi import HitomiScraper
-from stores.settings_store import load_scraper_default_config
+from stores.scraper_settings_store import load_scraper_default_config
 
 logger = get_logger(__name__)
 
@@ -628,5 +628,3 @@ class HitomiDiscoveryProvider(BaseDiscoveryProvider):
         if self.THUMB_HOST_LEGACY in value:
             return value.replace(self.THUMB_HOST_LEGACY, self.THUMB_HOST_PRIMARY, 1)
         return value
-
-

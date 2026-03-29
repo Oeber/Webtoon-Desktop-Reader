@@ -49,7 +49,8 @@ from gui.downloader.download_widgets import SpinnerCircle, format_last_updated
 from gui.downloader.helpers import sanitize_webtoon_name
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
-from stores.settings_store import load_library_path, load_scraper_default_config
+from stores.scraper_settings_store import load_scraper_default_config
+from stores.settings_store import load_library_path
 from library.library_manager import scan_library
 from scrapers.base import ScraperDisabledError, ScraperError
 from scrapers.registry import get_scraper, get_scraper_site_name, is_scraper_enabled_for_url
@@ -1169,8 +1170,3 @@ class UpdatePage(DownloadHistoryPageBase):
             row = index // columns
             column = index % columns
             self._cards_layout.addWidget(widget, row, column, Qt.AlignTop | Qt.AlignLeft)
-
-
-
-
-

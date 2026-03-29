@@ -51,6 +51,12 @@ class AppSettingsStore:
         )
         conn.commit()
 
+    def delete(self, key: str):
+        key = self._normalize_key(key)
+        conn = get_connection()
+        conn.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        conn.commit()
+
     def _normalize_key(self, key) -> str:
         if key is None:
             return ""

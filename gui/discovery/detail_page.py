@@ -56,7 +56,7 @@ from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.models import CatalogSeries
 from scrapers.registry import get_scraper
-from stores.settings_store import load_scraper_default_config
+from stores.scraper_settings_store import load_scraper_default_config
 
 logger = get_logger(__name__)
 
@@ -715,4 +715,3 @@ class DiscoveryDetailPage(QWidget):
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"
-

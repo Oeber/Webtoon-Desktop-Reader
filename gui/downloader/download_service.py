@@ -17,7 +17,7 @@ from core.app_logging import get_logger
 from core.http_client import create_session, get as http_get
 from core.app_paths import data_path
 from stores.download_history_store import get_instance as get_download_history
-from stores.settings_store import load_scraper_default_config
+from stores.scraper_settings_store import load_scraper_default_config
 from gui.downloader.download_queue import get_global_download_queue
 from gui.downloader.download_runtime import DownloadCancelled, DownloadJob
 from gui.downloader.download_tracking import DownloadTrackingStore
@@ -1195,7 +1195,3 @@ class DownloadService(QObject):
                 except Exception as browser_exc:
                     logger.warning("Browser-backed chapter fetch failed for %s", chapter_url, exc_info=browser_exc)
             raise
-
-
-
-
