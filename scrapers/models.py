@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Any, List, Optional
 
 
 def normalize_catalog_text(value: str) -> str:
@@ -91,3 +91,22 @@ class CatalogPage:
     page: int
     entries: List[CatalogSeries] = field(default_factory=list)
     has_next_page: bool = False
+
+
+@dataclass(frozen=True)
+class ScraperConfigOption:
+    value: str
+    label: str
+
+
+@dataclass(frozen=True)
+class ScraperConfigField:
+    key: str
+    label: str
+    control: str
+    options: List[ScraperConfigOption] = field(default_factory=list)
+    default: Any = None
+    description: str = ""
+    placeholder: str = ""
+    min_value: int | None = None
+    max_value: int | None = None

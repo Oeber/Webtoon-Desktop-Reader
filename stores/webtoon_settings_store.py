@@ -281,6 +281,23 @@ class WebtoonSettingsStore:
     def set_source_title(self, webtoon_name: str, source_title: str):
         self._set_scalar(webtoon_name, "source_title", source_title, log_message="Saving source title for %s: %s")
 
+    def get_source_config(self, webtoon_name: str) -> dict:
+        payload = self._get_scalar(webtoon_name, "source_config", default=None, coerce=str)
+        if not payload:
+            return {}
+        try:
+            value = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def set_source_config(self, webtoon_name: str, config: dict | None):
+        payload = json.dumps(config if isinstance(config, dict) else {}, ensure_ascii=True, sort_keys=True)
+        self._set_scalar(webtoon_name, "source_config", payload, log_message="Saving source config for %s: %s")
+
+    def clear_source_config(self, webtoon_name: str):
+        self._clear_scalar(webtoon_name, "source_config", log_message="Clearing source config for %s")
+
     def get_content_type(self, webtoon_name: str) -> str | None:
         return self._get_scalar(webtoon_name, "content_type", default=None, coerce=str)
 
@@ -332,6 +349,7 @@ class WebtoonSettingsStore:
             self._clear_scalar(webtoon_name, "text_color", log_message="Clearing text color for %s")
             return
         self._set_scalar(webtoon_name, "text_color", normalized, log_message="Saving text color for %s: %s")
+
     def set_content_type(self, webtoon_name: str, content_type: str):
         normalized = str(content_type or "").strip() or None
         if normalized is None:
@@ -348,9 +366,13 @@ class WebtoonSettingsStore:
         source_series_id: str | None = None,
         source_title: str | None = None,
         content_type: str | None = None,
+        source_config: dict | None = None,
     ):
         conn = get_connection()
         self._ensure_row(conn, webtoon_name)
+        source_config_payload = None
+        if source_config is not None:
+            source_config_payload = json.dumps(source_config if isinstance(source_config, dict) else {}, ensure_ascii=True, sort_keys=True)
         conn.execute(
             """
             UPDATE webtoon_settings
@@ -358,10 +380,11 @@ class WebtoonSettingsStore:
                 source_site = COALESCE(?, source_site),
                 source_series_id = COALESCE(?, source_series_id),
                 source_title = COALESCE(?, source_title),
-                content_type = COALESCE(?, content_type)
+                content_type = COALESCE(?, content_type),
+                source_config = COALESCE(?, source_config)
             WHERE webtoon_name = ?
             """,
-            (source_url, source_site, source_series_id, source_title, content_type, webtoon_name),
+            (source_url, source_site, source_series_id, source_title, content_type, source_config_payload, webtoon_name),
         )
         conn.commit()
 
@@ -527,8 +550,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type, manga_view_mode, manga_fit_mode)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, source_config, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type, manga_view_mode, manga_fit_mode, text_font_size, text_page_color, text_color)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -540,6 +563,7 @@ class WebtoonSettingsStore:
                 row["source_site"],
                 row["source_series_id"],
                 row["source_title"],
+                row["source_config"],
                 row["category"],
                 row["bookmarked_chapters"],
                 row["last_update_at"],
@@ -550,6 +574,9 @@ class WebtoonSettingsStore:
                 row["content_type"],
                 row["manga_view_mode"],
                 row["manga_fit_mode"],
+                row["text_font_size"],
+                row["text_page_color"],
+                row["text_color"],
             ),
         )
         conn.execute(

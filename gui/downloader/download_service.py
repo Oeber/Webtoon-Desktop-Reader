@@ -17,6 +17,7 @@ from core.app_logging import get_logger
 from core.http_client import create_session, get as http_get
 from core.app_paths import data_path
 from stores.download_history_store import get_instance as get_download_history
+from stores.settings_store import load_scraper_default_config
 from gui.downloader.download_queue import get_global_download_queue
 from gui.downloader.download_runtime import DownloadCancelled, DownloadJob
 from gui.downloader.download_tracking import DownloadTrackingStore
@@ -543,6 +544,27 @@ class DownloadService(QObject):
     def _temp_root(self) -> str:
         return str(data_path("_download_temp"))
 
+    def _resolve_source_config_for_job(self, job: DownloadJob, source_url: str) -> dict:
+        normalized_url = str(source_url or "").rstrip("/")
+        candidates = []
+        for name in (job.active_name, job.preferred_name, job.initial_name):
+            normalized_name = sanitize_webtoon_name(name or "")
+            if normalized_name and normalized_name not in candidates:
+                candidates.append(normalized_name)
+        for webtoon_name in candidates:
+            saved_url = str(self.settings_store.get_source_url(webtoon_name) or "").rstrip("/")
+            if saved_url and saved_url == normalized_url:
+                source_config = self.settings_store.get_source_config(webtoon_name)
+                if source_config:
+                    return source_config
+                source_site = self.settings_store.get_source_site(webtoon_name) or ""
+                return load_scraper_default_config(source_site)
+        try:
+            scraper = get_scraper(source_url)
+        except Exception:
+            return {}
+        return load_scraper_default_config(getattr(scraper, "site_name", "") or "")
+
     def _custom_download(
         self,
         job: DownloadJob,
@@ -554,6 +576,7 @@ class DownloadService(QObject):
         from concurrent.futures import as_completed
 
         scraper = get_scraper(url)
+        scraper.apply_source_config(self._resolve_source_config_for_job(job, job.source_url or url))
         scraper_session = self._get_job_session(job)
         headers = scraper.get_request_headers(url)
         url_type = "chapter" if scraper.is_chapter_url(url) else "series"

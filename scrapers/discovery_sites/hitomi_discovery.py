@@ -11,6 +11,8 @@ from core.app_logging import get_logger
 from scrapers.base import ScraperError
 from scrapers.discovery_base import BaseDiscoveryProvider
 from scrapers.models import CatalogPage, CatalogSeries
+from scrapers.sites.hitomi import HitomiScraper
+from stores.settings_store import load_scraper_default_config
 
 logger = get_logger(__name__)
 
@@ -44,6 +46,25 @@ class HitomiDiscoveryProvider(BaseDiscoveryProvider):
     def __init__(self):
         self._galleries_index_version: str | None = None
 
+    def _configured_languages(self) -> list[str]:
+        scraper = HitomiScraper()
+        scraper.apply_source_config(load_scraper_default_config(self.site_name))
+        return scraper.selected_languages()
+
+    def _merge_language_gallery_ids(self, resolver) -> list[int]:
+        languages = self._configured_languages()
+        if not languages or languages == ["all"]:
+            return resolver("all")
+        merged = []
+        seen = set()
+        for language in languages:
+            for gallery_id in resolver(language):
+                if gallery_id in seen:
+                    continue
+                seen.add(gallery_id)
+                merged.append(gallery_id)
+        return merged
+
     def get_catalog_page(self, page: int = 1, search_query: str = "") -> CatalogPage:
         page = max(1, int(page))
         search_query = " ".join(str(search_query or "").split()).strip()
@@ -52,14 +73,22 @@ class HitomiDiscoveryProvider(BaseDiscoveryProvider):
         if search_query:
             return self._search_results_page(page, search_query)
 
-        session = requests.Session()
-        try:
-            gallery_ids, total_items = self._fetch_nozomi_page(session, page)
-        finally:
+        languages = self._configured_languages()
+        if languages == ["all"]:
+            session = requests.Session()
             try:
-                session.close()
-            except Exception:
-                pass
+                gallery_ids, total_items = self._fetch_nozomi_page(session, page)
+            finally:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+        else:
+            merged_ids = self._merge_language_gallery_ids(self._catalog_gallery_ids_for_language)
+            total_items = len(merged_ids)
+            start = (page - 1) * self.PAGE_SIZE
+            end = start + self.PAGE_SIZE
+            gallery_ids = merged_ids[start:end]
 
         entries = self._fetch_entries_for_gallery_ids(gallery_ids)
         last_page = math.ceil(total_items / self.PAGE_SIZE) if total_items > 0 else page
@@ -72,7 +101,10 @@ class HitomiDiscoveryProvider(BaseDiscoveryProvider):
 
     def _search_results_page(self, page: int, raw_query: str) -> CatalogPage:
         terms, state = self._parse_search_query(raw_query)
-        matched_ids = self._search_gallery_ids(terms, state)
+        if str(state.get("language") or "all") != "all":
+            matched_ids = self._search_gallery_ids(terms, state)
+        else:
+            matched_ids = self._merge_language_gallery_ids(lambda language: self._search_gallery_ids(terms, {**state, "language": language}))
         start = (page - 1) * self.PAGE_SIZE
         end = start + self.PAGE_SIZE
         page_ids = matched_ids[start:end]
@@ -208,6 +240,16 @@ class HitomiDiscoveryProvider(BaseDiscoveryProvider):
         if data is None:
             return []
         return self._get_galleryids_from_data(*data)
+
+    def _catalog_gallery_ids_for_language(self, language: str) -> list[int]:
+        return self._get_galleryids_from_nozomi_state({
+            "area": "all",
+            "tag": "index",
+            "language": str(language or "all"),
+            "orderby": "date",
+            "orderbykey": "added",
+            "orderbydirection": "desc",
+        })
 
     def _get_galleryids_from_nozomi_state(self, state: dict) -> list[int]:
         url = self._nozomi_address_from_state(state)

@@ -71,7 +71,7 @@ from scrapers.registry import get_scraper, is_scraper_enabled_for_url
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
-from stores.settings_store import load_library_path
+from stores.settings_store import load_library_path, load_scraper_default_config
 
 logger = get_logger(__name__)
 
@@ -143,7 +143,7 @@ class RemoteSeriesLoader(QObject):
         except RuntimeError:
             logger.info("Skipping remote series result delivery during detail-page shutdown")
 
-    def load(self, request_id: int, source_url: str):
+    def load(self, request_id: int, source_url: str, source_config: dict | None = None):
         def worker():
             if self._is_shutting_down():
                 return
@@ -152,6 +152,7 @@ class RemoteSeriesLoader(QObject):
                 if scraper is None:
                     raise ScraperError("This series source does not support chapter checks.")
                 series_url = source_url if not scraper.is_chapter_url(source_url) else scraper.series_url_from_chapter_url(source_url)
+                scraper.apply_source_config(source_config)
                 series = scraper.get_series_info(series_url)
                 self._emit_loaded(request_id, series, "")
             except ScraperError as e:
@@ -1132,7 +1133,9 @@ class DetailPage(QWidget):
 
         self._remote_status = "Checking for new chapters..."
         self._sync_remote_chapter_state(rebuild_chapter_list=False)
-        self._remote_series_loader.load(self._remote_request_id, source_url)
+        source_site = self.settings_store.get_source_site(self.webtoon.name) or getattr(scraper, "site_name", "") or ""
+        source_config = self.settings_store.get_source_config(self.webtoon.name) or load_scraper_default_config(source_site)
+        self._remote_series_loader.load(self._remote_request_id, source_url, source_config)
 
     def _on_remote_series_loaded(self, request_id: int, series, error: str):
         if request_id != self._remote_request_id or self.webtoon is None:

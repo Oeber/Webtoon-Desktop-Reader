@@ -8,6 +8,7 @@ from scrapers.base import ScraperError
 from scrapers.discovery_base import BaseDiscoveryProvider
 from scrapers.models import CatalogPage, CatalogSeries
 from scrapers.sites.mangadex import MangaDexScraper
+from stores.settings_store import load_scraper_default_config
 
 
 class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
@@ -37,8 +38,16 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
     )
     CONTENT_RATINGS = ("safe", "suggestive", "erotica", "pornographic")
 
-    _count_cache: dict[str, int | None] = {}
+    _count_cache: dict[tuple[str, tuple[str, ...]], int | None] = {}
     _count_cache_lock = threading.Lock()
+
+    def _configured_scraper(self) -> MangaDexScraper:
+        scraper = MangaDexScraper()
+        scraper.apply_source_config(load_scraper_default_config(self.site_name))
+        return scraper
+
+    def _configured_languages(self) -> list[str]:
+        return list(self._configured_scraper()._language_priority())
 
     def get_display_name(self) -> str:
         return self.site_display_name
@@ -52,7 +61,7 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
             "limit": self.PAGE_SIZE,
             "offset": offset,
             "includes[]": ["cover_art", "author", "artist"],
-            "availableTranslatedLanguage[]": ["en"],
+            "availableTranslatedLanguage[]": self._configured_languages(),
             "contentRating[]": list(self.CONTENT_RATINGS),
         }
         if query:
@@ -77,7 +86,7 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
             seen.add(key)
             entries.append(entry)
 
-        self._populate_english_counts(entries)
+        self._populate_language_counts(entries)
 
         return CatalogPage(
             site=self.site_name,
@@ -116,6 +125,7 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
         return self.DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1)
 
     def _catalog_entry_from_item(self, item: dict) -> CatalogSeries | None:
+        scraper = self._configured_scraper()
         manga_id = str(item.get("id") or "").strip()
         if not manga_id:
             return None
@@ -123,14 +133,14 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
         attributes = item.get("attributes") or {}
         relationships = item.get("relationships") or []
 
-        title = self._pick_localized_text(
+        title = scraper._pick_localized_text(
             attributes.get("title"),
             fallback_sources=attributes.get("altTitles") or [],
         )
         if not title:
             return None
 
-        description = self._pick_localized_text(attributes.get("description")) or None
+        description = scraper._pick_localized_text(attributes.get("description")) or None
         author_names = self._relationship_names(relationships, {"author"})
         if not author_names:
             author_names = self._relationship_names(relationships, {"artist"})
@@ -152,17 +162,19 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
             total_chapters=None,
         )
 
-    def _populate_english_counts(self, entries: list[CatalogSeries]) -> None:
+    def _populate_language_counts(self, entries: list[CatalogSeries]) -> None:
         uncached = []
+        language_key = tuple(self._configured_languages())
         for entry in entries:
             manga_id = str(getattr(entry, "series_id", "") or "").strip()
             if not manga_id:
                 continue
+            cache_key = (manga_id, language_key)
             with self._count_cache_lock:
-                if manga_id in self._count_cache:
-                    entry.total_chapters = self._count_cache[manga_id]
+                if cache_key in self._count_cache:
+                    entry.total_chapters = self._count_cache[cache_key]
                     continue
-            uncached.append((manga_id, entry))
+            uncached.append((manga_id, entry, cache_key))
 
         if not uncached:
             return
@@ -170,46 +182,25 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
         workers = min(self.COUNT_FETCH_WORKERS, len(uncached))
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futures = {
-                pool.submit(self._english_count_for_manga, manga_id): (manga_id, entry)
-                for manga_id, entry in uncached
+                pool.submit(self._language_count_for_manga, manga_id): (entry, cache_key)
+                for manga_id, entry, cache_key in uncached
             }
             for future in as_completed(futures):
-                manga_id, entry = futures[future]
+                entry, cache_key = futures[future]
                 count = None
                 try:
                     count = future.result()
                 except Exception:
                     count = None
                 with self._count_cache_lock:
-                    self._count_cache[manga_id] = count
+                    self._count_cache[cache_key] = count
                 entry.total_chapters = count
 
-    def _english_count_for_manga(self, manga_id: str) -> int | None:
-        scraper = MangaDexScraper()
-        chapters = scraper._fetch_chapters(manga_id, translated_language="en")
+    def _language_count_for_manga(self, manga_id: str) -> int | None:
+        scraper = self._configured_scraper()
+        chapters = scraper._fetch_chapters(manga_id, translated_languages=self._configured_languages())
         count = len(chapters)
         return count if count > 0 else None
-
-    def _pick_localized_text(self, mapping, fallback_sources: list[dict] | None = None) -> str:
-        candidates = []
-        if isinstance(mapping, dict):
-            candidates.append(mapping)
-        for item in fallback_sources or []:
-            if isinstance(item, dict):
-                candidates.append(item)
-
-        for language in self.LANGUAGE_PRIORITY:
-            for candidate in candidates:
-                value = " ".join(str(candidate.get(language) or "").split()).strip()
-                if value:
-                    return value
-
-        for candidate in candidates:
-            for value in candidate.values():
-                text = " ".join(str(value or "").split()).strip()
-                if text:
-                    return text
-        return ""
 
     def _relationship_attr(self, relationships: list[dict], expected_type: str, attr_name: str) -> str:
         for rel in relationships or []:

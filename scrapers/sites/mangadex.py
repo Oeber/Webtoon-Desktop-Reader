@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import requests
 
 from ..base import BaseScraper, ScraperError
-from ..models import ChapterInfo, PageInfo, SeriesInfo
+from ..models import ChapterInfo, PageInfo, ScraperConfigField, ScraperConfigOption, SeriesInfo
 
 
 class MangaDexScraper(BaseScraper):
@@ -19,6 +19,28 @@ class MangaDexScraper(BaseScraper):
     BASE = "https://mangadex.org"
     API_BASE = "https://api.mangadex.org"
     COVER_BASE = "https://uploads.mangadex.org/covers"
+    LANGUAGE_OPTIONS = (
+        ScraperConfigOption("en", "English"),
+        ScraperConfigOption("pt-br", "Portuguese (Brazil)"),
+        ScraperConfigOption("pt", "Portuguese"),
+        ScraperConfigOption("es-la", "Spanish (LATAM)"),
+        ScraperConfigOption("es", "Spanish"),
+        ScraperConfigOption("fr", "French"),
+        ScraperConfigOption("de", "German"),
+        ScraperConfigOption("it", "Italian"),
+        ScraperConfigOption("ja-ro", "Japanese (Romanized)"),
+        ScraperConfigOption("ja", "Japanese"),
+    )
+    source_config_fields = (
+        ScraperConfigField(
+            key="translated_language",
+            label="Language",
+            control="select",
+            options=list(LANGUAGE_OPTIONS),
+            default="en",
+            description="Pick the translated chapter language this saved MangaDex source should use.",
+        ),
+    )
     DEFAULT_LANGUAGE_PRIORITY = (
         "en",
         "pt-br",
@@ -38,6 +60,7 @@ class MangaDexScraper(BaseScraper):
     AT_HOME_MIN_INTERVAL_SECONDS = 0.35
 
     def __init__(self):
+        super().__init__()
         self._at_home_cache: dict[str, dict] = {}
         self._at_home_lock = threading.Lock()
         self._next_at_home_request_at = 0.0
@@ -97,8 +120,8 @@ class MangaDexScraper(BaseScraper):
             fallback_sources=attributes.get("altTitles") or [],
         ) or f"MangaDex {manga_id}"
         description = self._pick_localized_text(attributes.get("description")) or None
-        language = self._preferred_language(attributes.get("availableTranslatedLanguages") or [])
-        chapters = self._fetch_chapters(manga_id, translated_language=language, session=session)
+        languages = self._selected_feed_languages(attributes.get("availableTranslatedLanguages") or [])
+        chapters = self._fetch_chapters(manga_id, translated_languages=languages, session=session)
 
         cover_file = self._relationship_attr(relationships, "cover_art", "fileName")
         cover_url = f"{self.COVER_BASE}/{manga_id}/{cover_file}" if cover_file else None
@@ -193,7 +216,7 @@ class MangaDexScraper(BaseScraper):
                 pass
         return self.DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1)
 
-    def _fetch_chapters(self, manga_id: str, translated_language: str | None, session=None) -> list[ChapterInfo]:
+    def _fetch_chapters(self, manga_id: str, translated_languages: list[str] | None, session=None) -> list[ChapterInfo]:
         chapters_by_key: dict[str, tuple[dict, dict]] = {}
         offset = 0
         limit = 100
@@ -208,8 +231,8 @@ class MangaDexScraper(BaseScraper):
                 "order[readableAt]": "asc",
                 "includes[]": ["scanlation_group"],
             }
-            if translated_language:
-                params["translatedLanguage[]"] = [translated_language]
+            if translated_languages:
+                params["translatedLanguage[]"] = list(translated_languages)
             payload = self._api_get(f"/manga/{manga_id}/feed", params=params, session=session)
             items = payload.get("data") or []
             total = int(payload.get("total") or 0)
@@ -293,16 +316,32 @@ class MangaDexScraper(BaseScraper):
             return str(int(value))
         return format(value, "g")
 
-    def _preferred_language(self, languages: list[str]) -> str | None:
-        normalized = [
+    @classmethod
+    def normalize_source_config(cls, config: dict | None) -> dict:
+        incoming = dict(config or {}) if isinstance(config, dict) else {}
+        if "translated_language" not in incoming:
+            legacy = incoming.get("translated_languages")
+            if isinstance(legacy, list) and legacy:
+                incoming["translated_language"] = str(legacy[0] or "").strip()
+            elif isinstance(legacy, str) and legacy.strip():
+                incoming["translated_language"] = legacy.strip()
+        return super().normalize_source_config(incoming)
+
+    def _language_priority(self) -> tuple[str, ...]:
+        configured = str(self.get_source_config_value("translated_language", "en") or "").strip().casefold()
+        if configured:
+            return (configured,)
+        return self.DEFAULT_LANGUAGE_PRIORITY
+
+    def _selected_feed_languages(self, available_languages: list[str]) -> list[str]:
+        normalized_available = {
             str(language or "").strip().casefold()
-            for language in (languages or [])
+            for language in (available_languages or [])
             if str(language or "").strip()
-        ]
-        for candidate in self.DEFAULT_LANGUAGE_PRIORITY:
-            if candidate in normalized:
-                return candidate
-        return normalized[0] if normalized else None
+        }
+        priorities = list(self._language_priority())
+        matches = [language for language in priorities if language in normalized_available]
+        return matches or priorities
 
     def _pick_localized_text(self, mapping, fallback_sources: list[dict] | None = None) -> str:
         candidates = []
@@ -312,7 +351,7 @@ class MangaDexScraper(BaseScraper):
             if isinstance(item, dict):
                 candidates.append(item)
 
-        for language in self.DEFAULT_LANGUAGE_PRIORITY:
+        for language in self._language_priority():
             for candidate in candidates:
                 value = " ".join(str(candidate.get(language) or "").split()).strip()
                 if value:

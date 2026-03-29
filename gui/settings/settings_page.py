@@ -3,6 +3,8 @@ import os
 import re
 import time
 
+import qtawesome as qta
+
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QTextCursor
 from PySide6.QtWidgets import (
@@ -56,6 +58,7 @@ from scrapers.site_availability import (
 )
 from scrapers.site_reliability import badge_for_site, record_site_check
 from core.site_session import site_base_url
+from gui.settings.scraper_config_dialog import ScraperConfigDialog
 from stores.settings_store import (
     APP_UPDATE_CHECK_ON_STARTUP_KEY,
     APP_UPDATE_LAST_ASSET_URL_KEY,
@@ -94,9 +97,11 @@ from stores.settings_store import (
     VIEWER_ZOOM_KEY,
     load_default_discovery_provider,
     load_library_path,
+    load_scraper_default_config,
     load_setting,
     save_default_discovery_provider,
     save_library_path,
+    save_scraper_default_config,
     save_setting,
     save_settings,
 )
@@ -1451,6 +1456,26 @@ class SettingsPage(QWidget):
         if scrapers_status_label is not None:
             scrapers_status_label.setText(message)
 
+    def _scraper_for_site_name(self, site_name: str):
+        normalized_site_name = str(site_name or "").strip()
+        if not normalized_site_name:
+            return None
+        for scraper in get_all_scrapers_including_disabled():
+            if str(getattr(scraper, "site_name", "") or "").strip() == normalized_site_name:
+                return scraper
+        return None
+
+    def _open_source_config_defaults(self, site_name: str):
+        scraper = self._scraper_for_site_name(site_name)
+        if scraper is None or not scraper.get_source_config_fields():
+            self._set_settings_status("This source does not expose custom settings.")
+            return
+        dialog = ScraperConfigDialog(type(scraper), load_scraper_default_config(site_name), parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        save_scraper_default_config(site_name, dialog.config_values())
+        self._set_settings_status(f"Saved default settings for {getattr(scraper, 'site_display_name', site_name)}.")
+
     def _source_rows(self) -> list[dict]:
         rows_by_site = {}
 
@@ -1495,6 +1520,9 @@ class SettingsPage(QWidget):
             label.setStyleSheet(TEXT_MUTED_BODY_STYLE)
             row_layout.addWidget(label, 1)
 
+            scraper = self._scraper_for_site_name(site_name)
+            has_config_fields = scraper is not None and bool(scraper.get_source_config_fields())
+
             if row.get("discover"):
                 default_checkbox = QCheckBox("Default")
                 default_checkbox.setStyleSheet(CHECKBOX_STYLE)
@@ -1503,6 +1531,15 @@ class SettingsPage(QWidget):
                 )
                 row_layout.addWidget(default_checkbox, 0, Qt.AlignVCenter)
                 self._default_discovery_provider_checkboxes[site_name] = default_checkbox
+
+            gear_btn = QPushButton()
+            gear_btn.setIcon(qta.icon("fa5s.cog", color="#d8d8d8"))
+            gear_btn.setFixedSize(36, 36)
+            gear_btn.setStyleSheet(BUTTON_STYLE)
+            gear_btn.setEnabled(has_config_fields)
+            gear_btn.setToolTip("Edit default settings for this source." if has_config_fields else "This source does not expose custom settings.")
+            gear_btn.clicked.connect(lambda _checked=False, site_name=site_name: self._open_source_config_defaults(site_name))
+            row_layout.addWidget(gear_btn, 0, Qt.AlignVCenter)
 
             mode_box = QComboBox()
             mode_box.setStyleSheet(INPUT_STYLE)

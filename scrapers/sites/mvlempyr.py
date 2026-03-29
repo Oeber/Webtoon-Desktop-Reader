@@ -83,6 +83,7 @@ class MvlempyrScraper(BaseScraper):
     ]
 
     def __init__(self):
+        super().__init__()
         self._http = cffi_requests.Session()
         self._last_request_at = 0.0
         self._series_cache: dict[str, SeriesInfo] = {}

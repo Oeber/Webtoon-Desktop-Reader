@@ -56,6 +56,7 @@ from scrapers.base import ScraperError
 from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.models import CatalogSeries
 from scrapers.registry import get_scraper
+from stores.settings_store import load_scraper_default_config
 
 logger = get_logger(__name__)
 
@@ -70,6 +71,7 @@ class DiscoverySeriesLoader(QObject):
                 if not url:
                     raise ScraperError("This entry does not expose a downloadable series URL.")
                 scraper = get_scraper(url)
+                scraper.apply_source_config(load_scraper_default_config(getattr(scraper, "site_name", "") or ""))
                 series_url = url if not scraper.is_chapter_url(url) else scraper.series_url_from_chapter_url(url)
                 series = scraper.get_series_info(series_url)
                 if (
@@ -362,7 +364,8 @@ class DiscoveryDetailPage(QWidget):
         self.status_label.hide()
         self.download_all_btn.setEnabled(True)
         self._refresh_mode_state()
-        self._rebuild_chapter_list()    def _visible_chapters(self):
+        self._rebuild_chapter_list()
+    def _visible_chapters(self):
         chapters = list(getattr(self.series, "chapters", []) or [])
         if self.hide_specials_checkbox.isChecked():
             chapters = [chapter for chapter in chapters if not SPECIAL_CHAPTER_RE.search(chapter.title or "")]

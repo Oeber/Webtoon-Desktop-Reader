@@ -49,7 +49,7 @@ from gui.downloader.download_widgets import SpinnerCircle, format_last_updated
 from gui.downloader.helpers import sanitize_webtoon_name
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
-from stores.settings_store import load_library_path
+from stores.settings_store import load_library_path, load_scraper_default_config
 from library.library_manager import scan_library
 from scrapers.base import ScraperDisabledError, ScraperError
 from scrapers.registry import get_scraper, get_scraper_site_name, is_scraper_enabled_for_url
@@ -86,6 +86,7 @@ class UpdateAvailabilityLoader(QObject):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.settings_store = get_webtoon_settings()
         self._executor = ThreadPoolExecutor(
             max_workers=4,
             thread_name_prefix="update-check",
@@ -131,6 +132,7 @@ class UpdateAvailabilityLoader(QObject):
     def _check_candidate(self, candidate: dict) -> dict | None:
         source_url = candidate.get("source_url") or ""
         scraper = get_scraper(source_url)
+        scraper.apply_source_config(candidate.get("source_config"))
         series_url = source_url
         if scraper.is_chapter_url(series_url):
             series_url = scraper.series_url_from_chapter_url(series_url)
@@ -723,7 +725,7 @@ class UpdatePage(DownloadHistoryPageBase):
         webtoons = scan_library(load_library_path(), self.settings_store)
         settings_rows = self.settings_store.get_rows(
             [webtoon.name for webtoon in webtoons],
-            columns=("completed", "source_url", "last_update_at"),
+            columns=("completed", "source_url", "last_update_at", "source_config"),
         )
         candidates = []
         for webtoon in webtoons:
@@ -740,6 +742,7 @@ class UpdatePage(DownloadHistoryPageBase):
                     "webtoon": webtoon,
                     "source_url": source_url,
                     "last_update_at": row.get("last_update_at"),
+                    "source_config": (self.settings_store.get_source_config(webtoon.name) or load_scraper_default_config(get_scraper_site_name(source_url))),
                     "local_chapters": len(getattr(webtoon, "chapters", []) or []),
                     "chapter_names": list(getattr(webtoon, "chapters", []) or []),
                 }
@@ -998,6 +1001,7 @@ class UpdatePage(DownloadHistoryPageBase):
             source_url,
             load_library_path(),
             preferred_name=webtoon_name,
+            chapter_urls=chapter_urls,
         )
         self.set_error_text("" if error is None else error)
         self._sync_update_buttons()

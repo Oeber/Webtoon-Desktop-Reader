@@ -39,10 +39,13 @@ from PySide6.QtWidgets import (
 )
 
 from gui.library.thumbnail_dialog import ThumbnailDialog
+from gui.settings.scraper_config_dialog import ScraperConfigDialog
+from scrapers.registry import get_all_scrapers_including_disabled
 from stores.settings_store import (
     LIBRARY_USE_CATEGORIES_KEY,
     VIEWER_ZOOM_KEY,
     load_library_path,
+    load_scraper_default_config,
     load_setting,
 )
 from library.library_categories import load_custom_categories, save_custom_categories
@@ -90,6 +93,8 @@ class EditWebtoonDialog(QDialog):
         self._zoom_dirty = False
         self._initial_zoom_value = load_setting(VIEWER_ZOOM_KEY, 0.5)
         self.scene_bookmark_store = get_scene_bookmark_store()
+        self._pending_source_config = dict(self.settings_store.get_source_config(self.webtoon.name) or {})
+        self._pending_source_site = str(self.settings_store.get_source_site(self.webtoon.name) or "").strip()
 
         self.setWindowTitle("Edit Webtoon")
         self.setModal(True)
@@ -155,7 +160,19 @@ class EditWebtoonDialog(QDialog):
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("https://example.com/series")
         self.url_input.setFixedHeight(ROW_H)
-        form.addRow(self._form_label("Source URL"), self._field_row(self.url_input))
+        self.url_input.textChanged.connect(self._refresh_source_settings_button)
+
+        self.source_settings_btn = QPushButton("Source Settings")
+        self.source_settings_btn.setFixedHeight(ROW_H)
+        self.source_settings_btn.clicked.connect(self._open_source_settings)
+
+        source_row = QWidget()
+        source_layout = QHBoxLayout(source_row)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.setSpacing(8)
+        source_layout.addWidget(self.url_input, 1)
+        source_layout.addWidget(self.source_settings_btn)
+        form.addRow(self._form_label("Source URL"), self._field_row(source_row))
 
         self.zoom_input = QDoubleSpinBox()
         self.zoom_input.setDecimals(0)
@@ -257,6 +274,11 @@ class EditWebtoonDialog(QDialog):
         self.category_row.setVisible(categories_enabled)
         self._update_thumbnail_preview()
         self._load_categories()
+        if not self._pending_source_site:
+            existing_scraper = self._scraper_for_url(self.url_input.text())
+            if existing_scraper is not None:
+                self._pending_source_site = str(getattr(existing_scraper, "site_name", "") or "").strip()
+        self._refresh_source_settings_button()
 
     def _load_categories(self):
         categories = load_custom_categories()
@@ -288,6 +310,43 @@ class EditWebtoonDialog(QDialog):
 
     def _mark_zoom_dirty(self, *_):
         self._zoom_dirty = True
+
+    def _scraper_for_url(self, url: str):
+        normalized_url = str(url or "").strip()
+        if not normalized_url:
+            return None
+        for scraper in get_all_scrapers_including_disabled():
+            try:
+                if scraper.can_handle(normalized_url):
+                    return scraper
+            except Exception:
+                continue
+        return None
+
+    def _refresh_source_settings_button(self, *_args):
+        scraper = self._scraper_for_url(self.url_input.text())
+        enabled = scraper is not None and bool(scraper.get_source_config_fields())
+        self.source_settings_btn.setEnabled(enabled)
+        if enabled:
+            display_name = str(getattr(scraper, "site_display_name", "") or getattr(scraper, "site_name", "Source")).strip()
+            self.source_settings_btn.setToolTip(f"Configure saved-source settings for {display_name}.")
+        elif str(self.url_input.text() or "").strip():
+            self.source_settings_btn.setToolTip("This source does not expose custom settings.")
+        else:
+            self.source_settings_btn.setToolTip("Enter a source URL first.")
+
+    def _open_source_settings(self):
+        scraper = self._scraper_for_url(self.url_input.text())
+        if scraper is None or not scraper.get_source_config_fields():
+            QMessageBox.information(self, "Source settings", "This source does not expose custom settings.")
+            return
+        site_name = str(getattr(scraper, "site_name", "") or "").strip()
+        current_config = self._pending_source_config if site_name == self._pending_source_site else load_scraper_default_config(site_name)
+        dialog = ScraperConfigDialog(type(scraper), current_config, parent=self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._pending_source_site = site_name
+        self._pending_source_config = dialog.config_values()
 
     def _update_thumbnail_preview(self):
         pixmap = QPixmap(self.webtoon.thumbnail)
@@ -344,8 +403,17 @@ class EditWebtoonDialog(QDialog):
             source_url = self.url_input.text().strip()
             if source_url:
                 self.settings_store.set_source_url(self.webtoon.name, source_url)
+                source_scraper = self._scraper_for_url(source_url)
+                source_site_name = str(getattr(source_scraper, "site_name", "") or "").strip() if source_scraper is not None else ""
+                if source_scraper is not None and source_scraper.get_source_config_fields() and source_site_name == self._pending_source_site:
+                    self.settings_store.set_source_config(self.webtoon.name, source_scraper.normalize_source_config(self._pending_source_config))
+                elif source_scraper is not None and source_scraper.get_source_config_fields():
+                    self.settings_store.set_source_config(self.webtoon.name, source_scraper.normalize_source_config(load_scraper_default_config(source_site_name)))
+                else:
+                    self.settings_store.clear_source_config(self.webtoon.name)
             else:
                 self.settings_store.clear_source_url(self.webtoon.name)
+                self.settings_store.clear_source_config(self.webtoon.name)
 
             self.settings_store.set_hide_filler(
                 self.webtoon.name,

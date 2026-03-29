@@ -81,3 +81,16 @@ def save_setting(key: str, value):
 
 def save_settings(values: dict):
     _app_settings.set_many(values)
+
+def _scraper_default_config_key(site_name: str) -> str:
+    return f"scraper_default_config::{str(site_name or '').strip()}"
+
+
+def load_scraper_default_config(site_name: str) -> dict:
+    value = _app_settings.get(_scraper_default_config_key(site_name), {})
+    return value if isinstance(value, dict) else {}
+
+
+def save_scraper_default_config(site_name: str, config: dict | None):
+    _app_settings.set(_scraper_default_config_key(site_name), config if isinstance(config, dict) else {})
+

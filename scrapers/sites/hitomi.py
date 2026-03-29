@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 import requests
 
 from ..base import BaseScraper, ScraperError
-from ..models import ChapterInfo, PageInfo, SeriesInfo
+from ..models import ChapterInfo, PageInfo, ScraperConfigField, ScraperConfigOption, SeriesInfo
 
 
 class HitomiScraper(BaseScraper):
@@ -20,6 +20,32 @@ class HitomiScraper(BaseScraper):
     CDN_BASE = "https://ltn.gold-usergeneratedcontent.net"
     asset_download_workers = 3
 
+    LANGUAGE_OPTIONS = (
+        ScraperConfigOption("all", "All Languages"),
+        ScraperConfigOption("english", "English"),
+        ScraperConfigOption("japanese", "Japanese"),
+        ScraperConfigOption("chinese", "Chinese"),
+        ScraperConfigOption("korean", "Korean"),
+        ScraperConfigOption("spanish", "Spanish"),
+        ScraperConfigOption("french", "French"),
+        ScraperConfigOption("portuguese", "Portuguese"),
+        ScraperConfigOption("thai", "Thai"),
+        ScraperConfigOption("vietnamese", "Vietnamese"),
+        ScraperConfigOption("german", "German"),
+        ScraperConfigOption("italian", "Italian"),
+        ScraperConfigOption("russian", "Russian"),
+    )
+    source_config_fields = (
+        ScraperConfigField(
+            key="languages",
+            label="Languages",
+            control="multi_select",
+            options=list(LANGUAGE_OPTIONS),
+            default=["all"],
+            description="Choose which Hitomi gallery languages should appear in discovery.",
+        ),
+    )
+
     GALLERY_PATH_RE = re.compile(
         r"^/(?:doujinshi|manga|cg|imageset|gamecg|artistcg)/.+-(\d+)(?:\.html)?/?$",
         re.IGNORECASE,
@@ -30,9 +56,37 @@ class HitomiScraper(BaseScraper):
     GG_CASE_RE = re.compile(r"case\s+(\d+)\s*:")
 
     def __init__(self):
+        super().__init__()
         self._gg_base_path: str | None = None
         self._gg_zero_values: set[int] | None = None
         self._asset_candidates: dict[str, list[str]] = {}
+
+    @classmethod
+    def normalize_source_config(cls, config: dict | None) -> dict:
+        normalized = super().normalize_source_config(config)
+        languages = [
+            str(language or "").strip().casefold()
+            for language in normalized.get("languages", [])
+            if str(language or "").strip()
+        ]
+        if not languages or "all" in languages:
+            normalized["languages"] = ["all"]
+        else:
+            normalized["languages"] = list(dict.fromkeys(languages))
+        return normalized
+
+    def selected_languages(self) -> list[str]:
+        languages = self.get_source_config_value("languages", ["all"])
+        if not isinstance(languages, list):
+            return ["all"]
+        normalized = [
+            str(language or "").strip().casefold()
+            for language in languages
+            if str(language or "").strip()
+        ]
+        if not normalized or "all" in normalized:
+            return ["all"]
+        return list(dict.fromkeys(normalized))
 
     @classmethod
     def can_handle(cls, url: str) -> bool:

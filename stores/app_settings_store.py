@@ -1,3 +1,5 @@
+import json
+
 from stores.db import get_connection
 
 
@@ -57,6 +59,8 @@ class AppSettingsStore:
     def _serialize_value(self, value) -> str:
         if isinstance(value, bool):
             return "1" if value else "0"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=True, sort_keys=isinstance(value, dict))
         return str(value)
 
     def _coerce_value(self, raw: str, default):
@@ -74,4 +78,10 @@ class AppSettingsStore:
                 return float(raw)
             except (TypeError, ValueError):
                 return default
+        if isinstance(default, (dict, list)):
+            try:
+                value = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return default
+            return value if isinstance(value, type(default)) else default
         return str(raw)

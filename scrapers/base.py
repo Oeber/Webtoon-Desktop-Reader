@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
+from typing import Any
 import re
 from urllib.parse import parse_qs, urlparse
 
-from .models import ChapterContent, PageInfo, SeriesInfo
+from .models import ChapterContent, PageInfo, ScraperConfigField, SeriesInfo
 
 
 class ScraperError(Exception):
@@ -22,6 +23,10 @@ class BaseScraper(ABC):
     site_base_url: str = ""
     site_required_cookie_names: tuple[str, ...] = ()
     site_session_cookie_names: tuple[str, ...] = ()
+    source_config_fields: tuple[ScraperConfigField, ...] = ()
+
+    def __init__(self):
+        self.source_config: dict[str, Any] = self.default_source_config()
 
     @classmethod
     @abstractmethod
@@ -130,3 +135,76 @@ class BaseScraper(ABC):
     
     def download_asset(self, url: str, dest_path: str) -> bool:
         return False
+
+    @classmethod
+    def get_source_config_fields(cls) -> tuple[ScraperConfigField, ...]:
+        return tuple(getattr(cls, "source_config_fields", ()) or ())
+
+    @classmethod
+    def default_source_config(cls) -> dict[str, Any]:
+        defaults: dict[str, Any] = {}
+        for field in cls.get_source_config_fields():
+            if field.control == "multi_select":
+                values = field.default if isinstance(field.default, list) else []
+                defaults[field.key] = [str(value) for value in values if str(value).strip()]
+                continue
+            defaults[field.key] = field.default
+        return defaults
+
+    @classmethod
+    def normalize_source_config(cls, config: dict | None) -> dict[str, Any]:
+        incoming = config if isinstance(config, dict) else {}
+        normalized = cls.default_source_config()
+        for field in cls.get_source_config_fields():
+            value = incoming.get(field.key, normalized.get(field.key))
+            allowed = {
+                str(option.value): str(option.value)
+                for option in field.options
+            }
+            if field.control == "boolean":
+                normalized[field.key] = bool(value)
+                continue
+            if field.control == "integer":
+                try:
+                    coerced = int(value)
+                except (TypeError, ValueError):
+                    coerced = field.default
+                if coerced is None:
+                    normalized[field.key] = None
+                    continue
+                if field.min_value is not None:
+                    coerced = max(int(field.min_value), coerced)
+                if field.max_value is not None:
+                    coerced = min(int(field.max_value), coerced)
+                normalized[field.key] = coerced
+                continue
+            if field.control == "multi_select":
+                values = value if isinstance(value, list) else field.default if isinstance(field.default, list) else []
+                seen = set()
+                chosen = []
+                for item in values:
+                    text = str(item or "").strip()
+                    if not text or text in seen:
+                        continue
+                    if allowed and text not in allowed:
+                        continue
+                    seen.add(text)
+                    chosen.append(text)
+                normalized[field.key] = chosen
+                continue
+            if field.control == "select":
+                text = str(value or "").strip()
+                if allowed and text not in allowed:
+                    text = str(field.default or "").strip()
+                normalized[field.key] = text
+                continue
+            text = str(value or "").strip()
+            normalized[field.key] = text
+        return normalized
+
+    def apply_source_config(self, config: dict | None) -> dict[str, Any]:
+        self.source_config = self.normalize_source_config(config)
+        return dict(self.source_config)
+
+    def get_source_config_value(self, key: str, default: Any = None) -> Any:
+        return self.source_config.get(key, default)

@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -279,6 +279,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         10: _migration_10_add_manga_reader_settings,
         11: _migration_11_add_text_reader_settings,
         12: _migration_12_create_notifications,
+        13: _migration_13_add_source_config_to_webtoon_settings,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -310,6 +311,7 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
             source_site         TEXT,
             source_series_id    TEXT,
             source_title        TEXT,
+            source_config       TEXT,
             category            TEXT,
             bookmarked_chapters TEXT,
             last_update_at      INTEGER,
@@ -420,6 +422,7 @@ def _migration_2_add_progress_and_webtoon_settings_columns(conn: sqlite3.Connect
     _add_column_if_missing(conn, "webtoon_settings", "source_site", "TEXT")
     _add_column_if_missing(conn, "webtoon_settings", "source_series_id", "TEXT")
     _add_column_if_missing(conn, "webtoon_settings", "source_title", "TEXT")
+    _add_column_if_missing(conn, "webtoon_settings", "source_config", "TEXT")
     _add_column_if_missing(conn, "webtoon_settings", "category", "TEXT")
     _add_column_if_missing(conn, "webtoon_settings", "bookmarked_chapters", "TEXT")
 
@@ -543,6 +546,5 @@ def _add_column_if_missing(conn: sqlite3.Connection, table_name: str, column_nam
     conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_def}")
 
 
-
-
-
+def _migration_13_add_source_config_to_webtoon_settings(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "webtoon_settings", "source_config", "TEXT")
