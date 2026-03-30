@@ -225,13 +225,14 @@ class ImageLoader(QObject):
                 cumulative += height
                 continue
 
+            analysis_image = self._panel_analysis_image(image)
             range_fractions = self._panel_range_cache.get(path)
             if range_fractions is None:
-                range_fractions = self._compute_panel_ranges(image, min_blank=min_blank, row_step=row_step)
+                range_fractions = self._compute_panel_ranges(analysis_image, min_blank=min_blank, row_step=row_step)
                 self._panel_range_cache[path] = range_fractions
                 sample_rows = []
                 for sample_y in {0, max(0, image_height // 4), max(0, image_height // 2), max(0, (image_height * 3) // 4), max(0, image_height - 1)}:
-                    avg, variance, chroma, occupied, is_blank = self._blank_row_metrics(image, sample_y)
+                    avg, variance, chroma, occupied, is_blank = self._blank_row_metrics(analysis_image, sample_y)
                     sample_rows.append(
                         f"y={sample_y}:avg={avg:.1f},var={variance:.1f},chroma={chroma:.1f},occupied={occupied:.3f},blank={is_blank}"
                     )
@@ -327,6 +328,12 @@ class ImageLoader(QObject):
 
         return merged or [(0.0, 1.0)]
 
+    def _panel_analysis_image(self, image: QImage) -> QImage:
+        if image.format() in (QImage.Format_RGB32, QImage.Format_ARGB32, QImage.Format_ARGB32_Premultiplied):
+            return image
+        converted = image.convertToFormat(QImage.Format_ARGB32)
+        return converted if not converted.isNull() else image
+
     def _blank_row_metrics(self, image: QImage, y: int, sample_step: int = 12) -> tuple[float, float, float, float, bool]:
         width = image.width()
         if width <= 0:
@@ -339,19 +346,35 @@ class ImageLoader(QObject):
         occupied = 0
         count = 0
 
-        for x in range(0, width, step):
-            rgb = image.pixel(x, y)
-            red = (rgb >> 16) & 0xFF
-            green = (rgb >> 8) & 0xFF
-            blue = rgb & 0xFF
-            lum = (299 * red + 587 * green + 114 * blue) // 255
-            chroma = max(red, green, blue) - min(red, green, blue)
-            total += lum
-            total_sq += lum * lum
-            total_chroma += chroma
-            if lum < 760 or chroma > 40:
-                occupied += 1
-            count += 1
+        if image.format() in (QImage.Format_RGB32, QImage.Format_ARGB32, QImage.Format_ARGB32_Premultiplied):
+            row = image.constScanLine(y)
+            for x in range(0, width, step):
+                offset = x * 4
+                blue = row[offset]
+                green = row[offset + 1]
+                red = row[offset + 2]
+                lum = (299 * red + 587 * green + 114 * blue) // 255
+                chroma = max(red, green, blue) - min(red, green, blue)
+                total += lum
+                total_sq += lum * lum
+                total_chroma += chroma
+                if lum < 760 or chroma > 40:
+                    occupied += 1
+                count += 1
+        else:
+            for x in range(0, width, step):
+                rgb = image.pixel(x, y)
+                red = (rgb >> 16) & 0xFF
+                green = (rgb >> 8) & 0xFF
+                blue = rgb & 0xFF
+                lum = (299 * red + 587 * green + 114 * blue) // 255
+                chroma = max(red, green, blue) - min(red, green, blue)
+                total += lum
+                total_sq += lum * lum
+                total_chroma += chroma
+                if lum < 760 or chroma > 40:
+                    occupied += 1
+                count += 1
 
         if count == 0:
             return (0.0, 0.0, 0.0, 0.0, True)

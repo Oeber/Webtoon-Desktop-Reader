@@ -756,7 +756,7 @@ class ViewerPage(QWidget):
         self._progress_save_timer = QTimer()
         self._progress_save_timer.setSingleShot(True)
         self._progress_save_timer.setInterval(1000)
-        self._progress_save_timer.timeout.connect(self._save_progress)
+        self._progress_save_timer.timeout.connect(self._save_progress_deferred)
         self.scroll.verticalScrollBar().valueChanged.connect(
             lambda: self._progress_save_timer.start()
         )
@@ -1521,11 +1521,14 @@ class ViewerPage(QWidget):
         height = self._label_heights[idx] if idx < len(self._label_heights) else self._scaled_label_height(self.image_labels[idx])
         return base + int(height * frac)
 
-    def _save_progress(self):
+    def _save_progress_deferred(self):
+        self._save_progress(immediate=False)
+
+    def _save_progress(self, *, immediate: bool = True):
         if not self.webtoon:
             return
         if self._chapter_mode == "text":
-            self._save_text_progress()
+            self._save_text_progress(immediate=immediate)
             return
         chapter = self.webtoon.chapters[self.current_chapter_index]
         bar = self.scroll.verticalScrollBar()
@@ -1537,16 +1540,17 @@ class ViewerPage(QWidget):
         else:
             packed = self._current_packed_position()
         logger.info(
-            "Viewer saving progress for %s chapter=%s packed=%.3f total=%d",
+            "Viewer saving progress for %s chapter=%s packed=%.3f total=%d immediate=%s",
             self.webtoon.name,
             chapter,
             packed,
             total,
+            immediate,
         )
-        self.progress_store.save(self.webtoon.name, chapter, packed, total)
+        self.progress_store.save(self.webtoon.name, chapter, packed, total, immediate=immediate)
         self._advance_resume_to_next_chapter(chapter, packed, total)
 
-    def _save_text_progress(self):
+    def _save_text_progress(self, *, immediate: bool = True):
         if not self.webtoon or not self._text_loaded_segments:
             return
         bar = self.scroll.verticalScrollBar()
@@ -1554,7 +1558,7 @@ class ViewerPage(QWidget):
         if active is None:
             chapter = self.webtoon.chapters[self.current_chapter_index]
             progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
-            self.progress_store.save(self.webtoon.name, chapter, progress, 1)
+            self.progress_store.save(self.webtoon.name, chapter, progress, 1, immediate=immediate)
             return
         entries = []
         for segment in self._text_loaded_segments:
