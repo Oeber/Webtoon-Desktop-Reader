@@ -1196,23 +1196,15 @@ class ViewerPage(QWidget):
     def _sync_horizontal_navigation_ui(self) -> None:
         if not hasattr(self, "prev_button") or not hasattr(self, "next_button"):
             return
-        left_action = "Next chapter" if self._nav_direction == "rtl" else "Previous chapter"
-        right_action = "Previous chapter" if self._nav_direction == "rtl" else "Next chapter"
-        self.prev_button.setToolTip(f"([) {left_action}")
-        self.next_button.setToolTip(f"] {right_action}")
+        self.prev_button.setToolTip("([) Previous chapter")
+        self.next_button.setToolTip("] Next chapter")
         self.update_nav_buttons()
 
     def _on_left_nav_button(self):
-        if self._nav_direction == "rtl":
-            self.next_chapter()
-        else:
-            self.prev_chapter()
+        self.prev_chapter()
 
     def _on_right_nav_button(self):
-        if self._nav_direction == "rtl":
-            self.prev_chapter()
-        else:
-            self.next_chapter()
+        self.next_chapter()
 
     def _is_manga_image_mode(self) -> bool:
         if self._chapter_mode != "image" or not self.webtoon:
@@ -1552,6 +1544,7 @@ class ViewerPage(QWidget):
             total,
         )
         self.progress_store.save(self.webtoon.name, chapter, packed, total)
+        self._advance_resume_to_next_chapter(chapter, packed, total)
 
     def _save_text_progress(self):
         if not self.webtoon or not self._text_loaded_segments:
@@ -1580,6 +1573,31 @@ class ViewerPage(QWidget):
                 len(self._text_loaded_segments),
             )
             self.progress_store.save_many(self.webtoon.name, entries)
+            self._advance_resume_to_next_chapter(str(active["chapter"]), float(active["progress"]), 1)
+
+    def _advance_resume_to_next_chapter(self, chapter: str, scroll: float, total_images: int) -> None:
+        if not self.webtoon:
+            return
+        if total_images <= 0 or float(scroll) < float(total_images):
+            return
+        try:
+            current_index = self.webtoon.chapters.index(chapter)
+        except ValueError:
+            return
+        next_index = current_index + 1
+        if next_index >= len(self.webtoon.chapters):
+            return
+        next_chapter = self.webtoon.chapters[next_index]
+        next_progress = float(self.progress_store.get_for_chapter(self.webtoon.name, next_chapter) or 0.0)
+        if next_progress > 0.005:
+            return
+        logger.info(
+            "Viewer advancing resume point for %s from %s to %s",
+            self.webtoon.name,
+            chapter,
+            next_chapter,
+        )
+        self.progress_store.save(self.webtoon.name, next_chapter, 0.0, 0)
 
     def _current_scene_bookmark_payload(self) -> tuple[str, float, int, float] | None:
         if not self.webtoon:
@@ -1927,7 +1945,27 @@ class ViewerPage(QWidget):
             real_index = self._chapter_index_map[index]
         else:
             real_index = index
-        self._load_chapter_with_prompt(real_index)
+        self._open_chapter_from_viewer(real_index)
+
+    def _should_prompt_for_chapter(self, index: int) -> bool:
+        if not self.webtoon or index < 0 or index >= len(self.webtoon.chapters):
+            return False
+        chapter = self.webtoon.chapters[index]
+        progress_map = self.progress_store.get_progress_map(self.webtoon.name)
+        saved_scroll, total_images = progress_map.get(chapter, (0.0, 0))
+        saved_scroll = float(saved_scroll or 0.0)
+        total_images = int(total_images or 0)
+        if saved_scroll <= 0.005:
+            return False
+        if total_images > 0 and saved_scroll >= float(total_images):
+            return False
+        return True
+
+    def _open_chapter_from_viewer(self, index: int) -> bool:
+        if self._should_prompt_for_chapter(index):
+            return self._load_chapter_with_prompt(index)
+        self._load_chapter_no_prompt(index)
+        return True
 
     def _load_chapter_with_prompt(self, index):
         if not self.webtoon:
@@ -2011,6 +2049,10 @@ class ViewerPage(QWidget):
             widget = item.widget()
             if widget is None:
                 continue
+            if widget is self.manga_spread_label:
+                widget.clear()
+                widget.hide()
+                continue
             widget.clear()
             widget.hide()
             widget._source_pixmap = None
@@ -2025,6 +2067,7 @@ class ViewerPage(QWidget):
         self._reset_layout_metrics()
         self.manga_spread_label.clear()
         self.manga_spread_label.hide()
+        self.image_layout.addWidget(self.manga_spread_label, 0, Qt.AlignHCenter)
 
         self.preview.set_image_labels([])
         self.manga_preview.set_image_labels([])
@@ -2785,7 +2828,7 @@ class ViewerPage(QWidget):
             self._progress_save_timer.stop()
             self._save_progress()
             self._restore_image_index = None
-            self._load_chapter_with_prompt(next_idx)
+            self._open_chapter_from_viewer(next_idx)
 
     def prev_chapter(self):
         prev_idx = self._prev_chapter_index(self.current_chapter_index)
@@ -2794,7 +2837,7 @@ class ViewerPage(QWidget):
             self._progress_save_timer.stop()
             self._save_progress()
             self._restore_image_index = None
-            self._load_chapter_with_prompt(prev_idx)
+            self._open_chapter_from_viewer(prev_idx)
 
     def _next_chapter_index(self, from_index: int) -> int | None:
         """Return the next chapter index, skipping specials if the toggle is on."""
@@ -2841,12 +2884,8 @@ class ViewerPage(QWidget):
             return
         prev_available = self._prev_chapter_index(self.current_chapter_index) is not None
         next_available = self._next_chapter_index(self.current_chapter_index) is not None
-        if self._nav_direction == "rtl":
-            self.prev_button.setEnabled(next_available)
-            self.next_button.setEnabled(prev_available)
-        else:
-            self.prev_button.setEnabled(prev_available)
-            self.next_button.setEnabled(next_available)
+        self.prev_button.setEnabled(prev_available)
+        self.next_button.setEnabled(next_available)
 
     def _clear_zoom_override(self):
         if not self.webtoon:
@@ -2963,6 +3002,55 @@ class ViewerPage(QWidget):
         bar = self.scroll.verticalScrollBar()
         bar.setValue(max(0, min(target_y, bar.maximum())))
 
+    def _navigate_webtoon_click(self, forward: bool) -> bool:
+        if self._chapter_mode != "image" or self._is_manga_image_mode():
+            return False
+
+        bar = self.scroll.verticalScrollBar()
+        view_h = self.scroll.viewport().height()
+        pos = bar.value()
+
+        if not self.auto_skip_enabled:
+            delta = int(view_h * 0.9)
+            if forward:
+                bar.setValue(pos + delta)
+            else:
+                bar.setValue(max(0, pos - delta))
+            return True
+
+        targets = self._get_skip_targets()
+        if not targets:
+            delta = int(view_h * 0.9)
+            if forward:
+                bar.setValue(pos + delta)
+            else:
+                bar.setValue(max(0, pos - delta))
+            return True
+
+        SNAP = max(32, int(view_h * 0.07))
+        MIN_MOVE = max(56, int(view_h * 0.10))
+
+        if forward:
+            next_index = bisect_right(targets, pos + SNAP)
+            while next_index < len(targets) and (targets[next_index] - pos) < MIN_MOVE:
+                next_index += 1
+            next_target = targets[next_index] if next_index < len(targets) else None
+            if next_target is not None:
+                self._jump_to_target(next_target)
+            else:
+                bar.setValue(pos + int(view_h * 0.9))
+            return True
+
+        prev_index = bisect_right(targets, pos - SNAP) - 1
+        while prev_index >= 0 and (pos - targets[prev_index]) < MIN_MOVE:
+            prev_index -= 1
+        prev_target = targets[prev_index] if prev_index >= 0 else None
+        if prev_target is not None:
+            self._jump_to_target(prev_target)
+        else:
+            bar.setValue(max(0, pos - int(view_h * 0.9)))
+        return True
+
     def keyPressEvent(self, event):
         key = event.key()
         modifiers = event.modifiers()
@@ -2977,8 +3065,8 @@ class ViewerPage(QWidget):
         back_key = self._horizontal_back_key()
         page_forward = manga_mode and key in (forward_key, Qt.Key_Down, Qt.Key_J, Qt.Key_PageDown)
         page_back = manga_mode and key in (back_key, Qt.Key_Up, Qt.Key_K, Qt.Key_PageUp)
-        chapter_forward = key in ((Qt.Key_BracketRight,) if manga_mode else (forward_key, Qt.Key_BracketRight))
-        chapter_back = key in ((Qt.Key_BracketLeft,) if manga_mode else (back_key, Qt.Key_BracketLeft))
+        chapter_forward = key in ((Qt.Key_BracketRight,) if manga_mode else (Qt.Key_Right, Qt.Key_BracketRight))
+        chapter_back = key in ((Qt.Key_BracketLeft,) if manga_mode else (Qt.Key_Left, Qt.Key_BracketLeft))
         session_keys = {
             Qt.Key_M,
             Qt.Key_P,
@@ -3076,7 +3164,7 @@ class ViewerPage(QWidget):
                 self._progress_save_timer.stop()
                 self._save_progress()
                 self._restore_image_index = None
-                if self._load_chapter_with_prompt(next_idx):
+                if self._open_chapter_from_viewer(next_idx):
                     self.setFocus()
 
         elif chapter_back:
@@ -3085,7 +3173,7 @@ class ViewerPage(QWidget):
                 self._progress_save_timer.stop()
                 self._save_progress()
                 self._restore_image_index = None
-                if self._load_chapter_with_prompt(prev_idx):
+                if self._open_chapter_from_viewer(prev_idx):
                     self.setFocus()
 
         elif key == Qt.Key_Home:
@@ -3288,6 +3376,19 @@ class ViewerPage(QWidget):
                     viewport.update()
                     self.setFocus()
                     return True
+
+                if (
+                    event_type == QEvent.MouseButtonPress
+                    and event.button() == Qt.LeftButton
+                    and not self.auto_scroll
+                    and obj != preview
+                    and self._chapter_mode == "image"
+                    and not self._is_manga_image_mode()
+                ):
+                    navigate_forward = event_pos.y() >= (viewport.height() // 2)
+                    if self._navigate_webtoon_click(navigate_forward):
+                        self.setFocus()
+                        return True
 
             if event_type in (QEvent.Leave, QEvent.Hide, QEvent.FocusOut) and self.auto_scroll:
                 self._set_auto_scroll_enabled(False)

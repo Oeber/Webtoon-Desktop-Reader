@@ -991,6 +991,13 @@ class ChapterPreview(QWidget):
                 self._jump_to_image(idx)
             return
 
+        scene_mark = self._scene_mark_at(pos)
+        if scene_mark is not None and callable(self.scene_jump_callback):
+            self.scene_jump_callback(float(scene_mark.get("packed") or 0.0))
+            return
+
+        self._scrub_strip_to_y(pos.y())
+
     def _pages_only_index_at(self, pos: QPoint) -> int | None:
         if pos.x() < 0 or pos.x() >= self.width():
             return None
@@ -999,13 +1006,6 @@ class ChapterPreview(QWidget):
             if rect.contains(pos):
                 return index
         return None
-
-        scene_mark = self._scene_mark_at(pos)
-        if scene_mark is not None and callable(self.scene_jump_callback):
-            self.scene_jump_callback(float(scene_mark.get("packed") or 0.0))
-            return
-
-        self._scrub_strip_to_y(pos.y())
 
     def _horizontal_index_at(self, pos: QPoint) -> int | None:
         if not self.image_labels:
