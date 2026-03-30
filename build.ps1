@@ -27,6 +27,8 @@ $sourceScraperRoot = Join-Path $projectRoot "scrapers"
 $sourceScrapers = Join-Path $projectRoot "scrapers\sites"
 $outputDiscoveryScrapers = Join-Path $outputScraperRoot "discovery_sites"
 $sourceDiscoveryScrapers = Join-Path $projectRoot "scrapers\discovery_sites"
+$outputSiteSettings = Join-Path $outputScraperRoot "site_settings"
+$sourceSiteSettings = Join-Path $projectRoot "scrapers\site_settings"
 $outputWebtoons = Join-Path $distRoot "webtoons"
 $version = $v.Trim()
 if ($version.StartsWith("v")) {
@@ -246,6 +248,7 @@ if (-not (Test-Path $onefileExe)) {
 New-Item -ItemType Directory -Force -Path $outputScraperRoot | Out-Null
 New-Item -ItemType Directory -Force -Path $outputScrapers | Out-Null
 New-Item -ItemType Directory -Force -Path $outputDiscoveryScrapers | Out-Null
+New-Item -ItemType Directory -Force -Path $outputSiteSettings | Out-Null
 New-Item -ItemType Directory -Force -Path $outputWebtoons | Out-Null
 
 Copy-Item (Join-Path $sourceScraperRoot "__init__.py") (Join-Path $outputScraperRoot "__init__.py") -Force
@@ -261,6 +264,11 @@ Get-ChildItem $sourceScrapers -Filter *.py | Where-Object { $_.Name -ne "__init_
 Copy-Item (Join-Path $sourceDiscoveryScrapers "__init__.py") (Join-Path $outputDiscoveryScrapers "__init__.py") -Force
 Get-ChildItem $sourceDiscoveryScrapers -Filter *.py | Where-Object { $_.Name -ne "__init__.py" } | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $outputDiscoveryScrapers $_.Name) -Force
+}
+
+Copy-Item (Join-Path $sourceSiteSettings "__init__.py") (Join-Path $outputSiteSettings "__init__.py") -Force
+Get-ChildItem $sourceSiteSettings -Filter *.py | Where-Object { $_.Name -ne "__init__.py" } | ForEach-Object {
+    Copy-Item $_.FullName (Join-Path $outputSiteSettings $_.Name) -Force
 }
 
 Write-Host "Adding app_version.txt to archive..."
@@ -317,3 +325,4 @@ Write-Host ""
 Write-Host "Editable scraper folders:"
 Write-Host "  .\dist\scrapers\sites"
 Write-Host "  .\dist\scrapers\discovery_sites"
+Write-Host "  .\dist\scrapers\site_settings"

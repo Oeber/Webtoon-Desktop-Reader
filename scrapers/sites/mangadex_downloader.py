@@ -6,53 +6,22 @@ from urllib.parse import urlparse
 import requests
 
 from ..base import BaseScraper, ScraperError
-from ..models import ChapterInfo, PageInfo, ScraperConfigField, ScraperConfigOption, SeriesInfo
+from ..models import ChapterInfo, PageInfo, SeriesInfo
+from ..site_settings import mangadex_settings
 
 
 class MangaDexScraper(BaseScraper):
-    site_name = "mangadex"
-    site_display_name = "MangaDex"
-    content_type = "manga"
-    site_hosts = ("mangadex.org", "www.mangadex.org")
-    site_base_url = "https://mangadex.org/"
+    site_name = mangadex_settings.SITE_NAME
+    site_display_name = mangadex_settings.SITE_DISPLAY_NAME
+    content_type = mangadex_settings.CONTENT_TYPE
+    site_hosts = mangadex_settings.SITE_HOSTS
+    site_base_url = mangadex_settings.SITE_BASE_URL
 
     BASE = "https://mangadex.org"
     API_BASE = "https://api.mangadex.org"
     COVER_BASE = "https://uploads.mangadex.org/covers"
-    LANGUAGE_OPTIONS = (
-        ScraperConfigOption("en", "English"),
-        ScraperConfigOption("pt-br", "Portuguese (Brazil)"),
-        ScraperConfigOption("pt", "Portuguese"),
-        ScraperConfigOption("es-la", "Spanish (LATAM)"),
-        ScraperConfigOption("es", "Spanish"),
-        ScraperConfigOption("fr", "French"),
-        ScraperConfigOption("de", "German"),
-        ScraperConfigOption("it", "Italian"),
-        ScraperConfigOption("ja-ro", "Japanese (Romanized)"),
-        ScraperConfigOption("ja", "Japanese"),
-    )
-    source_config_fields = (
-        ScraperConfigField(
-            key="translated_language",
-            label="Language",
-            control="select",
-            options=list(LANGUAGE_OPTIONS),
-            default="en",
-            description="Pick the translated chapter language this saved MangaDex source should use.",
-        ),
-    )
-    DEFAULT_LANGUAGE_PRIORITY = (
-        "en",
-        "pt-br",
-        "pt",
-        "es-la",
-        "es",
-        "fr",
-        "de",
-        "it",
-        "ja-ro",
-        "ja",
-    )
+    source_config_fields = mangadex_settings.SOURCE_CONFIG_FIELDS
+    DEFAULT_LANGUAGE_PRIORITY = mangadex_settings.DEFAULT_LANGUAGE_PRIORITY
     TITLE_RE = re.compile(r"^/title/([0-9a-f-]{36})(?:/[^/?#]+)?/?$", re.IGNORECASE)
     CHAPTER_RE = re.compile(r"^/chapter/([0-9a-f-]{36})(?:/[^/?#]+)?/?$", re.IGNORECASE)
     API_RETRY_ATTEMPTS = 4
@@ -318,14 +287,7 @@ class MangaDexScraper(BaseScraper):
 
     @classmethod
     def normalize_source_config(cls, config: dict | None) -> dict:
-        incoming = dict(config or {}) if isinstance(config, dict) else {}
-        if "translated_language" not in incoming:
-            legacy = incoming.get("translated_languages")
-            if isinstance(legacy, list) and legacy:
-                incoming["translated_language"] = str(legacy[0] or "").strip()
-            elif isinstance(legacy, str) and legacy.strip():
-                incoming["translated_language"] = legacy.strip()
-        return super().normalize_source_config(incoming)
+        return mangadex_settings.normalize_config(config, super().normalize_source_config)
 
     def _language_priority(self) -> tuple[str, ...]:
         configured = str(self.get_source_config_value("translated_language", "en") or "").strip().casefold()

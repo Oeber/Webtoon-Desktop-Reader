@@ -6,45 +6,21 @@ from urllib.parse import urlparse
 import requests
 
 from ..base import BaseScraper, ScraperError
-from ..models import ChapterInfo, PageInfo, ScraperConfigField, ScraperConfigOption, SeriesInfo
+from ..models import ChapterInfo, PageInfo, SeriesInfo
+from ..site_settings import hitomi_settings
 
 
 class HitomiScraper(BaseScraper):
-    site_name = "hitomi"
-    site_display_name = "Hitomi"
-    content_type = "manga"
-    site_hosts = ("hitomi.la", "www.hitomi.la")
-    site_base_url = "https://hitomi.la/"
+    site_name = hitomi_settings.SITE_NAME
+    site_display_name = hitomi_settings.SITE_DISPLAY_NAME
+    content_type = hitomi_settings.CONTENT_TYPE
+    site_hosts = hitomi_settings.SITE_HOSTS
+    site_base_url = hitomi_settings.SITE_BASE_URL
 
     BASE = "https://hitomi.la"
     CDN_BASE = "https://ltn.gold-usergeneratedcontent.net"
     asset_download_workers = 3
-
-    LANGUAGE_OPTIONS = (
-        ScraperConfigOption("all", "All Languages"),
-        ScraperConfigOption("english", "English"),
-        ScraperConfigOption("japanese", "Japanese"),
-        ScraperConfigOption("chinese", "Chinese"),
-        ScraperConfigOption("korean", "Korean"),
-        ScraperConfigOption("spanish", "Spanish"),
-        ScraperConfigOption("french", "French"),
-        ScraperConfigOption("portuguese", "Portuguese"),
-        ScraperConfigOption("thai", "Thai"),
-        ScraperConfigOption("vietnamese", "Vietnamese"),
-        ScraperConfigOption("german", "German"),
-        ScraperConfigOption("italian", "Italian"),
-        ScraperConfigOption("russian", "Russian"),
-    )
-    source_config_fields = (
-        ScraperConfigField(
-            key="languages",
-            label="Languages",
-            control="multi_select",
-            options=list(LANGUAGE_OPTIONS),
-            default=["all"],
-            description="Choose which Hitomi gallery languages should appear in discovery.",
-        ),
-    )
+    source_config_fields = hitomi_settings.SOURCE_CONFIG_FIELDS
 
     GALLERY_PATH_RE = re.compile(
         r"^/(?:doujinshi|manga|cg|imageset|gamecg|artistcg)/.+-(\d+)(?:\.html)?/?$",
@@ -63,30 +39,10 @@ class HitomiScraper(BaseScraper):
 
     @classmethod
     def normalize_source_config(cls, config: dict | None) -> dict:
-        normalized = super().normalize_source_config(config)
-        languages = [
-            str(language or "").strip().casefold()
-            for language in normalized.get("languages", [])
-            if str(language or "").strip()
-        ]
-        if not languages or "all" in languages:
-            normalized["languages"] = ["all"]
-        else:
-            normalized["languages"] = list(dict.fromkeys(languages))
-        return normalized
+        return hitomi_settings.normalize_config(config, super().normalize_source_config)
 
     def selected_languages(self) -> list[str]:
-        languages = self.get_source_config_value("languages", ["all"])
-        if not isinstance(languages, list):
-            return ["all"]
-        normalized = [
-            str(language or "").strip().casefold()
-            for language in languages
-            if str(language or "").strip()
-        ]
-        if not normalized or "all" in normalized:
-            return ["all"]
-        return list(dict.fromkeys(normalized))
+        return hitomi_settings.selected_languages(self.source_config)
 
     @classmethod
     def can_handle(cls, url: str) -> bool:

@@ -4,18 +4,22 @@ import time
 
 import requests
 
+from core.app_logging import get_logger
 from scrapers.base import ScraperError
 from scrapers.discovery_base import BaseDiscoveryProvider
 from scrapers.models import CatalogPage, CatalogSeries
-from scrapers.sites.mangadex import MangaDexScraper
+from scrapers.site_settings import mangadex_settings
+from scrapers.sites.mangadex_downloader import MangaDexScraper
 from stores.scraper_settings_store import load_scraper_default_config
+
+logger = get_logger(__name__)
 
 
 class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
-    site_name = "mangadex"
-    site_display_name = "MangaDex"
-    site_hosts = ("mangadex.org", "www.mangadex.org")
-    site_base_url = "https://mangadex.org/"
+    site_name = mangadex_settings.SITE_NAME
+    site_display_name = mangadex_settings.SITE_DISPLAY_NAME
+    site_hosts = mangadex_settings.SITE_HOSTS
+    site_base_url = mangadex_settings.SITE_BASE_URL
 
     BASE = "https://mangadex.org"
     API_BASE = "https://api.mangadex.org"
@@ -41,13 +45,22 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
     _count_cache: dict[tuple[str, tuple[str, ...]], int | None] = {}
     _count_cache_lock = threading.Lock()
 
+    def __init__(self):
+        self._scraper: MangaDexScraper | None = None
+        self._configured_languages_cache: tuple[str, ...] | None = None
+
     def _configured_scraper(self) -> MangaDexScraper:
-        scraper = MangaDexScraper()
-        scraper.apply_source_config(load_scraper_default_config(self.site_name))
-        return scraper
+        if self._scraper is None:
+            scraper = MangaDexScraper()
+            scraper.apply_source_config(load_scraper_default_config(self.site_name))
+            self._scraper = scraper
+        return self._scraper
 
     def _configured_languages(self) -> list[str]:
-        return list(self._configured_scraper()._language_priority())
+        if self._configured_languages_cache is None:
+            default_config = load_scraper_default_config(self.site_name)
+            self._configured_languages_cache = mangadex_settings.selected_language_priority(default_config)
+        return list(self._configured_languages_cache)
 
     def get_display_name(self) -> str:
         return self.site_display_name
@@ -56,12 +69,14 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
         page = max(1, int(page))
         query = " ".join(str(search_query or "").split()).strip()
         offset = (page - 1) * self.PAGE_SIZE
+        configured_languages = self._configured_languages()
+        scraper = self._configured_scraper()
 
         params = {
             "limit": self.PAGE_SIZE,
             "offset": offset,
             "includes[]": ["cover_art", "author", "artist"],
-            "availableTranslatedLanguage[]": self._configured_languages(),
+            "availableTranslatedLanguage[]": configured_languages,
             "contentRating[]": list(self.CONTENT_RATINGS),
         }
         if query:
@@ -77,7 +92,7 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
         entries = []
         seen = set()
         for item in items:
-            entry = self._catalog_entry_from_item(item)
+            entry = self._catalog_entry_from_item(item, scraper=scraper)
             if entry is None:
                 continue
             key = entry.identity_key()
@@ -86,7 +101,7 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
             seen.add(key)
             entries.append(entry)
 
-        self._populate_language_counts(entries)
+        self._populate_language_counts(entries, configured_languages)
 
         return CatalogPage(
             site=self.site_name,
@@ -124,8 +139,7 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
                 pass
         return self.DEFAULT_RETRY_AFTER_SECONDS * (attempt + 1)
 
-    def _catalog_entry_from_item(self, item: dict) -> CatalogSeries | None:
-        scraper = self._configured_scraper()
+    def _catalog_entry_from_item(self, item: dict, *, scraper: MangaDexScraper) -> CatalogSeries | None:
         manga_id = str(item.get("id") or "").strip()
         if not manga_id:
             return None
@@ -162,9 +176,9 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
             total_chapters=None,
         )
 
-    def _populate_language_counts(self, entries: list[CatalogSeries]) -> None:
+    def _populate_language_counts(self, entries: list[CatalogSeries], configured_languages: list[str]) -> None:
         uncached = []
-        language_key = tuple(self._configured_languages())
+        language_key = tuple(configured_languages)
         for entry in entries:
             manga_id = str(getattr(entry, "series_id", "") or "").strip()
             if not manga_id:
@@ -180,25 +194,61 @@ class MangaDexDiscoveryProvider(BaseDiscoveryProvider):
             return
 
         workers = min(self.COUNT_FETCH_WORKERS, len(uncached))
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            futures = {
-                pool.submit(self._language_count_for_manga, manga_id): (entry, cache_key)
-                for manga_id, entry, cache_key in uncached
-            }
-            for future in as_completed(futures):
-                entry, cache_key = futures[future]
-                count = None
-                try:
-                    count = future.result()
-                except Exception:
+        try:
+            with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+                futures = {
+                    pool.submit(self._chapter_count_for_manga, manga_id, configured_languages): (entry, cache_key)
+                    for manga_id, entry, cache_key in uncached
+                }
+                for future in as_completed(futures):
+                    entry, cache_key = futures[future]
                     count = None
-                with self._count_cache_lock:
-                    self._count_cache[cache_key] = count
-                entry.total_chapters = count
+                    try:
+                        count = future.result()
+                    except Exception:
+                        count = None
+                    with self._count_cache_lock:
+                        self._count_cache[cache_key] = count
+                    entry.total_chapters = count
+        except RuntimeError as exc:
+            if "interpreter shutdown" in str(exc).casefold():
+                logger.info(
+                    "Skipping MangaDex discovery chapter counts during interpreter shutdown for %d entries",
+                    len(uncached),
+                )
+                return
+            raise
 
-    def _language_count_for_manga(self, manga_id: str) -> int | None:
+    def _chapter_count_for_manga(self, manga_id: str, configured_languages: list[str]) -> int | None:
+        try:
+            aggregate_count = self._aggregate_count_for_manga(manga_id, configured_languages)
+        except Exception:
+            aggregate_count = None
+        if aggregate_count is not None:
+            return aggregate_count
+        return self._language_count_for_manga(manga_id, configured_languages)
+
+    def _aggregate_count_for_manga(self, manga_id: str, configured_languages: list[str]) -> int | None:
+        payload = self._api_get(
+            f"/manga/{manga_id}/aggregate",
+            params={"translatedLanguage[]": list(configured_languages)},
+        )
+        volumes = payload.get("volumes") or {}
+        count = 0
+        for volume_data in volumes.values():
+            if not isinstance(volume_data, dict):
+                continue
+            chapters = volume_data.get("chapters") or {}
+            if not isinstance(chapters, dict):
+                continue
+            for chapter_data in chapters.values():
+                if isinstance(chapter_data, dict):
+                    count += 1
+        return count if count > 0 else None
+
+    def _language_count_for_manga(self, manga_id: str, configured_languages: list[str]) -> int | None:
         scraper = self._configured_scraper()
-        chapters = scraper._fetch_chapters(manga_id, translated_languages=self._configured_languages())
+        chapters = scraper._fetch_chapters(manga_id, translated_languages=list(configured_languages))
         count = len(chapters)
         return count if count > 0 else None
 

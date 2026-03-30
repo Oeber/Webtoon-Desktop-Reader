@@ -11,17 +11,17 @@ from core.app_logging import get_logger
 from scrapers.base import ScraperError
 from scrapers.discovery_base import BaseDiscoveryProvider
 from scrapers.models import CatalogPage, CatalogSeries
-from scrapers.sites.hitomi import HitomiScraper
+from scrapers.site_settings import hitomi_settings
 from stores.scraper_settings_store import load_scraper_default_config
 
 logger = get_logger(__name__)
 
 
 class HitomiDiscoveryProvider(BaseDiscoveryProvider):
-    site_name = "hitomi"
-    site_display_name = "Hitomi"
-    site_hosts = ("hitomi.la", "www.hitomi.la")
-    site_base_url = "https://hitomi.la/"
+    site_name = hitomi_settings.SITE_NAME
+    site_display_name = hitomi_settings.SITE_DISPLAY_NAME
+    site_hosts = hitomi_settings.SITE_HOSTS
+    site_base_url = hitomi_settings.SITE_BASE_URL
 
     BASE = "https://hitomi.la"
     CDN_BASE = "https://ltn.gold-usergeneratedcontent.net"
@@ -47,9 +47,7 @@ class HitomiDiscoveryProvider(BaseDiscoveryProvider):
         self._galleries_index_version: str | None = None
 
     def _configured_languages(self) -> list[str]:
-        scraper = HitomiScraper()
-        scraper.apply_source_config(load_scraper_default_config(self.site_name))
-        return scraper.selected_languages()
+        return hitomi_settings.selected_languages(load_scraper_default_config(self.site_name))
 
     def _merge_language_gallery_ids(self, resolver) -> list[int]:
         languages = self._configured_languages()

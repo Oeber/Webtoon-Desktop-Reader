@@ -10,6 +10,7 @@ datas = [
 hiddenimports = [
     *collect_submodules("scrapers.sites"),
     *collect_submodules("scrapers.discovery_sites"),
+    *collect_submodules("scrapers.site_settings"),
 ]
 
 a = Analysis(
