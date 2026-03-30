@@ -66,6 +66,7 @@ VIEWER_MANGA_FIT_MODE_KEY = "viewer_manga_fit_mode"
 VIEWER_NAV_DIRECTION_KEY = "viewer_nav_direction"
 DISCOVERY_DEFAULT_PROVIDER_KEY = "discovery_default_provider"
 LIBRARY_PATH_KEY = "library_path"
+APP_LOCALE_KEY = "app_locale"
 
 _app_settings = get_app_settings_store()
 

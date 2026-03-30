@@ -49,6 +49,7 @@ from gui.downloader.download_widgets import SpinnerCircle, format_last_updated
 from gui.downloader.helpers import sanitize_webtoon_name
 from gui.downloader.page_base import DownloadHistoryPageBase
 from gui.search.global_search import rank_webtoons
+from gui.common.strings import t
 from stores.scraper_settings_store import load_scraper_default_config
 from stores.settings_store import load_library_path
 from library.library_manager import scan_library
@@ -344,7 +345,7 @@ class UpdateCard(QFrame):
         self.image_container.setFixedSize(self.card_width, self.card_height)
         self.image_container.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
 
-        self.thumb_label = QLabel("No Cover", self.image_container)
+        self.thumb_label = QLabel(t("updates.page.card.no_cover"), self.image_container)
         self.thumb_label.setFixedSize(self.card_width, self.card_height)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self._apply_border_style(hovered=False)
@@ -415,9 +416,9 @@ class UpdateCard(QFrame):
         latest_row.addWidget(self.meta_btn, 1)
         latest_row.addWidget(self.new_chip, 0, Qt.AlignVCenter)
 
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel(t("download.status.ready"))
         self.status_label.setStyleSheet(status_text_style(UPDATE_STATUS_COLORS["Ready"]))
-        self.detail_label = QLabel("Ready to download new chapters")
+        self.detail_label = QLabel(t("updates.page.card.ready_detail"))
         self.detail_label.setWordWrap(True)
         self.detail_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
         self.status_label.hide()
@@ -446,27 +447,27 @@ class UpdateCard(QFrame):
         percent = int((current / total) * 100)
         self.progress_overlay.show()
         self.spinner.set_progress(percent)
-        self.status_label.setText("Downloading")
+        self.status_label.setText(t("download.status.downloading"))
         self.status_label.setStyleSheet(status_text_style(UPDATE_STATUS_COLORS["Downloading"]))
-        self.detail_label.setText(f"Downloading {current} / {total} chapters")
+        self.detail_label.setText(t("updates.page.card.progress", current=current, total=total))
 
     def set_status(self, status: str):
         color = UPDATE_STATUS_COLORS.get(status, "#d7b1aa")
-        self.status_label.setText(status)
+        self.status_label.setText(t(f"download.status.{status.casefold()}"))
         self.status_label.setStyleSheet(status_text_style(color))
 
         if status == "Completed":
             self.progress_overlay.hide()
             self.spinner.set_complete(100)
-            self.detail_label.setText("Update finished")
+            self.detail_label.setText(t("updates.page.card.finished"))
         elif status in ("Failed", "Cancelled"):
             self.progress_overlay.hide()
             self.spinner.set_failed()
-            self.detail_label.setText("Update did not complete")
+            self.detail_label.setText(t("updates.page.card.incomplete"))
         elif status == "Downloading":
             self.progress_overlay.show()
             self.spinner.set_spinning()
-            self.detail_label.setText("Downloading new chapters")
+            self.detail_label.setText(t("updates.page.card.downloading_detail"))
         else:
             self.progress_overlay.hide()
             self.spinner.set_idle()
@@ -499,7 +500,7 @@ class UpdateCard(QFrame):
             self.card_width,
             self.card_height,
             LIBRARY_CARD_RADIUS,
-            fallback_text="No Cover",
+            fallback_text=t("updates.page.card.no_cover"),
         )
 
     def _center_progress_overlay(self):
@@ -524,16 +525,16 @@ class UpdateCard(QFrame):
 
     def _count_label(self) -> str:
         if self.new_chapters == 1:
-            return "1 New"
-        return f"{self.new_chapters} New"
+            return t("updates.page.card.new_one")
+        return t("updates.page.card.new_many", count=self.new_chapters)
 
     def _summary_text(self) -> str:
         return site_display_name(self.site_name)
 
     def _meta_text(self) -> str:
         if self.last_update_at is None:
-            return "Never updated"
-        return f"Updated {datetime.fromtimestamp(int(self.last_update_at)).strftime('%Y-%m-%d')}"
+            return t("updates.page.card.never_updated")
+        return t("updates.page.card.updated_on", date=datetime.fromtimestamp(int(self.last_update_at)).strftime("%Y-%m-%d"))
 
     def _apply_select_button_style(self):
         self.select_btn.setStyleSheet(action_button_checked_style("rgba(255,138,122,0.95)"))
@@ -573,12 +574,12 @@ class UpdatePage(DownloadHistoryPageBase):
     OPEN_REFRESH_THROTTLE_MS = 5000
 
     def __init__(self, main_window):
-        super().__init__(main_window, "Updates", "Series with new chapters", history_kind="update")
+        super().__init__(main_window, t("updates.page.title"), t("updates.page.section"), history_kind="update")
         self.settings_store = get_webtoon_settings()
         self._candidates = []
         self._available_updates = []
         self._pending_search = ""
-        self._empty_message = "Checking saved titles for updates..."
+        self._empty_message = t("updates.page.empty.checking")
         self._check_request_id = 0
         self._pending_checks = 0
         self._completed_checks = 0
@@ -596,7 +597,7 @@ class UpdatePage(DownloadHistoryPageBase):
         self._open_refresh_pending_reason = ""
 
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search titles with updates...")
+        self.search_input.setPlaceholderText(t("updates.page.search_placeholder"))
         self.search_input.setFixedHeight(36)
         self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
         self.search_input.textChanged.connect(self._schedule_filter)
@@ -604,7 +605,7 @@ class UpdatePage(DownloadHistoryPageBase):
 
         self.status_label = QLabel("")
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
-        self.status_label.setText("Checking saved titles for updates...")
+        self.status_label.setText(t("updates.page.status.checking"))
         self.layout().insertWidget(4, self.status_label)
 
         self.batch_bar = QWidget(self)
@@ -617,12 +618,12 @@ class UpdatePage(DownloadHistoryPageBase):
         self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.batch_label)
 
-        self.update_selected_btn = QPushButton("Update Selected")
+        self.update_selected_btn = QPushButton(t("updates.page.batch.update_selected"))
         self.update_selected_btn.setStyleSheet(BUTTON_STYLE)
         self.update_selected_btn.clicked.connect(self._update_selected)
         batch_layout.addWidget(self.update_selected_btn)
 
-        self.clear_selection_btn = QPushButton("Clear")
+        self.clear_selection_btn = QPushButton(t("library.batch.clear"))
         self.clear_selection_btn.setStyleSheet(BUTTON_STYLE)
         self.clear_selection_btn.clicked.connect(self._clear_selection)
         batch_layout.addWidget(self.clear_selection_btn)
@@ -760,19 +761,19 @@ class UpdatePage(DownloadHistoryPageBase):
         self._results_refresh_timer.stop()
         self._site_check_stats = {}
         self._empty_message = (
-            "Checking saved titles for updates..."
+            t("updates.page.empty.checking")
             if candidates else
-            "No comics with a saved source URL yet."
+            t("updates.page.empty.no_saved")
         )
         self.set_error_text("")
         self._apply_filter()
 
         if not candidates:
-            self.status_label.setText("No saved titles available for updates")
+            self.status_label.setText(t("updates.page.status.none_saved"))
             self._finish_check_cycle()
             return True
 
-        self.status_label.setText(f"Checking 0 / {len(candidates)} saved titles...")
+        self.status_label.setText(t("updates.page.status.checking_progress", current=0, total=len(candidates)))
         current_request_id = self._check_request_id
         for candidate in candidates:
             self._checker.load(current_request_id, candidate)
@@ -919,7 +920,7 @@ class UpdatePage(DownloadHistoryPageBase):
     def _sync_batch_actions(self):
         count = len(self._selected_titles)
         self.batch_bar.setVisible(count > 0)
-        self.batch_label.setText(f"{count} selected")
+        self.batch_label.setText(t("updates.page.batch.selected", count=count))
         self.update_selected_btn.setEnabled(count > 0)
         self.clear_selection_btn.setEnabled(count > 0)
         for card in self._entry_widgets:
@@ -977,23 +978,23 @@ class UpdatePage(DownloadHistoryPageBase):
 
     def start_update_for_webtoon(self, webtoon_name: str, chapter_urls: list[str] | None = None) -> str | None:
         if not webtoon_name:
-            return "Please choose a title to update."
+            return t("updates.page.start.choose_title")
 
         source_url = self.settings_store.get_source_url(webtoon_name)
         if not source_url:
-            error = f"No saved source URL found for '{webtoon_name}'."
+            error = t("updates.page.start.no_source", name=webtoon_name)
             self.set_error_text(error)
             return error
 
         if self.settings_store.get_completed(webtoon_name):
-            error = f"'{webtoon_name}' is marked completed."
+            error = t("updates.page.start.completed", name=webtoon_name)
             self.set_error_text(error)
             return error
 
         remaining = cooldown_remaining(self.settings_store.get_last_update_at(webtoon_name))
         if remaining > 0:
             self._sync_update_buttons()
-            error = f"'{webtoon_name}' is still on cooldown."
+            error = t("updates.page.start.cooldown", name=webtoon_name)
             self.set_error_text(error)
             return error
 
@@ -1044,7 +1045,7 @@ class UpdatePage(DownloadHistoryPageBase):
             if self.service.has_active_download(widget.name):
                 widget.update_btn.setEnabled(False)
                 job_status = self.service.get_status(widget.name) or "Downloading"
-                widget.update_btn.setToolTip("Queued..." if job_status == "Queued" else "Updating...")
+                widget.update_btn.setToolTip(t("updates.page.button.queued") if job_status == "Queued" else t("updates.page.button.updating"))
                 current, total = self.service.get_progress(widget.name)
                 if job_status == "Queued":
                     widget.set_status("Queued")
@@ -1056,9 +1057,8 @@ class UpdatePage(DownloadHistoryPageBase):
 
             remaining = widget.cooldown_remaining()
             widget.update_btn.setEnabled(remaining == 0)
-            widget.update_btn.setToolTip(f"Wait {remaining}s" if remaining > 0 else "Update")
-            if widget.status_label.text() != "Ready":
-                widget.set_status("Ready")
+            widget.update_btn.setToolTip(t("updates.page.button.wait", remaining=remaining) if remaining > 0 else t("updates.page.button.update"))
+            widget.set_status("Ready")
 
     def _on_download_started(self, name: str):
         logger.info("Update-page download started for %s", name)
@@ -1103,7 +1103,7 @@ class UpdatePage(DownloadHistoryPageBase):
 
         if self._pending_checks > 0:
             self.status_label.setText(
-                f"Checking {self._completed_checks} / {self._pending_checks} saved titles..."
+                t("updates.page.status.checking_progress", current=self._completed_checks, total=self._pending_checks)
             )
 
         if self._completed_checks >= self._pending_checks:
@@ -1112,15 +1112,15 @@ class UpdatePage(DownloadHistoryPageBase):
     def _finish_check_cycle(self):
         count = len(self._available_updates)
         if count == 0:
-            self.status_label.setText("No updates found")
+            self.status_label.setText(t("updates.page.status.none_found"))
         elif count == 1:
-            self.status_label.setText("1 title has updates")
+            self.status_label.setText(t("updates.page.status.one_found"))
         else:
-            self.status_label.setText(f"{count} titles have updates")
+            self.status_label.setText(t("updates.page.status.many_found", count=count))
 
         if self._check_errors:
-            suffix = "title" if self._check_errors == 1 else "titles"
-            self.set_error_text(f"Could not check {self._check_errors} saved {suffix}.")
+            error_key = "updates.page.error.check_saved_one" if self._check_errors == 1 else "updates.page.error.check_saved_many"
+            self.set_error_text(t(error_key, count=self._check_errors))
         else:
             self.set_error_text("")
 
@@ -1129,7 +1129,7 @@ class UpdatePage(DownloadHistoryPageBase):
             clear_missing_names=[item["name"] for item in self._candidates],
         )
         self._commit_site_reliability_updates()
-        self._empty_message = "No updates found right now."
+        self._empty_message = t("updates.page.empty.none_now")
         self._results_refresh_pending = False
         self._results_refresh_timer.stop()
         self._apply_filter()
@@ -1142,10 +1142,10 @@ class UpdatePage(DownloadHistoryPageBase):
 
     def _current_empty_message(self) -> str:
         if self._pending_search.strip():
-            return "No update cards match your search."
+            return t("updates.page.empty.no_match")
         if self._completed_checks < self._pending_checks:
             return self._empty_message
-        return "No updates found right now."
+        return t("updates.page.empty.none_now")
 
     def _relayout_cards(self):
         if self._cards_layout is None or not self._entry_widgets:

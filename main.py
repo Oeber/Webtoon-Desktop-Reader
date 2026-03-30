@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import QTimer
 from core.app_logging import setup_logging, get_logger
 from core.app_paths import resource_path
+from gui.common.strings import set_locale
 
 logger = None
 
@@ -38,6 +39,10 @@ def main(argv: list[str] | None = None) -> int:
     raw_argv = argv or sys.argv
     setup_logging()
     logger = get_logger(__name__)
+
+    from stores.settings_store import APP_LOCALE_KEY, load_setting
+
+    set_locale(str(load_setting(APP_LOCALE_KEY, "en") or "en").strip() or "en")
 
     helper = _helper_args(list(raw_argv))
     if helper is not None:

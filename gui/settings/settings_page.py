@@ -67,6 +67,7 @@ from stores.scraper_settings_store import (
     save_scraper_default_config,
 )
 from stores.settings_store import (
+    APP_LOCALE_KEY,
     APP_UPDATE_CHECK_ON_STARTUP_KEY,
     APP_UPDATE_LAST_ASSET_URL_KEY,
     APP_UPDATE_LAST_CHECK_AT_KEY,
@@ -114,7 +115,7 @@ from stores.settings_store import (
     save_settings,
 )
 from gui.settings.library_health_dialog import LibraryHealthDialog
-from gui.common.strings import t
+from gui.common.strings import available_locales, get_locale, set_locale, t
 from gui.common.styles import (
     APP_UPDATE_PROGRESS_STYLE,
     BUTTON_STYLE,
@@ -371,7 +372,7 @@ class _StartupUpdateDialog(QDialog):
 
     def install_failed(self, error: str):
         self._install_started = False
-        self.message_label.setText(f"Automatic update failed.\n\n{error}")
+        self.message_label.setText(t("settings.startup_update.failed", error=error))
         self.progress_bar.hide()
         self.progress_label.hide()
         self.install_btn.setEnabled(True)
@@ -469,6 +470,44 @@ class SettingsPage(QWidget):
         layout.setContentsMargins(0, 8, 0, 0)
         layout.setSpacing(16)
         layout.setAlignment(Qt.AlignTop)
+
+        locale_card, locale_layout = self._build_card()
+        locale_header = QHBoxLayout()
+        locale_header.setContentsMargins(0, 0, 0, 0)
+        locale_header.setSpacing(10)
+
+        locale_label = QLabel(t("settings.general.language"))
+        locale_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        locale_header.addWidget(locale_label)
+        locale_header.addStretch()
+        locale_layout.addLayout(locale_header)
+
+        locale_help = QLabel(t("settings.general.language_help"))
+        locale_help.setWordWrap(True)
+        locale_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        locale_layout.addWidget(locale_help)
+
+        locale_row = QHBoxLayout()
+        locale_row.setSpacing(10)
+
+        locale_value_label = QLabel(t("settings.general.language"))
+        locale_value_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        locale_value_label.setFixedWidth(100)
+
+        self.locale_combo = QComboBox()
+        self.locale_combo.setStyleSheet(INPUT_STYLE)
+        self.locale_combo.setFont(QFont("Segoe UI", 10))
+        locale_view = QListView(self.locale_combo)
+        locale_view.setFont(QFont("Segoe UI", 10))
+        self.locale_combo.setView(locale_view)
+        self._populate_locale_combo()
+        self.locale_combo.currentIndexChanged.connect(self._on_app_locale_changed)
+
+        locale_row.addWidget(locale_value_label)
+        locale_row.addWidget(self.locale_combo, 1)
+        locale_layout.addLayout(locale_row)
+
+        layout.addWidget(locale_card)
 
         library_card, library_layout = self._build_card()
         header_row = QHBoxLayout()
@@ -723,7 +762,7 @@ class SettingsPage(QWidget):
         actions_row.setContentsMargins(0, 2, 0, 0)
         actions_row.setSpacing(12)
 
-        reset_btn = QPushButton("Reset Defaults")
+        reset_btn = QPushButton(t("settings.general.reset_defaults"))
         reset_btn.setStyleSheet(BUTTON_STYLE)
         reset_btn.setFixedWidth(148)
         reset_btn.clicked.connect(self._reset)
@@ -913,7 +952,7 @@ class SettingsPage(QWidget):
         actions_row.setContentsMargins(0, 2, 0, 0)
         actions_row.setSpacing(12)
 
-        reset_btn = QPushButton("Reset Defaults")
+        reset_btn = QPushButton(t("settings.general.reset_defaults"))
         reset_btn.setStyleSheet(BUTTON_STYLE)
         reset_btn.setFixedWidth(148)
         reset_btn.clicked.connect(self._reset)
@@ -932,6 +971,42 @@ class SettingsPage(QWidget):
         scroll.setStyleSheet(TRANSPARENT_SCROLL_AREA_STYLE)
         scroll.setWidget(page)
         return scroll
+
+    def _populate_locale_combo(self):
+        current_locale = str(load_setting(APP_LOCALE_KEY, get_locale()) or get_locale()).strip() or "en"
+        locales = list(available_locales())
+        preferred = ["en", "pt-BR"]
+        ordered = [locale for locale in preferred if locale in locales]
+        ordered.extend(locale for locale in locales if locale not in ordered)
+
+        self.locale_combo.blockSignals(True)
+        self.locale_combo.clear()
+        for locale in ordered:
+            self.locale_combo.addItem(self._locale_display_name(locale), locale)
+        index = self.locale_combo.findData(current_locale)
+        if index < 0:
+            index = self.locale_combo.findData("en")
+        self.locale_combo.setCurrentIndex(max(0, index))
+        self.locale_combo.blockSignals(False)
+
+    def _locale_display_name(self, locale: str) -> str:
+        normalized = str(locale or "").strip()
+        if normalized == "pt-BR":
+            return t("settings.locale.pt_br")
+        if normalized == "en":
+            return t("settings.locale.english")
+        return normalized
+
+    def _on_app_locale_changed(self, _index: int):
+        if not hasattr(self, "locale_combo"):
+            return
+        locale = str(self.locale_combo.currentData() or "en").strip() or "en"
+        current_saved = str(load_setting(APP_LOCALE_KEY, "en") or "en").strip() or "en"
+        if locale == current_saved:
+            return
+        save_setting(APP_LOCALE_KEY, locale)
+        set_locale(locale)
+        self.status_label.setText(t("settings.general.language_restart"))
 
     def _build_color_setting_row(self, label_text: str, button: QPushButton, reset_callback) -> QHBoxLayout:
         row = QHBoxLayout()

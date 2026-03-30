@@ -240,10 +240,7 @@ class MainWindow(QMainWindow):
         result = QMessageBox.warning(
             self,
             t("main.close.downloads_title"),
-            "Downloads are still running.\n\n"
-            f"Closing now will cancel {count} active download(s): {detail_text}.\n"
-            "The source URL will still be saved for later updates.\n\n"
-            "Close anyway?",
+            t("main.close.downloads_message", count=count, detail_text=detail_text),
             QMessageBox.Close | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )

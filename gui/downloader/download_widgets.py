@@ -1,3 +1,4 @@
+import html
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
@@ -167,6 +168,9 @@ class DownloadEntry(QFrame):
 
         self.sub_label = QLabel("")
         self.sub_label.setStyleSheet(DOWNLOAD_ENTRY_SUB_LABEL_STYLE)
+        self.sub_label.setOpenExternalLinks(True)
+        self.sub_label.setTextFormat(Qt.RichText)
+        self.sub_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
         self.sub_label.hide()
 
         text_col.addWidget(self.name_label)
@@ -326,8 +330,16 @@ class UpdateEntry(DownloadEntry):
         self._refresh_sub_label()
 
     def _refresh_sub_label(self):
-        self.sub_label.setText(f"{self.source_url}\n{format_last_updated(self.last_update_at)}")
+        lines = [self._format_source_url_line(self.source_url), html.escape(format_last_updated(self.last_update_at))]
+        self.sub_label.setText("<br>".join(lines))
         self.sub_label.show()
+
+    def _format_source_url_line(self, url: str) -> str:
+        normalized = str(url or "").strip()
+        if not normalized:
+            return ""
+        escaped = html.escape(normalized, quote=True)
+        return f'<a href="{escaped}" style="color:#d7b1aa; text-decoration:underline;">{escaped}</a>'
 
 
 class HistoryDownloadEntry(DownloadEntry):
@@ -395,15 +407,16 @@ class HistoryDownloadEntry(DownloadEntry):
         return any(marker in text for marker in markers)
 
     def _refresh_sub_label(self):
-        kind_label = t("download.kind.update") if self.kind == "update" else t("download.kind.manual")
-        lines = [kind_label, format_last_activity(self.updated_at)]
+        kind_label = html.escape(t("download.kind.update") if self.kind == "update" else t("download.kind.manual"))
+        lines = [kind_label, html.escape(format_last_activity(self.updated_at))]
         if self.source_url:
-            lines.insert(1, self.source_url)
+            escaped = html.escape(self.source_url, quote=True)
+            lines.insert(1, f'<a href="{escaped}" style="color:#d7b1aa; text-decoration:underline;">{escaped}</a>')
         if self.last_error and self._status in {"Failed", "Cancelled"}:
-            lines.append(t("download.history.reason", error=self.last_error))
+            lines.append(html.escape(t("download.history.reason", error=self.last_error)))
         if self._status == "Completed":
-            lines.append(t("download.entry.open_details"))
-        self.sub_label.setText("\n".join(lines))
+            lines.append(html.escape(t("download.entry.open_details")))
+        self.sub_label.setText("<br>".join(lines))
         self.sub_label.show()
 
     def _retry(self):
