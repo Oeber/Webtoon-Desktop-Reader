@@ -2,6 +2,7 @@ import html
 import os
 import re
 import time
+from pathlib import Path
 
 import qtawesome as qta
 
@@ -45,6 +46,7 @@ from core.app_update import (
     load_last_update_error,
 )
 from core.app_logging import archived_log_paths, current_log_path, get_logger
+from core.library_layout import move_library_contents
 from scrapers.discovery_registry import get_all_discovery_providers, get_all_discovery_providers_including_disabled
 from scrapers.registry import get_all_scrapers_including_disabled
 from scrapers.site_availability import (
@@ -74,6 +76,7 @@ from stores.settings_store import (
     APP_UPDATE_LAST_URL_KEY,
     APP_UPDATE_LAST_VERSION_KEY,
     DEFAULT_LIBRARY_PATH,
+    DEFAULT_LIBRARY_CONTENT_PATHS,
     LIBRARY_SHOW_DOWNLOADS_SECTION_KEY,
     LIBRARY_SHOW_NEW_SECTION_KEY,
     LIBRARY_SHOW_BOOKMARKED_SECTION_KEY,
@@ -100,10 +103,12 @@ from stores.settings_store import (
     VIEWER_MANGA_FIT_MODE_KEY,
     VIEWER_NAV_DIRECTION_KEY,
     VIEWER_ZOOM_KEY,
+    load_library_content_paths,
     load_default_discovery_provider,
     load_library_path,
     load_setting,
     save_default_discovery_provider,
+    save_library_content_paths,
     save_library_path,
     save_setting,
     save_settings,
@@ -193,6 +198,35 @@ class _SiteReliabilityTestWorker(QThread):
             error = str(exc) or error
         duration_ms = int((time.perf_counter() - started_at) * 1000.0)
         self.result_ready.emit(self._site_name, ok, error, duration_ms)
+
+
+class _LibraryMoveWorker(QThread):
+    result_ready = Signal(object)
+
+    def __init__(
+        self,
+        source_root: str,
+        destination_root: str,
+        source_content_paths: dict[str, str],
+        destination_content_paths: dict[str, str],
+    ):
+        super().__init__()
+        self._source_root = str(source_root or "").strip()
+        self._destination_root = str(destination_root or "").strip()
+        self._source_content_paths = dict(source_content_paths or {})
+        self._destination_content_paths = dict(destination_content_paths or {})
+
+    def run(self):
+        try:
+            move_library_contents(
+                self._source_root,
+                self._destination_root,
+                source_content_paths=self._source_content_paths,
+                destination_content_paths=self._destination_content_paths,
+            )
+            self.result_ready.emit((True, ""))
+        except Exception as exc:
+            self.result_ready.emit((False, str(exc) or "Could not move the library contents."))
 
 
 class _StartupUpdateDialog(QDialog):
@@ -373,6 +407,8 @@ class SettingsPage(QWidget):
         self._reliability_test_workers = {}
         self._pending_reliability_popup_site = ""
         self._pending_source_authorization = None
+        self._library_move_worker = None
+        self._pending_library_layout_save = None
         self._update_worker = None
         self._update_install_worker = None
         self._latest_update_result = None
@@ -444,22 +480,33 @@ class SettingsPage(QWidget):
         header_row.addStretch()
         library_layout.addLayout(header_row)
 
-        row = QHBoxLayout()
-        row.setSpacing(8)
+        content_folders_label = QLabel("Content paths")
+        content_folders_label.setStyleSheet(SECTION_LABEL_EMPHASIS_STYLE)
+        library_layout.addWidget(content_folders_label)
 
-        self.path_input = QLineEdit()
-        self.path_input.setText(load_library_path())
-        self.path_input.setStyleSheet(INPUT_STYLE)
-        self.path_input.editingFinished.connect(self._on_path_edited)
+        content_folders_help = QLabel(
+            "Each content type can use its own full folder path."
+        )
+        content_folders_help.setWordWrap(True)
+        content_folders_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        library_layout.addWidget(content_folders_help)
 
-        browse_btn = QPushButton("Browse")
-        browse_btn.setStyleSheet(BUTTON_STYLE)
-        browse_btn.setFixedWidth(90)
-        browse_btn.clicked.connect(self._browse)
+        self.webtoon_folder_input = self._build_library_path_input("webtoon")
+        library_layout.addLayout(self._build_library_path_row("Webtoons", self.webtoon_folder_input, "webtoon"))
 
-        row.addWidget(self.path_input)
-        row.addWidget(browse_btn)
-        library_layout.addLayout(row)
+        self.manga_folder_input = self._build_library_path_input("manga")
+        library_layout.addLayout(self._build_library_path_row("Manga", self.manga_folder_input, "manga"))
+
+        self.webnovel_folder_input = self._build_library_path_input("webnovel")
+        library_layout.addLayout(self._build_library_path_row("Webnovels", self.webnovel_folder_input, "webnovel"))
+
+        apply_folders_btn = QPushButton("Apply Content Paths")
+        apply_folders_btn.setStyleSheet(BUTTON_STYLE)
+        apply_folders_btn.setMinimumHeight(34)
+        apply_folders_btn.clicked.connect(self._apply_library_content_paths)
+        library_layout.addWidget(apply_folders_btn)
+
+        self._load_library_content_path_inputs()
 
         self.use_categories_checkbox = QCheckBox("Enable library categories")
         self.use_categories_checkbox.setChecked(load_setting(LIBRARY_USE_CATEGORIES_KEY, True))
@@ -1082,30 +1129,208 @@ class SettingsPage(QWidget):
             card.setMinimumHeight(320)
         return card, layout
 
-    def _browse(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Library Folder")
-        if folder:
-            logger.info("Library folder selected via dialog: %s", folder)
-            self.path_input.setText(folder)
-            self._save(folder)
+    def _build_library_path_input(self, content_type: str) -> QLineEdit:
+        current = load_library_content_paths().get(content_type, DEFAULT_LIBRARY_CONTENT_PATHS[content_type])
+        line_edit = QLineEdit()
+        line_edit.setText(current)
+        line_edit.setStyleSheet(INPUT_STYLE)
+        return line_edit
 
-    def _on_path_edited(self):
-        self._save(self.path_input.text().strip())
+    def _build_library_path_row(self, label_text: str, field: QLineEdit, content_type: str):
+        row = QHBoxLayout()
+        row.setSpacing(8)
 
-    def _save(self, path: str):
-        if not os.path.isdir(path):
-            logger.warning("Rejected invalid library folder: %s", path)
-            self._set_settings_status("Warning: Folder not found.")
+        label = QLabel(label_text)
+        label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        label.setFixedWidth(92)
+        row.addWidget(label)
+        row.addWidget(field, 1)
+
+        browse_btn = QPushButton("Browse")
+        browse_btn.setStyleSheet(BUTTON_STYLE)
+        browse_btn.setFixedWidth(90)
+        browse_btn.clicked.connect(lambda *_args, kind=content_type: self._browse_library_content_path(kind))
+        row.addWidget(browse_btn)
+        return row
+
+    def _load_library_content_path_inputs(self):
+        content_paths = load_library_content_paths()
+        self.webtoon_folder_input.setText(content_paths["webtoon"])
+        self.manga_folder_input.setText(content_paths["manga"])
+        self.webnovel_folder_input.setText(content_paths["webnovel"])
+
+    def _browse_library_content_path(self, content_type: str):
+        current = self._collect_library_content_paths().get(content_type, "")
+        folder = QFileDialog.getExistingDirectory(self, f"Select {content_type.title()} Folder", current or load_library_path())
+        if not folder:
+            return
+        logger.info("%s content folder selected via dialog: %s", content_type, folder)
+        target = {
+            "webtoon": self.webtoon_folder_input,
+            "manga": self.manga_folder_input,
+            "webnovel": self.webnovel_folder_input,
+        }.get(content_type)
+        if target is not None:
+            target.setText(folder)
+
+    def _collect_library_content_paths(self) -> dict[str, str]:
+        return {
+            "webtoon": str(self.webtoon_folder_input.text() or "").strip(),
+            "manga": str(self.manga_folder_input.text() or "").strip(),
+            "webnovel": str(self.webnovel_folder_input.text() or "").strip(),
+        }
+
+    def _validate_library_content_paths(self, content_paths: dict[str, str]) -> tuple[bool, str]:
+        seen = {}
+        for content_type in DEFAULT_LIBRARY_CONTENT_PATHS:
+            value = str((content_paths or {}).get(content_type) or "").strip()
+            if not value:
+                return False, f"{content_type.title()} path cannot be empty."
+            path_obj = Path(value)
+            if not path_obj.is_absolute():
+                return False, f"{content_type.title()} path must be absolute."
+            normalized = str(path_obj).casefold()
+            if normalized in seen:
+                return False, f"{content_type.title()} path must be different from {seen[normalized]}."
+            seen[normalized] = content_type
+        return True, ""
+
+    def _apply_library_content_paths(self):
+        self._save_library_layout(load_library_path(), self._collect_library_content_paths())
+
+    def _save_library_layout(self, path: str, content_paths: dict[str, str]):
+        if self._library_move_worker is not None:
+            self._set_settings_status("Wait for the current library move to finish.")
             return
 
-        save_library_path(path)
-        logger.info("Library path saved: %s", path)
+        valid, message = self._validate_library_content_paths(content_paths)
+        if not valid:
+            self._set_settings_status(message)
+            return
+
+        old_path = load_library_path()
+        old_content_paths = load_library_content_paths()
+        new_path = str(path or "").strip()
+        new_content_paths = {
+            content_type: str(content_paths.get(content_type) or DEFAULT_LIBRARY_CONTENT_PATHS[content_type]).strip()
+            for content_type in DEFAULT_LIBRARY_CONTENT_PATHS
+        }
+        path_changed = old_path != new_path
+        content_paths_changed = old_content_paths != new_content_paths
+
+        if not path_changed and not content_paths_changed:
+            self._set_settings_status("Saved.")
+            return
+
+        should_move = self._should_offer_library_move(old_path, new_path, old_content_paths, new_content_paths)
+        if should_move:
+            answer = QMessageBox.question(
+                self,
+                "Move Library Contents",
+                self._library_move_prompt_text(old_path, new_path, old_content_paths, new_content_paths, path_changed, content_paths_changed),
+                QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+                QMessageBox.Yes,
+            )
+            if answer == QMessageBox.Cancel:
+                self._load_library_content_path_inputs()
+                return
+            if answer == QMessageBox.Yes:
+                self._pending_library_layout_save = {
+                    "path": new_path,
+                    "content_paths": dict(new_content_paths),
+                    "old_path": old_path,
+                    "old_content_paths": dict(old_content_paths),
+                }
+                self._library_move_worker = _LibraryMoveWorker(
+                    old_path,
+                    new_path,
+                    old_content_paths,
+                    new_content_paths,
+                )
+                self._library_move_worker.result_ready.connect(self._on_library_move_finished)
+                self._library_move_worker.finished.connect(self._clear_library_move_worker)
+                self._set_settings_status("Moving library contents...")
+                self._library_move_worker.start()
+                return
+
+        self._finalize_library_layout_save(new_path, new_content_paths)
+
+    def _should_offer_library_move(
+        self,
+        old_path: str,
+        new_path: str,
+        old_content_paths: dict[str, str],
+        new_content_paths: dict[str, str],
+    ) -> bool:
+        path_changed = old_path != new_path
+        content_paths_changed = old_content_paths != new_content_paths
+        if not path_changed and not content_paths_changed:
+            return False
+
+        old_root = Path(old_path)
+        if old_root.exists() and old_root.is_dir() and any(old_root.iterdir()):
+            return True
+        return any(Path(path).exists() and Path(path).is_dir() and any(Path(path).iterdir()) for path in old_content_paths.values())
+
+    def _library_move_prompt_text(
+        self,
+        old_path: str,
+        new_path: str,
+        old_content_paths: dict[str, str],
+        new_content_paths: dict[str, str],
+        path_changed: bool,
+        content_paths_changed: bool,
+    ) -> str:
+        parts = []
+        if path_changed:
+            parts.append(f"Move the existing library contents from:\n{old_path}\n\nto:\n{new_path}")
+        if content_paths_changed:
+            moved_paths = []
+            for content_type in DEFAULT_LIBRARY_CONTENT_PATHS:
+                old_value = str(old_content_paths.get(content_type) or "").strip()
+                new_value = str(new_content_paths.get(content_type) or "").strip()
+                if old_value != new_value:
+                    moved_paths.append(f"{content_type.title()}: {old_value} -> {new_value}")
+            if moved_paths:
+                parts.append("\n".join(moved_paths))
+        detail = "\n\n".join(parts)
+        return f"{detail}?\n\nChoose Yes to move files now, No to only change the settings, or Cancel to keep the current layout."
+
+    def _finalize_library_layout_save(
+        self,
+        new_path: str,
+        new_content_paths: dict[str, str],
+    ):
+        save_library_path(new_path)
+        save_library_content_paths(new_content_paths)
+        logger.info("Library layout saved: path=%s content_paths=%s", new_path, new_content_paths)
         self._set_settings_status("Saved.")
         self.main_window.library.load_library()
 
+    def _on_library_move_finished(self, payload: object):
+        success, error = payload if isinstance(payload, tuple) and len(payload) == 2 else (False, "Could not move the library contents.")
+        pending = dict(self._pending_library_layout_save or {})
+        self._pending_library_layout_save = None
+        if not success:
+            self._set_settings_status(f"Library move failed: {error}")
+            self._load_library_content_path_inputs()
+            return
+
+        self._finalize_library_layout_save(
+            str(pending.get("path") or load_library_path()),
+            dict(pending.get("content_paths") or load_library_content_paths()),
+        )
+
+    def _clear_library_move_worker(self):
+        worker = self._library_move_worker
+        self._library_move_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
     def _reset(self):
         logger.info("Resetting settings to defaults")
-        self.path_input.setText(DEFAULT_LIBRARY_PATH)
+        save_library_path(DEFAULT_LIBRARY_PATH)
+        save_library_content_paths(DEFAULT_LIBRARY_CONTENT_PATHS)
         save_settings({
             VIEWER_AUTO_SKIP_KEY: True,
             VIEWER_FOCUS_MODE_KEY: False,
@@ -1169,6 +1394,8 @@ class SettingsPage(QWidget):
         self.manga_nav_combo.blockSignals(True)
         self.manga_nav_combo.setCurrentIndex(0)
         self.manga_nav_combo.blockSignals(False)
+
+        self._load_library_content_path_inputs()
 
         self._refresh_reader_color_buttons()
 
@@ -2273,3 +2500,7 @@ class SettingsPage(QWidget):
     def _open_releases_page(self):
         logger.info("Opening releases page url=%s", GITHUB_RELEASES_URL)
         QDesktopServices.openUrl(QUrl(GITHUB_RELEASES_URL))
+
+
+
+

@@ -56,8 +56,10 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     from core.app_update import APP_NAME, APP_VERSION
+    from core.library_layout import ensure_library_content_layout
     from core.profiler import create_session_profiler
     from gui.main_window import MainWindow
+    from stores.settings_store import load_library_path
     from stores.db import prewarm_connection, prewarm_connection_async
 
     profiler, app_argv = create_session_profiler(raw_argv, logger)
@@ -81,6 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.warning("Application icon not found at %s", app_icon_path)
 
     window = MainWindow()
+    ensure_library_content_layout(load_library_path(), window.settings_store)
     if icon is not None:
         window.setWindowIcon(icon)
     app.aboutToQuit.connect(profiler.stop)

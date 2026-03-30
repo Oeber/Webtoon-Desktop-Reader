@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, Signal
 from core.app_logging import get_logger
 from core.http_client import create_session, get as http_get
 from core.app_paths import data_path
+from core.library_layout import normalize_content_type, resolve_webtoon_path
 from stores.download_history_store import get_instance as get_download_history
 from stores.scraper_settings_store import load_scraper_default_config
 from gui.downloader.download_queue import get_global_download_queue
@@ -621,10 +622,15 @@ class DownloadService(QObject):
                 self.thumbnail_resolved.emit(series_name, result)
         self._tracking.save_series_source_metadata(series_name, series, job.source_url)
 
-        target_base = os.path.join(output_path, series_name)
+        content_type = normalize_content_type(getattr(scraper, "content_type", "webtoon"))
+        target_base = resolve_webtoon_path(
+            output_path,
+            series_name,
+            settings_store=self.settings_store,
+            content_type=content_type,
+            create_parent=True,
+        )
         os.makedirs(target_base, exist_ok=True)
-
-        content_type = str(getattr(scraper, "content_type", "webtoon") or "webtoon").strip().casefold()
         if content_type == "webnovel":
             return self._custom_webnovel_download(
                 scraper,
@@ -876,7 +882,7 @@ class DownloadService(QObject):
         if not any_chapter_succeeded and completed_chapters == 0:
             raise ScraperError("No chapters were downloaded")
 
-        snapshot = build_webtoon_from_folder(os.path.dirname(target_base), series_name, self.settings_store)
+        snapshot = build_webtoon_from_folder(output_path, series_name, self.settings_store)
         thumb_path = snapshot.thumbnail if snapshot is not None else None
         if thumb_path:
             self.thumbnail_resolved.emit(series_name, thumb_path)
@@ -951,7 +957,12 @@ class DownloadService(QObject):
         logger.info("Starting gallery-dl download for %s into %s", name, job.temp_dir)
 
         url_type = detect_url_type(url)
-        target_base = os.path.join(output_path, name)
+        target_base = resolve_webtoon_path(
+            output_path,
+            name,
+            settings_store=self.settings_store,
+            create_parent=True,
+        )
         existing = self._get_existing_chapters(target_base)
         had_existing_chapters = bool(existing)
         cmd = ["gallery-dl", "--verbose", "-D", job.temp_dir]

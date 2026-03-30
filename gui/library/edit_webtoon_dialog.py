@@ -45,7 +45,6 @@ from stores.scraper_settings_store import load_scraper_default_config
 from stores.settings_store import (
     LIBRARY_USE_CATEGORIES_KEY,
     VIEWER_ZOOM_KEY,
-    load_library_path,
     load_setting,
 )
 from library.library_categories import load_custom_categories, save_custom_categories
@@ -379,9 +378,8 @@ class EditWebtoonDialog(QDialog):
             QMessageBox.warning(self, "Invalid name", "Name cannot be empty.")
             return
 
-        library_path = load_library_path()
         old_path = self.webtoon.path
-        new_path = os.path.join(library_path, new_name)
+        new_path = os.path.join(os.path.dirname(old_path), new_name)
 
         if new_name != old_name and os.path.exists(new_path):
             QMessageBox.warning(self, "Name already exists", "A webtoon with that name already exists.")
@@ -390,6 +388,7 @@ class EditWebtoonDialog(QDialog):
         try:
             if new_name != old_name:
                 logger.info("Renaming webtoon from %s to %s", old_name, new_name)
+                os.makedirs(os.path.dirname(new_path), exist_ok=True)
                 os.rename(old_path, new_path)
                 self.settings_store.rename_webtoon(old_name, new_name)
                 self.progress_store.rename_webtoon(old_name, new_name)

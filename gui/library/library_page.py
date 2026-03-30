@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QPixmap
 
 from core.app_logging import get_logger
+from core.library_layout import resolve_webtoon_path
 from gui.common.styles import (
     ACCENT_MUTED,
     BATCH_BAR_STYLE,
@@ -1496,7 +1497,11 @@ class LibraryPage(QWidget):
         failed_names = []
         for name in names:
             try:
-                webtoon_path = os.path.join(library_path, name)
+                webtoon_path = resolve_webtoon_path(
+                    library_path,
+                    name,
+                    settings_store=self.settings_store,
+                )
                 if os.path.isdir(webtoon_path):
                     shutil.rmtree(webtoon_path)
                 deleted_names.append(name)
@@ -1706,7 +1711,13 @@ class LibraryPage(QWidget):
             return True
         if not webtoon_name:
             return False
-        return os.path.isdir(os.path.join(load_library_path(), webtoon_name))
+        return os.path.isdir(
+            resolve_webtoon_path(
+                load_library_path(),
+                webtoon_name,
+                settings_store=self.settings_store,
+            )
+        )
 
     def _download_placeholders(self) -> list[SimpleNamespace]:
         if not self._show_downloads_section():

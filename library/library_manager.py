@@ -5,6 +5,13 @@ from PIL import Image
 
 from core.app_logging import get_logger
 from core.app_paths import data_path
+from core.library_layout import (
+    infer_content_type_from_path,
+    list_library_entries,
+    normalize_content_type,
+    resolve_webtoon_path,
+    ensure_library_content_layout,
+)
 
 
 logger = get_logger(__name__)
@@ -35,12 +42,13 @@ class Webtoon:
 
 def scan_library(library_path: str, settings_store) -> list[Webtoon]:
     logger.info("Scanning library at %s", library_path)
+    ensure_library_content_layout(library_path, settings_store)
 
     if not os.path.isdir(library_path):
         logger.warning("Library path does not exist: %s", library_path)
         return []
 
-    library_entries = sorted(os.listdir(library_path))
+    library_entries = list_library_entries(library_path)
     settings_rows = settings_store.get_rows(
         library_entries,
         columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type"),
@@ -96,7 +104,12 @@ def build_webtoon_from_folder(
     settings_store,
     settings_row: dict | None = None,
 ) -> Webtoon | None:
-    webtoon_path = os.path.join(library_path, webtoon_name)
+    webtoon_path = resolve_webtoon_path(
+        library_path,
+        webtoon_name,
+        settings_store=settings_store,
+        settings_row=settings_row,
+    )
     if not os.path.isdir(webtoon_path):
         return None
 
@@ -116,7 +129,10 @@ def build_webtoon_from_folder(
                 columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type"),
             ).get(webtoon_name, {})
         )
-    stored_content_type = str(settings_row.get("content_type") or "").strip().casefold()
+    stored_content_type = normalize_content_type(settings_row.get("content_type"), default="")
+    inferred_content_type = infer_content_type_from_path(webtoon_path)
+    if not stored_content_type:
+        stored_content_type = inferred_content_type
     first_image = _first_chapter_image_path(webtoon_path, chapters)
     if first_image:
         thumbnail = resolve_thumbnail_path(
@@ -134,7 +150,7 @@ def build_webtoon_from_folder(
         if stored_content_type in {"webnovel", "manga", "webtoon"}:
             content_type = stored_content_type
         else:
-            content_type = "webnovel"
+            content_type = inferred_content_type
 
     return Webtoon(
         webtoon_name,

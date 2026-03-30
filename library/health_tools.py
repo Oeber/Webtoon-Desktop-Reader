@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import os
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.app_logging import get_logger
-from core.app_paths import data_path
+from core.library_layout import list_library_entries, resolve_webtoon_path
 from library.library_manager import THUMB_FOLDER, build_webtoon_from_folder, preferred_thumbnail_path
 from stores.db import get_connection
 
@@ -68,12 +67,10 @@ def analyze_library_health(library_path: str, settings_store) -> LibraryHealthRe
     if not library_root.exists() or not library_root.is_dir():
         return report
 
-    report.series_folders = sorted(
-        entry.name for entry in library_root.iterdir() if entry.is_dir()
-    )
+    report.series_folders = list_library_entries(str(library_root))
     settings_rows = settings_store.get_rows(
         report.series_folders,
-        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "source_url"),
+        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "source_url", "content_type"),
     )
 
     readable_names: list[str] = []
@@ -135,7 +132,7 @@ def cleanup_orphaned_metadata(report: LibraryHealthReport, settings_store, progr
 def delete_invalid_series_folders(report: LibraryHealthReport) -> int:
     removed = 0
     for name in report.invalid_series_folders:
-        path = Path(report.library_path, name)
+        path = Path(resolve_webtoon_path(report.library_path, name))
         if not path.exists() or not path.is_dir():
             continue
         try:
@@ -152,7 +149,8 @@ def delete_empty_chapter_folders(report: LibraryHealthReport) -> int:
         series_name, _, chapter_name = entry.partition(" / ")
         if not series_name or not chapter_name:
             continue
-        path = Path(report.library_path, series_name, chapter_name)
+        webtoon_path = Path(resolve_webtoon_path(report.library_path, series_name))
+        path = webtoon_path / chapter_name
         if not path.exists() or not path.is_dir():
             continue
         try:
@@ -197,7 +195,7 @@ def _empty_chapter_folders(webtoon_path: Path, chapters: list[str]) -> list[str]
             has_image = any(
                 entry.is_file() and entry.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".avif"}
                 for entry in chapter_path.iterdir()
-            )
+            ) or chapter_path.joinpath("chapter.json").is_file()
         except OSError:
             has_image = False
         if not has_image:
