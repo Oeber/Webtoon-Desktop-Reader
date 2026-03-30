@@ -20,6 +20,7 @@ from core.site_session import (
     site_required_cookie_names,
 )
 from scrapers.registry import get_all_scrapers_including_disabled
+from gui.common.strings import t
 from gui.common.styles import (
     BUTTON_STYLE,
     PAGE_BG_STYLE,
@@ -64,7 +65,7 @@ class SiteAuthDialog(QDialog):
         self._auto_accept_pending = False
         self._validation_inflight = False
 
-        self.setWindowTitle(f"Authorize {self.site_label}")
+        self.setWindowTitle(t("site_auth.title", site_label=self.site_label))
         self.resize(1180, 820)
         self.setStyleSheet(PAGE_BG_STYLE)
 
@@ -73,13 +74,13 @@ class SiteAuthDialog(QDialog):
         layout.setSpacing(10)
 
         self.info_label = QLabel(
-            f"Open {self.site_label} below in a fresh browser session, complete any challenge or login, then click Save Session."
+            t("site_auth.info", site_label=self.site_label)
         )
         self.info_label.setWordWrap(True)
         self.info_label.setStyleSheet(SITE_AUTH_INFO_LABEL_STYLE)
         layout.addWidget(self.info_label)
 
-        self.status_label = QLabel("Waiting for page load...")
+        self.status_label = QLabel(t("site_auth.waiting_page"))
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
         layout.addWidget(self.status_label)
 
@@ -104,29 +105,29 @@ class SiteAuthDialog(QDialog):
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
 
-        self.reload_btn = QPushButton("Reload")
+        self.reload_btn = QPushButton(t("site_auth.reload"))
         self.reload_btn.setStyleSheet(BUTTON_STYLE)
         self.reload_btn.clicked.connect(self.view.reload)
         buttons.addWidget(self.reload_btn)
 
-        self.home_btn = QPushButton("Open Home")
+        self.home_btn = QPushButton(t("site_auth.open_home"))
         self.home_btn.setStyleSheet(BUTTON_STYLE)
         self.home_btn.clicked.connect(self._open_home)
         buttons.addWidget(self.home_btn)
 
-        self.check_btn = QPushButton("Check Session")
+        self.check_btn = QPushButton(t("site_auth.check_session"))
         self.check_btn.setStyleSheet(BUTTON_STYLE)
         self.check_btn.clicked.connect(self._check_session)
         buttons.addWidget(self.check_btn)
 
         buttons.addStretch()
 
-        self.cancel_btn = QPushButton("Close")
+        self.cancel_btn = QPushButton(t("site_auth.close"))
         self.cancel_btn.setStyleSheet(BUTTON_STYLE)
         self.cancel_btn.clicked.connect(self.reject)
         buttons.addWidget(self.cancel_btn)
 
-        self.save_btn = QPushButton("Save Session")
+        self.save_btn = QPushButton(t("site_auth.save_session"))
         self.save_btn.setStyleSheet(BUTTON_STYLE)
         self.save_btn.clicked.connect(self._save_and_accept)
         self.save_btn.setEnabled(False)
@@ -159,17 +160,17 @@ class SiteAuthDialog(QDialog):
             self.view.load(QUrl(self.site_home_url))
 
     def _on_load_started(self):
-        self.status_label.setText("Loading page...")
+        self.status_label.setText(t("site_auth.loading_page"))
 
     def _on_load_finished(self, ok: bool):
         self._refresh_cookie_snapshot()
         current_url = self.view.url().toString()
         if ok:
-            self.status_label.setText(self._status_text(f"Loaded {current_url}", current_url=current_url))
+            self.status_label.setText(self._status_text(t("site_auth.loaded_page", current_url=current_url), current_url=current_url))
             self._maybe_auto_return_home(current_url)
             self._schedule_validation()
         else:
-            self.status_label.setText(f"Failed to load {current_url}")
+            self.status_label.setText(t("site_auth.failed_page", current_url=current_url))
 
     def _on_url_changed(self, _url):
         self._refresh_cookie_snapshot()
@@ -273,12 +274,12 @@ class SiteAuthDialog(QDialog):
             try:
                 ok, detail = validator(cookies, self._browser_user_agent(), self.site_home_url)
                 self._validated_session_ready = bool(ok)
-                self._last_validation_error = str(detail or "Validated by scraper transport.")
+                self._last_validation_error = str(detail or t("site_auth.scraper_validated"))
                 return self._validated_session_ready
             except Exception as exc:
                 logger.warning("Scraper-specific session validation failed for %s: %s", self.site_name, exc)
                 self._validated_session_ready = False
-                self._last_validation_error = f"Scraper validation failed: {exc}"
+                self._last_validation_error = t("site_auth.scraper_validation_failed", error=exc)
 
         session = create_session()
         try:
@@ -301,12 +302,12 @@ class SiteAuthDialog(QDialog):
             )
             if response.status_code == 200 and not self._looks_like_block_page(response):
                 self._validated_session_ready = True
-                self._last_validation_error = "Validated by live request."
+                self._last_validation_error = t("site_auth.live_validated")
                 return True
             self._validated_session_ready = False
-            self._last_validation_error = f"Validation returned HTTP {response.status_code}."
+            self._last_validation_error = t("site_auth.http_validation_failed", status_code=response.status_code)
             if self._looks_like_block_page(response):
-                self._last_validation_error = "Validation still hit the block page."
+                self._last_validation_error = t("site_auth.block_page")
             return False
         except Exception as exc:
             self._validated_session_ready = False
@@ -349,7 +350,7 @@ class SiteAuthDialog(QDialog):
         if self._auto_accept_pending or self._cleaned_up:
             return
         self._auto_accept_pending = True
-        self.status_label.setText(f"{self.site_label} session detected. Saving and closing...")
+        self.status_label.setText(t("site_auth.detected_saving", site_label=self.site_label))
         QTimer.singleShot(250, self._auto_accept_if_ready)
 
     def _auto_accept_if_ready(self):
@@ -371,27 +372,27 @@ class SiteAuthDialog(QDialog):
         found = matching_session_cookie_names(self.site_name, self._captured_cookies())
         if self._validated_session_ready:
             if found:
-                return f"Validated session. Detected cookies: {', '.join(found)}"
-            return "Validated session. No expected cookie names were detected, but the live request succeeded."
+                return t("site_auth.validated_with_cookies", cookies=", ".join(found))
+            return t("site_auth.validated_without_expected")
         required = sorted(site_required_cookie_names(self.site_name), key=str.casefold)
         if found:
-            return f"Detected session cookies: {', '.join(found)}"
+            return t("site_auth.detected_cookies", cookies=", ".join(found))
         if required:
             tail = f" Last check: {self._last_validation_error}" if self._last_validation_error else ""
-            return f"Waiting for required session cookie(s): {', '.join(required)}. The dialog also tries live validation automatically.{tail}"
-        return "Waiting for usable site cookies."
+            return t("site_auth.waiting_required", cookies=", ".join(required), tail=tail)
+        return t("site_auth.waiting_usable")
 
     def _status_text(self, prefix: str | None = None, current_url: str | None = None) -> str:
         count = self._saved_cookie_count()
-        base = prefix or f"Captured {count} cookies for {self.site_label}."
+        base = prefix or t("site_auth.captured", count=count, site_label=self.site_label)
         current = str(current_url or self.view.url().toString() or "")
         if self._has_reusable_session():
-            return base + f" Session is ready. You can save {count} cookie(s)."
+            return t("site_auth.ready", base=base, count=count)
 
         host_hint = ""
         if self.site_host and self.site_host not in current.casefold():
-            host_hint = f" You may be on an interstitial page; the dialog will try to return to {self.site_label} automatically."
-        return base + " Waiting for a reusable site session before saving." + host_hint
+            host_hint = t("site_auth.interstitial_hint", site_label=self.site_label)
+        return t("site_auth.waiting_reusable", base=base, host_hint=host_hint)
 
     def _maybe_auto_return_home(self, current_url: str):
         if self._has_reusable_session() or self._auto_return_pending:
@@ -421,8 +422,8 @@ class SiteAuthDialog(QDialog):
             detail = f"Last validation result: {self._last_validation_error}\n\n" if self._last_validation_error else ""
             QMessageBox.information(
                 self,
-                "Session Not Ready",
-                token_hint + detail + f"The browser has not captured a reusable {self.site_label} session yet.\n\nIf {self.site_label} is already visible in the browser, press Check Session once and then try saving again.",
+                t("site_auth.session_not_ready_title"),
+                token_hint + detail + t("site_auth.not_ready_message", site_label=self.site_label),
             )
             self._update_status_labels()
             return
@@ -430,7 +431,7 @@ class SiteAuthDialog(QDialog):
         user_agent = self._browser_user_agent()
         save_site_user_agent(self.site_name, user_agent)
         logger.info("Saved %d cookies for %s", count, self.site_name)
-        self.status_label.setText(f"Saved {count} cookies for {self.site_label}.")
+        self.status_label.setText(t("site_auth.saved", count=count, site_label=self.site_label))
         self.accept()
 
     def done(self, result: int):
@@ -531,3 +532,5 @@ class SiteAuthDialog(QDialog):
             profile.deleteLater()
         except Exception:
             pass
+
+

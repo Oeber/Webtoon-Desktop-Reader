@@ -7,6 +7,7 @@ import qtawesome as qta
 import time
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from gui.common.styles import (
     action_button_checked_style,
     CARD_ACTION_BUTTON_DISABLED_STYLE,
@@ -72,7 +73,7 @@ class WebtoonCard(QWidget):
         self._update_available = False
         self._remote_update_available = False
         self._ignore_open_until = 0.0
-        self._update_menu_label = "Update"
+        self._update_menu_label = t("library.card.update")
         self._update_button_label = ""
         self._update_menu = None
         self._update_action = None
@@ -122,7 +123,7 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.setStyleSheet(CARD_CANCEL_BUTTON_STYLE)
         self.cancel_download_btn.setIcon(qta.icon("fa5s.times", color="#ffffff"))
         self.cancel_download_btn.setIconSize(QSize(11, 11))
-        self.cancel_download_btn.setToolTip("Cancel download")
+        self.cancel_download_btn.setToolTip(t("library.card.cancel_download"))
         self.cancel_download_btn.clicked.connect(self._cancel_manual_download)
         self.cancel_download_btn.hide()
 
@@ -183,7 +184,7 @@ class WebtoonCard(QWidget):
         self.lastread_btn = self._make_badge_btn(accent=True)
         retain_hidden_size(self.lastread_btn)
 
-        self.new_chip = QLabel("NEW", self)
+        self.new_chip = QLabel(t("library.card.new_chip"), self)
         self.new_chip.setAlignment(Qt.AlignCenter)
         self.new_chip.setFixedHeight(14)
         self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
@@ -228,7 +229,7 @@ class WebtoonCard(QWidget):
 
         if chapters:
             latest = chapters[-1]
-            self.latest_btn.setText(f"Read  {latest}")
+            self.latest_btn.setText(t("library.card.read_latest", chapter=latest))
             self.latest_btn.show()
             self.new_chip.setVisible(latest == latest_new_chapter)
             if self._latest_connected:
@@ -243,7 +244,7 @@ class WebtoonCard(QWidget):
 
         if progress:
             last_ch = progress["chapter"]
-            self.lastread_btn.setText(f"Last  {last_ch}")
+            self.lastread_btn.setText(t("library.card.last_read", chapter=last_ch))
             self.lastread_btn.show()
             if self._lastread_connected:
                 self.lastread_btn.clicked.disconnect()
@@ -339,13 +340,13 @@ class WebtoonCard(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(CARD_MENU_STYLE)
 
-        edit_action = QAction("Edit", self)
+        edit_action = QAction(t("library.card.menu.edit"), self)
         edit_action.triggered.connect(self._open_edit_dialog)
         menu.addAction(edit_action)
 
         completed = self.settings_store.get_completed(self.webtoon.name)
         completed_action = QAction(
-            "Mark as Incomplete" if completed else "Mark as Completed",
+            t("library.card.menu.mark_incomplete") if completed else t("library.card.menu.mark_completed"),
             self,
         )
         completed_action.triggered.connect(self._toggle_completed)
@@ -353,14 +354,14 @@ class WebtoonCard(QWidget):
 
         bookmarked = self.settings_store.get_bookmarked(self.webtoon.name)
         bookmark_action = QAction(
-            "Remove Bookmark" if bookmarked else "Bookmark",
+            t("library.card.menu.remove_bookmark") if bookmarked else t("library.card.menu.bookmark"),
             self,
         )
         bookmark_action.triggered.connect(self._toggle_bookmarked)
         menu.addAction(bookmark_action)
 
         if self._manual_download_active:
-            cancel_action = QAction("Cancel Download", self)
+            cancel_action = QAction(t("library.card.menu.cancel_download"), self)
             cancel_action.triggered.connect(self._cancel_manual_download)
             menu.addAction(cancel_action)
         elif self._update_available:
@@ -372,7 +373,7 @@ class WebtoonCard(QWidget):
         else:
             self._update_action = None
 
-        delete_action = QAction("Delete", self)
+        delete_action = QAction(t("library.card.menu.delete"), self)
         delete_action.triggered.connect(self._delete_webtoon)
         menu.addAction(delete_action)
 
@@ -567,10 +568,10 @@ class WebtoonCard(QWidget):
         self.update_btn.setToolTip(tooltip)
         if cooldown_text:
             self._update_button_label = cooldown_text
-            self._update_menu_label = f"Update ({cooldown_text})"
+            self._update_menu_label = t("library.card.update_with_cooldown", cooldown=cooldown_text)
         else:
             self._update_button_label = ""
-            self._update_menu_label = "Update"
+            self._update_menu_label = t("library.card.update")
         self._set_update_button_idle()
         if self._update_action is not None:
             self._update_action.setText(self._update_menu_label)
@@ -623,10 +624,10 @@ class WebtoonCard(QWidget):
         else:
             self.update_btn.setText("")
             if self._remote_update_available:
-                self.update_btn.setToolTip("Remote updates found")
+                self.update_btn.setToolTip(t("library.card.remote_updates_found"))
                 self.update_btn.setIcon(qta.icon("fa5s.exclamation", color="#ff8a7a"))
             else:
-                self.update_btn.setToolTip("Update this webtoon")
+                self.update_btn.setToolTip(t("library.card.update_this"))
                 self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
             self.update_btn.setIconSize(QSize(12, 12))
         self._layout_update_button()
@@ -661,11 +662,11 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.show()
         self.update_btn.hide()
         if total > 0:
-            self.info_label.setText(f"Downloading {current} / {total}")
+            self.info_label.setText(t("library.card.downloading_progress", current=current, total=total))
             self.progress_overlay.show()
             self.progress_spinner.set_progress(current / total * 100)
         else:
-            self.info_label.setText("Downloading...")
+            self.info_label.setText(t("library.card.downloading"))
             self.progress_overlay.show()
             self.progress_spinner.set_spinning()
         self.info_label.show()

@@ -114,6 +114,7 @@ from stores.settings_store import (
     save_settings,
 )
 from gui.settings.library_health_dialog import LibraryHealthDialog
+from gui.common.strings import t
 from gui.common.styles import (
     APP_UPDATE_PROGRESS_STYLE,
     BUTTON_STYLE,
@@ -242,7 +243,7 @@ class _StartupUpdateDialog(QDialog):
         self._install_started = False
         self._can_install = bool(can_install)
 
-        self.setWindowTitle("Update Available")
+        self.setWindowTitle(t("settings.startup_update.window"))
         self.setModal(True)
         self.setMinimumWidth(500)
         self.setStyleSheet(STARTUP_UPDATE_DIALOG_STYLE)
@@ -260,11 +261,11 @@ class _StartupUpdateDialog(QDialog):
         panel_layout.setContentsMargins(24, 22, 24, 22)
         panel_layout.setSpacing(14)
 
-        eyebrow = QLabel("APP UPDATE")
+        eyebrow = QLabel(t("settings.startup_update.eyebrow"))
         eyebrow.setStyleSheet(SECTION_LABEL_EMPHASIS_STYLE)
         panel_layout.addWidget(eyebrow)
 
-        title = QLabel(f"{display_version(release_version)} is ready to install")
+        title = QLabel(t("settings.startup_update.title", version=display_version(release_version)))
         title.setStyleSheet(PAGE_TITLE_LARGE_STYLE)
         title.setWordWrap(True)
         panel_layout.addWidget(title)
@@ -273,26 +274,26 @@ class _StartupUpdateDialog(QDialog):
         version_row.setContentsMargins(0, 0, 0, 0)
         version_row.setSpacing(8)
 
-        current_pill = QLabel(f"Current {display_version(current_version)}")
+        current_pill = QLabel(t("settings.startup_update.current", version=display_version(current_version)))
         current_pill.setStyleSheet(PILL_LABEL_STYLE)
         version_row.addWidget(current_pill)
 
-        latest_pill = QLabel(f"Latest {display_version(release_version)}")
+        latest_pill = QLabel(t("settings.startup_update.latest", version=display_version(release_version)))
         latest_pill.setStyleSheet(PILL_LABEL_STYLE)
         version_row.addWidget(latest_pill)
         version_row.addStretch()
         panel_layout.addLayout(version_row)
 
         self.message_label = QLabel(
-            "The app will download the update, close itself, replace the installed files, and relaunch automatically."
+            t("settings.startup_update.message_install")
             if self._can_install
-            else "Automatic install is not available for this build. You can open the release page instead."
+            else t("settings.startup_update.message_view")
         )
         self.message_label.setWordWrap(True)
         self.message_label.setStyleSheet(TEXT_MUTED_BODY_STYLE)
         panel_layout.addWidget(self.message_label)
 
-        patch_notes_label = QLabel("Patch Notes")
+        patch_notes_label = QLabel(t("settings.startup_update.patch_notes"))
         patch_notes_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         panel_layout.addWidget(patch_notes_label)
 
@@ -321,12 +322,12 @@ class _StartupUpdateDialog(QDialog):
         actions.setSpacing(8)
         actions.addStretch()
 
-        self.close_btn = QPushButton("Close")
+        self.close_btn = QPushButton(t("settings.startup_update.close"))
         self.close_btn.setStyleSheet(BUTTON_STYLE)
         self.close_btn.clicked.connect(self.reject)
         actions.addWidget(self.close_btn)
 
-        self.install_btn = QPushButton("Update App" if self._can_install else "View Releases")
+        self.install_btn = QPushButton(t("settings.startup_update.update_app") if self._can_install else t("settings.startup_update.view_releases"))
         self.install_btn.setStyleSheet(BUTTON_STYLE)
         self.install_btn.setDefault(True)
         actions.addWidget(self.install_btn)
@@ -337,17 +338,17 @@ class _StartupUpdateDialog(QDialog):
     def _normalize_release_notes(release_notes: str) -> str:
         text = str(release_notes or "").strip()
         if not text:
-            return "No patch notes were included with this release."
+            return t("settings.startup_update.no_notes")
         return text
 
     def begin_install(self):
         self._install_started = True
         self.install_btn.setEnabled(False)
         self.close_btn.setEnabled(False)
-        self.message_label.setText("Downloading update for automatic install...")
+        self.message_label.setText(t("settings.startup_update.downloading"))
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
-        self.progress_label.setText("Preparing download...")
+        self.progress_label.setText(t("settings.startup_update.preparing"))
         self.progress_bar.show()
         self.progress_label.show()
 
@@ -359,14 +360,14 @@ class _StartupUpdateDialog(QDialog):
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(percent)
             self.progress_label.setText(
-                f"Downloaded {format_bytes(current)} of {format_bytes(total)} ({percent}%)"
+                t("settings.startup_update.downloaded_of", current=format_bytes(current), total=format_bytes(total), percent=percent)
             )
-            self.install_btn.setText(f"Downloading {percent}%")
+            self.install_btn.setText(t("settings.startup_update.downloading_percent", percent=percent))
             return
 
         self.progress_bar.setRange(0, 0)
-        self.progress_label.setText(f"Downloaded {format_bytes(current)}")
-        self.install_btn.setText("Downloading...")
+        self.progress_label.setText(t("settings.startup_update.downloaded", current=format_bytes(current)))
+        self.install_btn.setText(t("settings.startup_update.downloading_simple"))
 
     def install_failed(self, error: str):
         self._install_started = False
@@ -382,9 +383,9 @@ class _StartupUpdateDialog(QDialog):
         self.progress_label.show()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(100)
-        self.progress_label.setText("Download complete. Closing the app so the update helper can replace files.")
-        self.message_label.setText("Installing update and restarting...")
-        self.install_btn.setText("Installing...")
+        self.progress_label.setText(t("settings.startup_update.complete"))
+        self.message_label.setText(t("settings.startup_update.installing_message"))
+        self.install_btn.setText(t("settings.startup_update.installing"))
 
     def reject(self):
         if self._install_started:
@@ -428,16 +429,16 @@ class SettingsPage(QWidget):
         layout.setSpacing(18)
         layout.setAlignment(Qt.AlignTop)
 
-        title = QLabel("Settings")
+        title = QLabel(t("settings.page.title"))
         title.setStyleSheet(PAGE_TITLE_STYLE)
         layout.addWidget(title)
 
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet(TAB_STYLE)
-        self.tabs.addTab(self._build_general_tab(), "General")
-        self.tabs.addTab(self._build_reader_tab(), "Reader")
-        self.tabs.addTab(self._build_scrapers_tab(), "Scrapers")
-        self.tabs.addTab(self._build_logs_tab(), "Logs")
+        self.tabs.addTab(self._build_general_tab(), t("settings.tab.general"))
+        self.tabs.addTab(self._build_reader_tab(), t("settings.tab.reader"))
+        self.tabs.addTab(self._build_scrapers_tab(), t("settings.tab.scrapers"))
+        self.tabs.addTab(self._build_logs_tab(), t("settings.tab.logs"))
         self.tabs.currentChanged.connect(self._on_tab_changed)
         layout.addWidget(self.tabs, 1)
         self._log_refresh_timer = QTimer(self)
@@ -474,18 +475,18 @@ class SettingsPage(QWidget):
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(10)
 
-        folder_label = QLabel("Library")
+        folder_label = QLabel(t("settings.general.library"))
         folder_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         header_row.addWidget(folder_label)
         header_row.addStretch()
         library_layout.addLayout(header_row)
 
-        content_folders_label = QLabel("Content paths")
+        content_folders_label = QLabel(t("settings.general.content_paths"))
         content_folders_label.setStyleSheet(SECTION_LABEL_EMPHASIS_STYLE)
         library_layout.addWidget(content_folders_label)
 
         content_folders_help = QLabel(
-            "Each content type can use its own full folder path."
+            t("settings.general.content_paths_help")
         )
         content_folders_help.setWordWrap(True)
         content_folders_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
@@ -500,7 +501,7 @@ class SettingsPage(QWidget):
         self.webnovel_folder_input = self._build_library_path_input("webnovel")
         library_layout.addLayout(self._build_library_path_row("Webnovels", self.webnovel_folder_input, "webnovel"))
 
-        apply_folders_btn = QPushButton("Apply Content Paths")
+        apply_folders_btn = QPushButton(t("settings.general.apply_content_paths"))
         apply_folders_btn.setStyleSheet(BUTTON_STYLE)
         apply_folders_btn.setMinimumHeight(34)
         apply_folders_btn.clicked.connect(self._apply_library_content_paths)
@@ -508,43 +509,43 @@ class SettingsPage(QWidget):
 
         self._load_library_content_path_inputs()
 
-        self.use_categories_checkbox = QCheckBox("Enable library categories")
+        self.use_categories_checkbox = QCheckBox(t("settings.general.enable_categories"))
         self.use_categories_checkbox.setChecked(load_setting(LIBRARY_USE_CATEGORIES_KEY, True))
         self.use_categories_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.use_categories_checkbox.toggled.connect(self._on_use_categories_changed)
         library_layout.addWidget(self.use_categories_checkbox)
 
-        self.show_new_section_checkbox = QCheckBox("Show New section")
+        self.show_new_section_checkbox = QCheckBox(t("settings.general.show_new"))
         self.show_new_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_NEW_SECTION_KEY, True))
         self.show_new_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.show_new_section_checkbox.toggled.connect(self._on_show_new_section_changed)
         library_layout.addWidget(self.show_new_section_checkbox)
 
-        self.show_downloads_section_checkbox = QCheckBox("Show Active Downloads section")
+        self.show_downloads_section_checkbox = QCheckBox(t("settings.general.show_downloads"))
         self.show_downloads_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, True))
         self.show_downloads_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.show_downloads_section_checkbox.toggled.connect(self._on_show_downloads_section_changed)
         library_layout.addWidget(self.show_downloads_section_checkbox)
 
-        self.show_bookmarked_section_checkbox = QCheckBox("Show Bookmarked section")
+        self.show_bookmarked_section_checkbox = QCheckBox(t("settings.general.show_bookmarked"))
         self.show_bookmarked_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_BOOKMARKED_SECTION_KEY, True))
         self.show_bookmarked_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.show_bookmarked_section_checkbox.toggled.connect(self._on_show_bookmarked_section_changed)
         library_layout.addWidget(self.show_bookmarked_section_checkbox)
 
-        self.show_continue_section_checkbox = QCheckBox("Show Continue Reading section")
+        self.show_continue_section_checkbox = QCheckBox(t("settings.general.show_continue"))
         self.show_continue_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_CONTINUE_SECTION_KEY, True))
         self.show_continue_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.show_continue_section_checkbox.toggled.connect(self._on_show_continue_section_changed)
         library_layout.addWidget(self.show_continue_section_checkbox)
 
-        self.show_updates_smart_section_checkbox = QCheckBox("Show Needs Update section")
+        self.show_updates_smart_section_checkbox = QCheckBox(t("settings.general.show_updates"))
         self.show_updates_smart_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_UPDATES_SECTION_KEY, True))
         self.show_updates_smart_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.show_updates_smart_section_checkbox.toggled.connect(self._on_show_updates_smart_section_changed)
         library_layout.addWidget(self.show_updates_smart_section_checkbox)
 
-        self.show_completed_section_checkbox = QCheckBox("Show Completed section")
+        self.show_completed_section_checkbox = QCheckBox(t("settings.general.show_completed"))
         self.show_completed_section_checkbox.setChecked(load_setting(LIBRARY_SHOW_COMPLETED_SECTION_KEY, True))
         self.show_completed_section_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.show_completed_section_checkbox.toggled.connect(self._on_show_completed_section_changed)
@@ -557,22 +558,22 @@ class SettingsPage(QWidget):
         updates_header.setContentsMargins(0, 0, 0, 0)
         updates_header.setSpacing(10)
 
-        updates_label = QLabel("App Updates")
+        updates_label = QLabel(t("settings.general.app_updates"))
         updates_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         updates_header.addWidget(updates_label)
         updates_header.addStretch()
         updates_layout.addLayout(updates_header)
 
-        current_version_label = QLabel(f"Current version: {display_version(APP_VERSION)}")
+        current_version_label = QLabel(t("settings.general.current_version", version=display_version(APP_VERSION)))
         current_version_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         updates_layout.addWidget(current_version_label)
 
-        self.update_status_label = QLabel("Latest release: Not checked yet.")
+        self.update_status_label = QLabel(t("settings.general.latest_not_checked"))
         self.update_status_label.setWordWrap(True)
         self.update_status_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         updates_layout.addWidget(self.update_status_label)
 
-        self.update_meta_label = QLabel("Last checked: Never")
+        self.update_meta_label = QLabel(t("settings.general.last_checked_never"))
         self.update_meta_label.setWordWrap(True)
         self.update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
         updates_layout.addWidget(self.update_meta_label)
@@ -600,14 +601,14 @@ class SettingsPage(QWidget):
         update_actions_row = QHBoxLayout()
         update_actions_row.setSpacing(8)
 
-        self.check_updates_btn = QPushButton("Check for Updates")
+        self.check_updates_btn = QPushButton(t("settings.general.check_updates"))
         self.check_updates_btn.setStyleSheet(BUTTON_STYLE)
         self.check_updates_btn.setMinimumWidth(140)
         self.check_updates_btn.setMinimumHeight(34)
         self.check_updates_btn.clicked.connect(self._check_for_app_updates)
         update_actions_row.addWidget(self.check_updates_btn)
 
-        self.download_update_btn = QPushButton("Update App")
+        self.download_update_btn = QPushButton(t("settings.general.update_app"))
         self.download_update_btn.setStyleSheet(BUTTON_STYLE)
         self.download_update_btn.setMinimumWidth(140)
         self.download_update_btn.setMinimumHeight(34)
@@ -615,7 +616,7 @@ class SettingsPage(QWidget):
         self.download_update_btn.setEnabled(False)
         update_actions_row.addWidget(self.download_update_btn)
 
-        self.view_releases_btn = QPushButton("View Releases")
+        self.view_releases_btn = QPushButton(t("settings.general.view_releases"))
         self.view_releases_btn.setStyleSheet(BUTTON_STYLE)
         self.view_releases_btn.setMinimumWidth(120)
         self.view_releases_btn.setMinimumHeight(34)
@@ -625,7 +626,7 @@ class SettingsPage(QWidget):
         update_actions_row.addStretch()
         updates_layout.addLayout(update_actions_row)
 
-        self.check_updates_on_startup_checkbox = QCheckBox("Check GitHub releases on startup")
+        self.check_updates_on_startup_checkbox = QCheckBox(t("settings.general.check_startup"))
         self.check_updates_on_startup_checkbox.setChecked(load_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True))
         self.check_updates_on_startup_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.check_updates_on_startup_checkbox.toggled.connect(self._on_check_updates_on_startup_changed)
@@ -638,20 +639,20 @@ class SettingsPage(QWidget):
         library_updates_header.setContentsMargins(0, 0, 0, 0)
         library_updates_header.setSpacing(10)
 
-        library_updates_label = QLabel("Library Update Checks")
+        library_updates_label = QLabel(t("settings.general.library_update_checks"))
         library_updates_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         library_updates_header.addWidget(library_updates_label)
         library_updates_header.addStretch()
         library_updates_layout.addLayout(library_updates_header)
 
         library_updates_help = QLabel(
-            "Check saved source URLs in the background and let the app surface new chapter updates."
+            t("settings.general.library_update_help")
         )
         library_updates_help.setWordWrap(True)
         library_updates_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         library_updates_layout.addWidget(library_updates_help)
 
-        self.library_update_check_on_startup_checkbox = QCheckBox("Check saved titles on startup")
+        self.library_update_check_on_startup_checkbox = QCheckBox(t("settings.general.check_saved_startup"))
         self.library_update_check_on_startup_checkbox.setChecked(
             load_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, False)
         )
@@ -664,7 +665,7 @@ class SettingsPage(QWidget):
         library_update_interval_row = QHBoxLayout()
         library_update_interval_row.setSpacing(10)
 
-        library_update_interval_label = QLabel("Background interval")
+        library_update_interval_label = QLabel(t("settings.general.background_interval"))
         library_update_interval_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         library_update_interval_label.setFixedWidth(140)
 
@@ -687,17 +688,17 @@ class SettingsPage(QWidget):
         library_update_interval_row.addWidget(self.library_update_interval_combo, 1)
         library_updates_layout.addLayout(library_update_interval_row)
 
-        self.library_update_status_label = QLabel("Latest result: Not checked yet.")
+        self.library_update_status_label = QLabel(t("settings.general.latest_result_not_checked"))
         self.library_update_status_label.setWordWrap(True)
         self.library_update_status_label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         library_updates_layout.addWidget(self.library_update_status_label)
 
-        self.library_update_meta_label = QLabel("Last checked: Never")
+        self.library_update_meta_label = QLabel(t("settings.general.last_checked_never"))
         self.library_update_meta_label.setWordWrap(True)
         self.library_update_meta_label.setStyleSheet(STATUS_LABEL_STYLE)
         library_updates_layout.addWidget(self.library_update_meta_label)
 
-        self.library_health_btn = QPushButton("Library Health Tools")
+        self.library_health_btn = QPushButton(t("settings.general.library_health_tools"))
         self.library_health_btn.setStyleSheet(BUTTON_STYLE)
         self.library_health_btn.setMinimumWidth(180)
         self.library_health_btn.setMinimumHeight(34)
@@ -707,7 +708,7 @@ class SettingsPage(QWidget):
         library_update_actions = QHBoxLayout()
         library_update_actions.setSpacing(8)
 
-        self.check_library_updates_btn = QPushButton("Check Saved Titles Now")
+        self.check_library_updates_btn = QPushButton(t("settings.general.check_saved_now"))
         self.check_library_updates_btn.setStyleSheet(BUTTON_STYLE)
         self.check_library_updates_btn.setMinimumWidth(180)
         self.check_library_updates_btn.setMinimumHeight(34)
@@ -756,36 +757,36 @@ class SettingsPage(QWidget):
         reader_header.setContentsMargins(0, 0, 0, 0)
         reader_header.setSpacing(10)
 
-        reader_label = QLabel("Reader Defaults")
+        reader_label = QLabel(t("settings.reader.title"))
         reader_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         reader_header.addWidget(reader_label)
         reader_header.addStretch()
         reader_layout.addLayout(reader_header)
 
-        reader_help = QLabel("Set the app-wide defaults used when a title does not already have its own saved reader preferences.")
+        reader_help = QLabel(t("settings.reader.help"))
         reader_help.setWordWrap(True)
         reader_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         reader_layout.addWidget(reader_help)
 
-        self.auto_skip_checkbox = QCheckBox("Enable auto panel skip")
+        self.auto_skip_checkbox = QCheckBox(t("settings.reader.auto_skip"))
         self.auto_skip_checkbox.setChecked(load_setting(VIEWER_AUTO_SKIP_KEY, True))
         self.auto_skip_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.auto_skip_checkbox.toggled.connect(self._on_auto_skip_changed)
         reader_layout.addWidget(self.auto_skip_checkbox)
 
-        self.focus_mode_checkbox = QCheckBox("Start readers in focus mode")
+        self.focus_mode_checkbox = QCheckBox(t("settings.reader.focus_mode"))
         self.focus_mode_checkbox.setChecked(load_setting(VIEWER_FOCUS_MODE_KEY, False))
         self.focus_mode_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.focus_mode_checkbox.toggled.connect(self._on_focus_mode_changed)
         reader_layout.addWidget(self.focus_mode_checkbox)
 
-        self.minimap_checkbox = QCheckBox("Show mini-map / page tracker by default")
+        self.minimap_checkbox = QCheckBox(t("settings.reader.minimap"))
         self.minimap_checkbox.setChecked(load_setting(VIEWER_MINIMAP_VISIBLE_KEY, True))
         self.minimap_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.minimap_checkbox.toggled.connect(self._on_minimap_changed)
         reader_layout.addWidget(self.minimap_checkbox)
 
-        self.scene_anchors_checkbox = QCheckBox("Show saved scene anchors by default")
+        self.scene_anchors_checkbox = QCheckBox(t("settings.reader.scene_anchors"))
         self.scene_anchors_checkbox.setChecked(load_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, True))
         self.scene_anchors_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.scene_anchors_checkbox.toggled.connect(self._on_scene_anchors_changed)
@@ -794,7 +795,7 @@ class SettingsPage(QWidget):
         zoom_row = QHBoxLayout()
         zoom_row.setSpacing(10)
 
-        zoom_text = QLabel("Default zoom")
+        zoom_text = QLabel(t("settings.reader.default_zoom"))
         zoom_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         zoom_text.setFixedWidth(100)
 
@@ -815,20 +816,20 @@ class SettingsPage(QWidget):
         zoom_row.addWidget(self.zoom_value_label)
         reader_layout.addLayout(zoom_row)
 
-        manga_defaults_label = QLabel("Manga")
+        manga_defaults_label = QLabel(t("settings.reader.manga"))
         manga_defaults_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         reader_layout.addWidget(manga_defaults_label)
 
         manga_layout_row = QHBoxLayout()
         manga_layout_row.setSpacing(10)
-        manga_layout_text = QLabel("Page layout")
+        manga_layout_text = QLabel(t("settings.reader.page_layout"))
         manga_layout_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         manga_layout_text.setFixedWidth(100)
         self.manga_layout_combo = QComboBox()
         self.manga_layout_combo.setStyleSheet(INPUT_STYLE)
-        self.manga_layout_combo.addItem("Single Page", ("single", "odd"))
-        self.manga_layout_combo.addItem("Double Page (Odds)", ("double", "odd"))
-        self.manga_layout_combo.addItem("Double Page (Evens)", ("double", "even"))
+        self.manga_layout_combo.addItem(t("settings.reader.layout.single"), ("single", "odd"))
+        self.manga_layout_combo.addItem(t("settings.reader.layout.double_odds"), ("double", "odd"))
+        self.manga_layout_combo.addItem(t("settings.reader.layout.double_evens"), ("double", "even"))
         current_layout = (
             str(load_setting(VIEWER_MANGA_LAYOUT_KEY, "single") or "single"),
             str(load_setting(VIEWER_MANGA_SPREAD_PARITY_KEY, "odd") or "odd"),
@@ -841,13 +842,13 @@ class SettingsPage(QWidget):
 
         manga_fit_row = QHBoxLayout()
         manga_fit_row.setSpacing(10)
-        manga_fit_text = QLabel("Scale")
+        manga_fit_text = QLabel(t("settings.reader.scale"))
         manga_fit_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         manga_fit_text.setFixedWidth(100)
         self.manga_fit_combo = QComboBox()
         self.manga_fit_combo.setStyleSheet(INPUT_STYLE)
-        self.manga_fit_combo.addItem("Fit Width", "width")
-        self.manga_fit_combo.addItem("Fit Height", "height")
+        self.manga_fit_combo.addItem(t("settings.reader.fit_width"), "width")
+        self.manga_fit_combo.addItem(t("settings.reader.fit_height"), "height")
         self.manga_fit_combo.setCurrentIndex(max(0, self.manga_fit_combo.findData(str(load_setting(VIEWER_MANGA_FIT_MODE_KEY, "width") or "width"))))
         self.manga_fit_combo.currentIndexChanged.connect(self._on_manga_layout_defaults_changed)
         manga_fit_row.addWidget(manga_fit_text)
@@ -856,24 +857,24 @@ class SettingsPage(QWidget):
 
         manga_nav_row = QHBoxLayout()
         manga_nav_row.setSpacing(10)
-        manga_nav_text = QLabel("Navigation")
+        manga_nav_text = QLabel(t("settings.reader.navigation"))
         manga_nav_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         manga_nav_text.setFixedWidth(100)
         self.manga_nav_combo = QComboBox()
         self.manga_nav_combo.setStyleSheet(INPUT_STYLE)
-        self.manga_nav_combo.addItem("Left to Right", "ltr")
-        self.manga_nav_combo.addItem("Right to Left", "rtl")
+        self.manga_nav_combo.addItem(t("settings.reader.nav_ltr"), "ltr")
+        self.manga_nav_combo.addItem(t("settings.reader.nav_rtl"), "rtl")
         self.manga_nav_combo.setCurrentIndex(max(0, self.manga_nav_combo.findData(str(load_setting(VIEWER_NAV_DIRECTION_KEY, "ltr") or "ltr"))))
         self.manga_nav_combo.currentIndexChanged.connect(self._on_manga_navigation_defaults_changed)
         manga_nav_row.addWidget(manga_nav_text)
         manga_nav_row.addWidget(self.manga_nav_combo, 1)
         reader_layout.addLayout(manga_nav_row)
 
-        novel_defaults_label = QLabel("Novels")
+        novel_defaults_label = QLabel(t("settings.reader.novels"))
         novel_defaults_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         reader_layout.addWidget(novel_defaults_label)
 
-        self.text_progress_checkbox = QCheckBox("Show text chapter progress by default")
+        self.text_progress_checkbox = QCheckBox(t("settings.reader.text_progress"))
         self.text_progress_checkbox.setChecked(load_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, True))
         self.text_progress_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.text_progress_checkbox.toggled.connect(self._on_text_progress_changed)
@@ -881,7 +882,7 @@ class SettingsPage(QWidget):
 
         text_size_row = QHBoxLayout()
         text_size_row.setSpacing(10)
-        text_size_text = QLabel("Text size")
+        text_size_text = QLabel(t("settings.reader.text_size"))
         text_size_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         text_size_text.setFixedWidth(100)
         self.text_size_spin = QSpinBox()
@@ -897,12 +898,12 @@ class SettingsPage(QWidget):
         self.page_color_button = QPushButton()
         self.page_color_button.setStyleSheet(BUTTON_STYLE)
         self.page_color_button.clicked.connect(lambda: self._pick_reader_color("page"))
-        reader_layout.addLayout(self._build_color_setting_row("Page color", self.page_color_button, lambda: self._reset_reader_color("page")))
+        reader_layout.addLayout(self._build_color_setting_row(t("settings.reader.page_color"), self.page_color_button, lambda: self._reset_reader_color("page")))
 
         self.text_color_button = QPushButton()
         self.text_color_button.setStyleSheet(BUTTON_STYLE)
         self.text_color_button.clicked.connect(lambda: self._pick_reader_color("text"))
-        reader_layout.addLayout(self._build_color_setting_row("Text color", self.text_color_button, lambda: self._reset_reader_color("text")))
+        reader_layout.addLayout(self._build_color_setting_row(t("settings.reader.text_color"), self.text_color_button, lambda: self._reset_reader_color("text")))
 
         self._refresh_reader_color_buttons()
 
@@ -940,7 +941,7 @@ class SettingsPage(QWidget):
         label.setFixedWidth(100)
         row.addWidget(label)
         row.addWidget(button)
-        reset_btn = QPushButton("Reset")
+        reset_btn = QPushButton(t("settings.reader.reset"))
         reset_btn.setStyleSheet(BUTTON_STYLE)
         reset_btn.setFixedWidth(64)
         reset_btn.clicked.connect(reset_callback)
@@ -965,7 +966,7 @@ class SettingsPage(QWidget):
 
     def _pick_reader_color(self, target: str):
         key = VIEWER_TEXT_PAGE_COLOR_KEY if target == "page" else VIEWER_TEXT_COLOR_KEY
-        title = "Choose page color" if target == "page" else "Choose text color"
+        title = t("settings.reader.choose_page_color") if target == "page" else t("settings.reader.choose_text_color")
         current = QColor(str(load_setting(key, "#140e0c" if target == "page" else "#f6ece5") or ""))
         color = QColorDialog.getColor(current, self, title)
         if not color.isValid():
@@ -974,7 +975,7 @@ class SettingsPage(QWidget):
         logger.info("Reader %s color changed: %s", target, color.name())
         self._refresh_reader_color_buttons()
         self._apply_text_defaults_to_active_viewer()
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
     def _reset_reader_color(self, target: str):
         key = VIEWER_TEXT_PAGE_COLOR_KEY if target == "page" else VIEWER_TEXT_COLOR_KEY
@@ -983,7 +984,7 @@ class SettingsPage(QWidget):
         logger.info("Reader %s color reset: %s", target, default)
         self._refresh_reader_color_buttons()
         self._apply_text_defaults_to_active_viewer()
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
     def _apply_text_defaults_to_active_viewer(self):
         viewer = getattr(self.main_window, "viewer", None)
@@ -1051,13 +1052,13 @@ class SettingsPage(QWidget):
         sources_header.setContentsMargins(0, 0, 0, 0)
         sources_header.setSpacing(10)
 
-        sources_label = QLabel("Sources")
+        sources_label = QLabel(t("settings.scrapers.title"))
         sources_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         sources_header.addWidget(sources_label)
         sources_header.addStretch()
         sources_layout.addLayout(sources_header)
 
-        sources_help = QLabel("Choose whether each source stays fully on, is hidden from Discover only, or is disabled for discovery and downloads. Click a source status badge to test it and view details. Mark one Discover source as the default if you want Discover to open there first.")
+        sources_help = QLabel(t("settings.scrapers.help"))
         sources_help.setWordWrap(True)
         sources_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         sources_layout.addWidget(sources_help)
@@ -1088,7 +1089,7 @@ class SettingsPage(QWidget):
 
         logs_card, logs_layout = self._build_card(expand=True)
 
-        title = QLabel("Current Session Log")
+        title = QLabel(t("settings.logs.current_session"))
         title.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
         logs_layout.addWidget(title)
 
@@ -1100,7 +1101,7 @@ class SettingsPage(QWidget):
         controls = QHBoxLayout()
         controls.setSpacing(10)
 
-        self.errors_only_checkbox = QCheckBox("Hide non-warning/error lines")
+        self.errors_only_checkbox = QCheckBox(t("settings.logs.hide_non_errors"))
         self.errors_only_checkbox.setStyleSheet(CHECKBOX_STYLE)
         self.errors_only_checkbox.toggled.connect(lambda _: self._refresh_logs(force=True))
 
@@ -1146,7 +1147,7 @@ class SettingsPage(QWidget):
         row.addWidget(label)
         row.addWidget(field, 1)
 
-        browse_btn = QPushButton("Browse")
+        browse_btn = QPushButton(t("settings.logs.browse"))
         browse_btn.setStyleSheet(BUTTON_STYLE)
         browse_btn.setFixedWidth(90)
         browse_btn.clicked.connect(lambda *_args, kind=content_type: self._browse_library_content_path(kind))
@@ -1161,7 +1162,7 @@ class SettingsPage(QWidget):
 
     def _browse_library_content_path(self, content_type: str):
         current = self._collect_library_content_paths().get(content_type, "")
-        folder = QFileDialog.getExistingDirectory(self, f"Select {content_type.title()} Folder", current or load_library_path())
+        folder = QFileDialog.getExistingDirectory(self, t("settings.logs.select_folder", content_type=content_type.title()), current or load_library_path())
         if not folder:
             return
         logger.info("%s content folder selected via dialog: %s", content_type, folder)
@@ -1185,13 +1186,13 @@ class SettingsPage(QWidget):
         for content_type in DEFAULT_LIBRARY_CONTENT_PATHS:
             value = str((content_paths or {}).get(content_type) or "").strip()
             if not value:
-                return False, f"{content_type.title()} path cannot be empty."
+                return False, t("settings.validation.path_empty", content_type=content_type.title())
             path_obj = Path(value)
             if not path_obj.is_absolute():
-                return False, f"{content_type.title()} path must be absolute."
+                return False, t("settings.validation.path_absolute", content_type=content_type.title())
             normalized = str(path_obj).casefold()
             if normalized in seen:
-                return False, f"{content_type.title()} path must be different from {seen[normalized]}."
+                return False, t("settings.validation.path_different", content_type=content_type.title(), other=seen[normalized])
             seen[normalized] = content_type
         return True, ""
 
@@ -1200,7 +1201,7 @@ class SettingsPage(QWidget):
 
     def _save_library_layout(self, path: str, content_paths: dict[str, str]):
         if self._library_move_worker is not None:
-            self._set_settings_status("Wait for the current library move to finish.")
+            self._set_settings_status(t("settings.library_move.wait"))
             return
 
         valid, message = self._validate_library_content_paths(content_paths)
@@ -1219,14 +1220,14 @@ class SettingsPage(QWidget):
         content_paths_changed = old_content_paths != new_content_paths
 
         if not path_changed and not content_paths_changed:
-            self._set_settings_status("Saved.")
+            self._set_settings_status(t("settings.library_move.saved"))
             return
 
         should_move = self._should_offer_library_move(old_path, new_path, old_content_paths, new_content_paths)
         if should_move:
             answer = QMessageBox.question(
                 self,
-                "Move Library Contents",
+                t("settings.library_move.title"),
                 self._library_move_prompt_text(old_path, new_path, old_content_paths, new_content_paths, path_changed, content_paths_changed),
                 QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
                 QMessageBox.Yes,
@@ -1249,7 +1250,7 @@ class SettingsPage(QWidget):
                 )
                 self._library_move_worker.result_ready.connect(self._on_library_move_finished)
                 self._library_move_worker.finished.connect(self._clear_library_move_worker)
-                self._set_settings_status("Moving library contents...")
+                self._set_settings_status(t("settings.library_move.moving"))
                 self._library_move_worker.start()
                 return
 
@@ -1294,7 +1295,7 @@ class SettingsPage(QWidget):
             if moved_paths:
                 parts.append("\n".join(moved_paths))
         detail = "\n\n".join(parts)
-        return f"{detail}?\n\nChoose Yes to move files now, No to only change the settings, or Cancel to keep the current layout."
+        return f"{detail}{t('settings.library_move.prompt_tail')}"
 
     def _finalize_library_layout_save(
         self,
@@ -1304,11 +1305,11 @@ class SettingsPage(QWidget):
         save_library_path(new_path)
         save_library_content_paths(new_content_paths)
         logger.info("Library layout saved: path=%s content_paths=%s", new_path, new_content_paths)
-        self._set_settings_status("Saved.")
+        self._set_settings_status(t("settings.library_move.saved"))
         self.main_window.library.load_library()
 
     def _on_library_move_finished(self, payload: object):
-        success, error = payload if isinstance(payload, tuple) and len(payload) == 2 else (False, "Could not move the library contents.")
+        success, error = payload if isinstance(payload, tuple) and len(payload) == 2 else (False, t("settings.library_move.failed"))
         pending = dict(self._pending_library_layout_save or {})
         self._pending_library_layout_save = None
         if not success:
@@ -1462,7 +1463,7 @@ class SettingsPage(QWidget):
             if hasattr(viewer, "nav_toggle"):
                 viewer.nav_toggle.blockSignals(True)
                 viewer.nav_toggle.setChecked(True)
-                viewer.nav_toggle.setText("Auto Skip")
+                viewer.nav_toggle.setText(t("settings.reader.auto_skip_label"))
                 viewer.nav_toggle.blockSignals(False)
 
             viewer._zoom = 0.5
@@ -1488,7 +1489,7 @@ class SettingsPage(QWidget):
     def _on_auto_skip_changed(self, checked: bool):
         save_setting(VIEWER_AUTO_SKIP_KEY, checked)
         logger.info("Viewer auto-skip changed: %s", checked)
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -1496,13 +1497,13 @@ class SettingsPage(QWidget):
             if hasattr(viewer, "nav_toggle"):
                 viewer.nav_toggle.blockSignals(True)
                 viewer.nav_toggle.setChecked(checked)
-                viewer.nav_toggle.setText("Auto Skip" if checked else "Standard")
+                viewer.nav_toggle.setText(t("settings.reader.auto_skip_label") if checked else t("settings.reader.standard_label"))
                 viewer.nav_toggle.blockSignals(False)
 
     def _on_focus_mode_changed(self, checked: bool):
         save_setting(VIEWER_FOCUS_MODE_KEY, checked)
         logger.info("Viewer focus mode default changed: %s", checked)
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -1512,7 +1513,7 @@ class SettingsPage(QWidget):
     def _on_minimap_changed(self, checked: bool):
         save_setting(VIEWER_MINIMAP_VISIBLE_KEY, checked)
         logger.info("Viewer minimap default changed: %s", checked)
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -1522,7 +1523,7 @@ class SettingsPage(QWidget):
     def _on_scene_anchors_changed(self, checked: bool):
         save_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, checked)
         logger.info("Viewer scene anchor default changed: %s", checked)
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -1532,7 +1533,7 @@ class SettingsPage(QWidget):
     def _on_text_progress_changed(self, checked: bool):
         save_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, checked)
         logger.info("Viewer text progress default changed: %s", checked)
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -1543,7 +1544,7 @@ class SettingsPage(QWidget):
         save_setting(VIEWER_TEXT_SIZE_KEY, int(value))
         logger.info("Viewer text size default changed: %s", value)
         self._apply_text_defaults_to_active_viewer()
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
     def _on_manga_layout_defaults_changed(self, _index: int):
         layout_mode, spread_parity = self.manga_layout_combo.currentData() or ("single", "odd")
@@ -1560,21 +1561,21 @@ class SettingsPage(QWidget):
             fit_mode,
         )
         self._apply_manga_defaults_to_active_viewer()
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
     def _on_manga_navigation_defaults_changed(self, _index: int):
         direction = str(self.manga_nav_combo.currentData() or "ltr")
         save_setting(VIEWER_NAV_DIRECTION_KEY, direction)
         logger.info("Viewer manga navigation default changed: %s", direction)
         self._apply_manga_defaults_to_active_viewer()
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
     def _on_zoom_changed(self, value: int):
         zoom = value / 100.0
         save_setting(VIEWER_ZOOM_KEY, zoom)
         logger.info("Viewer default zoom changed: %.2f", zoom)
         self.zoom_value_label.setText(f"{value}%")
-        self._set_settings_status("Reader settings saved.")
+        self._set_settings_status(t("settings.reader.saved"))
 
         viewer = getattr(self.main_window, "viewer", None)
         if viewer is not None:
@@ -1605,22 +1606,22 @@ class SettingsPage(QWidget):
     def _on_show_bookmarked_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_BOOKMARKED_SECTION_KEY, checked)
         self.main_window.library.load_library()
-        self.status_label.setText("Library sections updated.")
+        self.status_label.setText(t("settings.status.library_sections_updated"))
 
     def _on_show_continue_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_CONTINUE_SECTION_KEY, checked)
         self.main_window.library.load_library()
-        self.status_label.setText("Library sections updated.")
+        self.status_label.setText(t("settings.status.library_sections_updated"))
 
     def _on_show_updates_smart_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_UPDATES_SECTION_KEY, checked)
         self.main_window.library.load_library()
-        self.status_label.setText("Library sections updated.")
+        self.status_label.setText(t("settings.status.library_sections_updated"))
 
     def _on_show_completed_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_COMPLETED_SECTION_KEY, checked)
         self.main_window.library.load_library()
-        self.status_label.setText("Library sections updated.")
+        self.status_label.setText(t("settings.status.library_sections_updated"))
 
     def _on_show_downloads_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, checked)
@@ -2160,7 +2161,7 @@ class SettingsPage(QWidget):
 
     def _default_update_action_label(self) -> str:
         release = self._latest_update_result.latest_release if self._latest_update_result else None
-        return "Update App" if can_self_update(release) else "Download Latest"
+        return t("settings.general.update_app") if can_self_update(release) else t("settings.general.view_releases")
 
     def _set_update_action_idle(self):
         self.download_update_btn.setText(self._default_update_action_label())

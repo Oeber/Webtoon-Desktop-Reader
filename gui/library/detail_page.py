@@ -26,6 +26,7 @@ from gui.common.chapter_selection import (
 from gui.common.chapter_utils import SPECIAL_CHAPTER_RE, chapter_sort_key
 from gui.common.scene_bookmark_dialog import AllSceneBookmarksDialog, SceneBookmarksDialog
 from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
+from gui.common.strings import t
 from gui.common.styles import (
     BG,
     BORDER,
@@ -129,8 +130,8 @@ class RemoteSeriesLoader(QObject):
     def _format_request_error(exc: Exception) -> str:
         message = str(exc).strip()
         if "read timed out" in message.casefold():
-            return "The site took too long to respond."
-        return message or "Network request failed."
+            return t("library.detail.request_timed_out")
+        return message or t("library.detail.request_failed")
 
     def _is_shutting_down(self) -> bool:
         app = QCoreApplication.instance()
@@ -225,7 +226,7 @@ def _scaled_preview_image(path: str, width: int, height: int, radius: int = 12) 
         placeholder.fill(QColor("#171111"))
         painter = QPainter(placeholder)
         painter.setPen(QColor("#9b7670"))
-        painter.drawText(placeholder.rect(), Qt.AlignCenter, "Preview unavailable")
+        painter.drawText(placeholder.rect(), Qt.AlignCenter, t("library.detail.preview_unavailable"))
         painter.end()
         return placeholder
 
@@ -404,27 +405,27 @@ class DetailPage(QWidget):
         tb_layout = QHBoxLayout(top_bar)
         tb_layout.setContentsMargins(16, 0, 16, 0)
 
-        self.back_btn = QPushButton("  Back")
+        self.back_btn = QPushButton(t("library.detail.back"))
         self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color="#d8b7b0"))
         self.back_btn.setIconSize(QSize(14, 14))
         self.back_btn.setCursor(Qt.PointingHandCursor)
         self.back_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.back_btn.clicked.connect(self._go_back)
 
-        self.edit_btn = QPushButton("  Edit")
+        self.edit_btn = QPushButton(t("library.detail.edit"))
         self.edit_btn.setIcon(qta.icon("fa5s.edit", color="#d8b7b0"))
         self.edit_btn.setIconSize(QSize(14, 14))
         self.edit_btn.setCursor(Qt.PointingHandCursor)
         self.edit_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.edit_btn.clicked.connect(self._open_edit_dialog)
 
-        self.bookmark_btn = QPushButton("  Bookmark")
+        self.bookmark_btn = QPushButton(t("library.detail.bookmark"))
         self.bookmark_btn.setIconSize(QSize(14, 14))
         self.bookmark_btn.setCursor(Qt.PointingHandCursor)
         self.bookmark_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.bookmark_btn.clicked.connect(self._toggle_webtoon_bookmark)
 
-        self.saved_marks_btn = QPushButton("  Saved")
+        self.saved_marks_btn = QPushButton(t("library.detail.saved"))
         self.saved_marks_btn.setIcon(qta.icon("fa5s.bookmark", color="#d8b7b0"))
         self.saved_marks_btn.setIconSize(QSize(14, 14))
         self.saved_marks_btn.setCursor(Qt.PointingHandCursor)
@@ -479,7 +480,7 @@ class DetailPage(QWidget):
         self.update_progress_circle = ProgressCircle()
         self.update_progress_circle.hide()
 
-        self.continue_btn = QPushButton("  Continue reading")
+        self.continue_btn = QPushButton(t("library.detail.continue"))
         self.continue_btn.setIcon(qta.icon("fa5s.play", color="#ffffff"))
         self.continue_btn.setIconSize(QSize(12, 12))
         self.continue_btn.setCursor(Qt.PointingHandCursor)
@@ -488,7 +489,7 @@ class DetailPage(QWidget):
         self.continue_btn.clicked.connect(self._continue_reading)
         self.continue_btn.hide()
 
-        self.start_btn = QPushButton("  Start from beginning")
+        self.start_btn = QPushButton(t("library.detail.start"))
         self.start_btn.setIcon(qta.icon("fa5s.step-backward", color="#ffffff"))
         self.start_btn.setIconSize(QSize(12, 12))
         self.start_btn.setCursor(Qt.PointingHandCursor)
@@ -496,7 +497,7 @@ class DetailPage(QWidget):
         self.start_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.start_btn.clicked.connect(self._start_from_beginning)
 
-        self.update_btn = QPushButton("  Update")
+        self.update_btn = QPushButton(t("library.detail.update"))
         self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
         self.update_btn.setIconSize(QSize(12, 12))
         self.update_btn.setCursor(Qt.PointingHandCursor)
@@ -505,7 +506,7 @@ class DetailPage(QWidget):
         self.update_btn.clicked.connect(self._start_update)
         self.update_btn.hide()
 
-        self.download_new_btn = QPushButton("  Download New")
+        self.download_new_btn = QPushButton(t("library.detail.download_new"))
         self.download_new_btn.setIcon(qta.icon("fa5s.download", color="#ffffff"))
         self.download_new_btn.setIconSize(QSize(12, 12))
         self.download_new_btn.setCursor(Qt.PointingHandCursor)
@@ -546,10 +547,10 @@ class DetailPage(QWidget):
         sh_layout = QHBoxLayout(self.section_header)
         sh_layout.setContentsMargins(32, 20, 32, 8)
 
-        self.section_caption_label = QLabel("CHAPTERS")
+        self.section_caption_label = QLabel(t("library.detail.chapters"))
         self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
 
-        self.sort_btn = QPushButton("  Latest")
+        self.sort_btn = QPushButton(t("library.detail.sort_latest"))
         self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#d8b7b0"))
         self.sort_btn.setIconSize(QSize(12, 12))
         self.sort_btn.setCursor(Qt.PointingHandCursor)
@@ -558,7 +559,7 @@ class DetailPage(QWidget):
         self.sort_latest_first = True
         self.sort_btn.clicked.connect(self._toggle_sort)
 
-        self.hide_specials_btn = QPushButton("  Hide Filler")
+        self.hide_specials_btn = QPushButton(t("library.detail.hide_filler"))
         self.hide_specials_btn.setIcon(qta.icon("fa5s.eye-slash", color="#d8b7b0"))
         self.hide_specials_btn.setIconSize(QSize(12, 12))
         self.hide_specials_btn.setCursor(Qt.PointingHandCursor)
@@ -567,7 +568,7 @@ class DetailPage(QWidget):
         self.hide_specials_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE)
         self.hide_specials_btn.clicked.connect(self._toggle_hide_specials)
 
-        self.bookmarks_filter_btn = QPushButton("  Bookmarked")
+        self.bookmarks_filter_btn = QPushButton(t("library.detail.bookmarked"))
         self.bookmarks_filter_btn.setIcon(qta.icon("fa5s.star", color="#d8b7b0"))
         self.bookmarks_filter_btn.setIconSize(QSize(12, 12))
         self.bookmarks_filter_btn.setCursor(Qt.PointingHandCursor)
@@ -576,7 +577,7 @@ class DetailPage(QWidget):
         self.bookmarks_filter_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_GOLD_CHECKED_STYLE)
         self.bookmarks_filter_btn.clicked.connect(self._toggle_bookmarks_filter)
 
-        self.scene_marks_filter_btn = QPushButton("  Scenes")
+        self.scene_marks_filter_btn = QPushButton(t("library.detail.scenes"))
         self.scene_marks_filter_btn.setIcon(qta.icon("fa5s.map-marker-alt", color="#d8b7b0"))
         self.scene_marks_filter_btn.setIconSize(QSize(12, 12))
         self.scene_marks_filter_btn.setCursor(Qt.PointingHandCursor)
@@ -608,27 +609,27 @@ class DetailPage(QWidget):
 
         chapter_batch_btn_style = sized_button_style(SECONDARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
         chapter_delete_btn_style = sized_button_style(DELETE_BUTTON_STYLE, BATCH_ACTION_BTN_H)
-        self.select_all_chapters_btn = QPushButton("Select All")
+        self.select_all_chapters_btn = QPushButton(t("library.detail.select_all"))
         self.select_all_chapters_btn.setStyleSheet(chapter_batch_btn_style)
         self.select_all_chapters_btn.clicked.connect(self._select_all_chapters)
         batch_layout.addWidget(self.select_all_chapters_btn)
 
-        self.mark_read_btn = QPushButton("Mark Read")
+        self.mark_read_btn = QPushButton(t("library.detail.mark_read"))
         self.mark_read_btn.setStyleSheet(chapter_batch_btn_style)
         self.mark_read_btn.clicked.connect(self._mark_selected_chapters_read)
         batch_layout.addWidget(self.mark_read_btn)
 
-        self.mark_unread_btn = QPushButton("Mark Unread")
+        self.mark_unread_btn = QPushButton(t("library.detail.mark_unread"))
         self.mark_unread_btn.setStyleSheet(chapter_batch_btn_style)
         self.mark_unread_btn.clicked.connect(self._mark_selected_chapters_unread)
         batch_layout.addWidget(self.mark_unread_btn)
 
-        self.delete_chapters_btn = QPushButton("Delete")
+        self.delete_chapters_btn = QPushButton(t("library.detail.delete"))
         self.delete_chapters_btn.setStyleSheet(chapter_delete_btn_style)
         self.delete_chapters_btn.clicked.connect(self._delete_selected_chapters)
         batch_layout.addWidget(self.delete_chapters_btn)
 
-        self.clear_chapter_selection_btn = QPushButton("Clear")
+        self.clear_chapter_selection_btn = QPushButton(t("library.detail.clear"))
         self.clear_chapter_selection_btn.setStyleSheet(chapter_batch_btn_style)
         self.clear_chapter_selection_btn.clicked.connect(self._clear_chapter_selection)
         batch_layout.addWidget(self.clear_chapter_selection_btn)
@@ -753,16 +754,16 @@ class DetailPage(QWidget):
         single_manga_chapter = self._single_manga_chapter()
         if single_manga_chapter:
             total_pages = self._chapter_total_images(single_manga_chapter)
-            self.last_read_label.setText(f"{total_pages} pages" if total_pages > 0 else "")
+            self.last_read_label.setText(t("library.detail.pages", count=total_pages) if total_pages > 0 else "")
             self.continue_btn.show() if progress else self.continue_btn.hide()
         elif progress:
             ch = progress["chapter"]
             scroll, total = self._progress_for_chapter(ch)
             percent = self._calc_percent(scroll, total)
-            self.last_read_label.setText(f"Last read: {ch} ({percent}%)")
+            self.last_read_label.setText(t("library.detail.last_read_status", chapter=ch, percent=percent))
             self.continue_btn.show()
         else:
-            self.last_read_label.setText("Not started")
+            self.last_read_label.setText(t("library.detail.not_started"))
             self.continue_btn.hide()
 
         self._begin_remote_series_lookup()
@@ -826,7 +827,7 @@ class DetailPage(QWidget):
         remote_urls = {entry.get("url", "") for entry in remote_chapters if entry.get("url")}
         self.selected_remote_chapter_urls &= remote_urls
         if remote_chapters:
-            header = QLabel("NEW CHAPTERS AVAILABLE")
+            header = QLabel(t("library.detail.new_chapters_available"))
             header.setStyleSheet(SECTION_CAPTION_STYLE)
             self.chapter_list_layout.addWidget(header)
             self.chapter_list_layout.addWidget(self._make_remote_batch_row(remote_chapters))
@@ -876,7 +877,7 @@ class DetailPage(QWidget):
         title_row.addWidget(name_lbl)
 
         if chapter == self.latest_new_chapter:
-            new_chip = QLabel("NEW")
+            new_chip = QLabel(t("library.detail.new_chip"))
             new_chip.setStyleSheet(NEW_CHIP_STYLE)
             new_chip.setAlignment(Qt.AlignCenter)
             new_chip.setFixedHeight(14)
@@ -888,7 +889,7 @@ class DetailPage(QWidget):
         scene_count = int(self.scene_bookmark_counts.get(chapter, 0) or 0)
         if scene_count > 0:
             scene_btn = QToolButton(row)
-            scene_btn.setText("Scenes")
+            scene_btn.setText(t("library.detail.scenes"))
             scene_btn.setCursor(Qt.PointingHandCursor)
             scene_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
             scene_btn.clicked.connect(lambda checked=False, ch=chapter: self._open_scene_bookmarks_for_chapter(ch))
@@ -966,12 +967,12 @@ class DetailPage(QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
 
-        display_name = entry.get("display_name") or entry.get("local_name") or "New chapter"
+        display_name = entry.get("display_name") or entry.get("local_name") or t("library.detail.new_chapter")
         name_lbl = QLabel(display_name)
         name_lbl.setStyleSheet(chapter_name_style("#ffd7cf"))
         title_row.addWidget(name_lbl)
 
-        new_chip = QLabel("NEW")
+        new_chip = QLabel(t("library.detail.new_chip"))
         new_chip.setStyleSheet(NEW_CHIP_STYLE)
         new_chip.setAlignment(Qt.AlignCenter)
         new_chip.setFixedHeight(14)
@@ -981,7 +982,7 @@ class DetailPage(QWidget):
         layout.addLayout(title_row, 1)
 
         download_btn = QToolButton(row)
-        download_btn.setText("Download")
+        download_btn.setText(t("library.detail.download"))
         download_btn.setCursor(Qt.PointingHandCursor)
         download_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         download_btn.clicked.connect(
@@ -1008,17 +1009,17 @@ class DetailPage(QWidget):
         button_style = sized_button_style(SECONDARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
         primary_button_style = sized_button_style(PRIMARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
 
-        select_all_btn = QPushButton("Select All New")
+        select_all_btn = QPushButton(t("library.detail.select_all_new"))
         select_all_btn.setStyleSheet(button_style)
         select_all_btn.clicked.connect(self._select_all_remote_chapters)
         layout.addWidget(select_all_btn)
 
-        self._remote_download_selected_btn = QPushButton("Download Selected")
+        self._remote_download_selected_btn = QPushButton(t("library.detail.download_selected"))
         self._remote_download_selected_btn.setStyleSheet(primary_button_style)
         self._remote_download_selected_btn.clicked.connect(self._download_selected_remote_chapters)
         layout.addWidget(self._remote_download_selected_btn)
 
-        self._remote_clear_selection_btn = QPushButton("Clear")
+        self._remote_clear_selection_btn = QPushButton(t("library.detail.clear"))
         self._remote_clear_selection_btn.setStyleSheet(button_style)
         self._remote_clear_selection_btn.clicked.connect(self._clear_remote_chapter_selection)
         layout.addWidget(self._remote_clear_selection_btn)
@@ -1094,18 +1095,18 @@ class DetailPage(QWidget):
         hidden_specials = total_count - self._visible_chapters_count(self.webtoon.chapters)
 
         if self.show_only_bookmarked or self.show_only_scene_marks:
-            parts = [f"{visible_count} chapters shown"]
+            parts = [t("library.detail.chapters_shown", count=visible_count)]
         elif self.hide_specials and hidden_specials > 0:
-            parts = [f"{visible_count} chapters"]
+            parts = [t("library.detail.chapters_count", count=visible_count)]
         else:
-            parts = [f"{total_count} chapters"]
+            parts = [t("library.detail.chapters_count", count=total_count)]
         if self.hide_specials and hidden_specials > 0:
-            parts.append(f"{hidden_specials} special hidden")
+            parts.append(t("library.detail.special_hidden", count=hidden_specials))
         if self.show_only_bookmarked:
-            parts.append(f"{len(self.bookmarked_chapters)} bookmarked")
+            parts.append(t("library.detail.bookmarked_count", count=len(self.bookmarked_chapters)))
         remote_count = len(self._filtered_new_remote_chapters())
         if remote_count > 0:
-            parts.append(f"{remote_count} new online")
+            parts.append(t("library.detail.new_online", count=remote_count))
 
         self.chapter_count_label.setText(" | ".join(parts))
 
@@ -1119,7 +1120,7 @@ class DetailPage(QWidget):
             self._sync_remote_chapter_state(rebuild_chapter_list=False)
             return
         if not is_scraper_enabled_for_url(source_url):
-            self._remote_status = "Source site disabled in Settings."
+            self._remote_status = t("library.detail.source_disabled")
             self._sync_remote_chapter_state(rebuild_chapter_list=False)
             return
 
@@ -1132,7 +1133,7 @@ class DetailPage(QWidget):
             self._sync_remote_chapter_state(rebuild_chapter_list=False)
             return
 
-        self._remote_status = "Checking for new chapters..."
+        self._remote_status = t("library.detail.checking_new")
         self._sync_remote_chapter_state(rebuild_chapter_list=False)
         source_site = self.settings_store.get_source_site(self.webtoon.name) or getattr(scraper, "site_name", "") or ""
         source_config = self.settings_store.get_source_config(self.webtoon.name) or load_scraper_default_config(source_site)
@@ -1160,12 +1161,12 @@ class DetailPage(QWidget):
                     self.webtoon.name,
                 )
                 self._remote_series = None
-                self._remote_status = "Couldn't check for new chapters. Site authorization may be required."
+                self._remote_status = t("library.detail.check_failed_auth")
                 self._sync_remote_chapter_state()
                 return
             logger.warning("Remote chapter lookup failed for %s: %s", self.webtoon.name, error)
             self._remote_series = None
-            self._remote_status = "Couldn't check for new chapters."
+            self._remote_status = t("library.detail.check_failed")
             self._sync_remote_chapter_state()
             return
 
@@ -1190,11 +1191,11 @@ class DetailPage(QWidget):
             try:
                 number_value = float(number)
                 if number_value.is_integer():
-                    return f"Chapter {int(number_value)}"
-                return f"Chapter {format(number_value, 'g')}"
+                    return t("library.detail.chapter_number_int", number=int(number_value))
+                return t("library.detail.chapter_number", number=format(number_value, "g"))
             except Exception:
                 pass
-        return sanitize_webtoon_name(getattr(chapter, "title", "") or "") or "Chapter"
+        return sanitize_webtoon_name(getattr(chapter, "title", "") or "") or t("library.detail.chapter")
 
     def _sync_remote_chapter_state(self, *, rebuild_chapter_list: bool = True):
         previous_visible_count = len(self._filtered_new_remote_chapters())
@@ -1223,7 +1224,7 @@ class DetailPage(QWidget):
         self.remote_status_label.setVisible(bool(self._remote_status))
         count = len(self._filtered_new_remote_chapters())
         self.download_new_btn.setVisible(count > 0)
-        self.download_new_btn.setText(f"  Download New ({count})" if count > 0 else "  Download New")
+        self.download_new_btn.setText(t("library.detail.download_new_count", count=count) if count > 0 else t("library.detail.download_new"))
         self._update_chapter_count_label()
         status_changed = (
             previous_status != self.remote_status_label.text()
@@ -1237,9 +1238,9 @@ class DetailPage(QWidget):
 
     def _sync_webtoon_bookmark_button(self):
         if self.webtoon_bookmarked:
-            self.bookmark_btn.setText("  Bookmarked")
+            self.bookmark_btn.setText(t("library.detail.bookmarked_active"))
         else:
-            self.bookmark_btn.setText("  Bookmark")
+            self.bookmark_btn.setText(t("library.detail.bookmark"))
         color = "#f5c451" if self.webtoon_bookmarked else "#d8b7b0"
         self.bookmark_btn.setIcon(qta.icon("fa5s.star", color=color))
 
@@ -1282,7 +1283,7 @@ class DetailPage(QWidget):
         self._refresh_chapter_selection_visibility()
         if count <= 0:
             return
-        self.chapter_batch_label.setText(f"{count} chapters selected")
+        self.chapter_batch_label.setText(t("library.detail.chapters_selected", count=count))
 
     def _select_all_chapters(self):
         self.selected_chapters = set(self._filtered_chapters())
@@ -1353,7 +1354,7 @@ class DetailPage(QWidget):
     def _sync_remote_batch_actions(self):
         count = len(self.selected_remote_chapter_urls)
         if self._remote_selection_label is not None:
-            self._remote_selection_label.setText(f"{count} new chapters selected")
+            self._remote_selection_label.setText(t("library.detail.new_chapters_selected", count=count))
         if self._remote_download_selected_btn is not None:
             self._remote_download_selected_btn.setEnabled(count > 0)
         if self._remote_clear_selection_btn is not None:
@@ -1420,7 +1421,7 @@ class DetailPage(QWidget):
             logger.warning("Detail-page auto-download could not start for %s: %s", self.webtoon.name, error)
             return
         self._pending_remote_chapter_urls.update(urls)
-        self.remote_status_label.setText(f"Auto-download started for {len(urls)} new chapter{'s' if len(urls) != 1 else ''}.")
+        self.remote_status_label.setText(t("library.detail.auto_download_started", count=len(urls)))
         self.remote_status_label.show()
     def _download_all_new_chapters(self):
         urls = [entry.get("url", "") for entry in self._filtered_new_remote_chapters() if entry.get("url")]
@@ -1437,7 +1438,7 @@ class DetailPage(QWidget):
             return
         source_url = self.settings_store.get_source_url(self.webtoon.name)
         if not source_url:
-            QMessageBox.warning(self, "Download new chapters", "No source URL is saved for this series.")
+            QMessageBox.warning(self, t("library.detail.download_new_title"), t("library.detail.no_source_url"))
             return
         error = self.main_window.downloader.start_download_from_url(
             source_url,
@@ -1445,12 +1446,12 @@ class DetailPage(QWidget):
             chapter_urls=urls,
         )
         if error:
-            QMessageBox.warning(self, "Download new chapters", error)
+            QMessageBox.warning(self, t("library.detail.download_new_title"), error)
             return
         self._pending_remote_chapter_urls.update(urls)
         self.selected_remote_chapter_urls.difference_update(urls)
-        noun = "chapter" if len(urls) == 1 else "chapters"
-        self.remote_status_label.setText(f"Download started for {len(urls)} {noun}.")
+        noun = t("library.detail.chapter_singular") if len(urls) == 1 else t("library.detail.chapter_plural")
+        self.remote_status_label.setText(t("library.detail.download_started", count=len(urls), noun=noun))
         self.remote_status_label.show()
         progress = self.progress_store.get(self.webtoon.name) if self.webtoon and self.progress_store else None
         self._update_chapter_count_label()
@@ -1510,8 +1511,8 @@ class DetailPage(QWidget):
         selected = sorted(self.selected_chapters, key=chapter_sort_key)
         answer = QMessageBox.question(
             self,
-            "Delete selected chapters",
-            f"Delete {len(selected)} selected chapters from disk?",
+            t("library.detail.delete_selected_title"),
+            t("library.detail.delete_selected_text", count=len(selected)),
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -1552,11 +1553,11 @@ class DetailPage(QWidget):
         self._refresh_webtoon_from_disk()
         self._clear_chapter_selection()
         if failed:
-            noun = "chapter" if len(failed) == 1 else "chapters"
+            noun = t("library.detail.chapter_singular") if len(failed) == 1 else t("library.detail.chapter_plural")
             QMessageBox.warning(
                 self,
-                "Delete selected chapters",
-                f"Could not delete {len(failed)} {noun}. Their progress, bookmarks, and saved scenes were left unchanged.",
+                t("library.detail.delete_selected_title"),
+                t("library.detail.delete_failed", count=len(failed), noun=noun),
             )
 
     def _toggle_hide_specials(self):
@@ -1600,14 +1601,14 @@ class DetailPage(QWidget):
 
     def _saved_mode_label(self) -> str:
         content_type = str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold()
-        return "Bookmark" if content_type == "webnovel" else "Scene"
+        return t("library.detail.bookmark_mode") if content_type == "webnovel" else t("library.detail.scene_mode")
 
     def _is_manga_webtoon(self) -> bool:
         return str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
 
     def _sync_detail_filter_visibility(self) -> None:
         manga = self._is_manga_webtoon()
-        self.section_caption_label.setText("" if manga else "CHAPTERS")
+        self.section_caption_label.setText("" if manga else t("library.detail.chapters"))
         self.sort_btn.setVisible(not manga)
         self.hide_specials_btn.setVisible(not manga)
         self.bookmarks_filter_btn.setVisible(not manga)
@@ -1844,8 +1845,8 @@ class DetailPage(QWidget):
     def _sync_saved_marks_button(self):
         count = sum(int(value or 0) for value in self.scene_bookmark_counts.values())
         mode_label = self._saved_mode_label()
-        self.saved_marks_btn.setText(f"  Saved ({count})" if count else "  Saved")
-        self.saved_marks_btn.setToolTip(f"Open saved {mode_label.lower()}s across all chapters")
+        self.saved_marks_btn.setText(t("library.detail.saved_count", count=count) if count else t("library.detail.saved"))
+        self.saved_marks_btn.setToolTip(t("library.detail.saved_tooltip", mode_label=mode_label.lower()))
         self.saved_marks_btn.setEnabled(count > 0)
 
     def _open_all_scene_bookmarks(self):
@@ -1986,8 +1987,8 @@ class DetailPage(QWidget):
         if chapter not in self.webtoon.chapters:
             QMessageBox.information(
                 self,
-                "Chapter removed",
-                f"'{chapter}' no longer exists on disk. The chapter list has been refreshed.",
+                t("library.detail.chapter_removed_title"),
+                t("library.detail.chapter_removed_text", chapter=chapter),
             )
             return
         if self.latest_new_chapter == chapter:
@@ -2019,8 +2020,8 @@ class DetailPage(QWidget):
         if not image_paths:
             QMessageBox.information(
                 self,
-                "Chapter empty",
-                f"'{chapter}' has no readable images.",
+                t("library.detail.chapter_empty_title"),
+                t("library.detail.chapter_empty_text", chapter=chapter),
             )
             return
         self._manga_preview_chapter = chapter
@@ -2076,8 +2077,8 @@ class DetailPage(QWidget):
         else:
             QMessageBox.information(
                 self,
-                "Chapter removed",
-                f"The saved chapter '{chapter}' no longer exists on disk.",
+                t("library.detail.chapter_removed_title"),
+                t("library.detail.saved_chapter_removed_text", chapter=chapter),
             )
 
     def _go_back(self):
@@ -2170,7 +2171,7 @@ class DetailPage(QWidget):
                 self._update_progress_current = current
                 self._update_progress_total = total
             self.update_btn.setEnabled(False)
-            self.update_btn.setText("  Updating...")
+            self.update_btn.setText(t("library.detail.updating"))
             self._show_update_progress()
             return
         if self.settings_store.get_completed(self.webtoon.name):
@@ -2197,7 +2198,7 @@ class DetailPage(QWidget):
         self.update_progress_circle.hide()
         remaining = self._cooldown_remaining()
         self.update_btn.setEnabled(remaining == 0)
-        self.update_btn.setText(f"  {remaining}s" if remaining > 0 else "  Update")
+        self.update_btn.setText(t("library.detail.cooldown", remaining=remaining) if remaining > 0 else t("library.detail.update"))
 
     def _on_update_started(self, name: str):
         if self.webtoon and name == self.webtoon.name:
@@ -2282,10 +2283,10 @@ class DetailPage(QWidget):
             self.sort_latest_first,
         )
         if self.sort_latest_first:
-            self.sort_btn.setText("  Latest")
+            self.sort_btn.setText(t("library.detail.sort_latest"))
             self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#d8b7b0"))
         else:
-            self.sort_btn.setText("  Oldest")
+            self.sort_btn.setText(t("library.detail.sort_oldest"))
             self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-up", color="#d8b7b0"))
         self.sort_btn.setIconSize(QSize(12, 12))
         if self.webtoon is not None:
@@ -2304,11 +2305,11 @@ class DetailPage(QWidget):
             percent = int((max(0, min(self._update_progress_current, self._update_progress_total)) / self._update_progress_total) * 100)
             self.update_progress_circle.set_percent(percent)
             self.update_progress_label.setText(
-                f"Downloading {self._update_progress_current} / {self._update_progress_total}"
+                t("library.detail.downloading_progress", current=self._update_progress_current, total=self._update_progress_total)
             )
         else:
             self.update_progress_circle.set_percent(0)
-            self.update_progress_label.setText("Downloading...")
+            self.update_progress_label.setText(t("library.detail.downloading_simple"))
         self.update_progress_circle.show()
         self.update_progress_label.show()
 

@@ -4,6 +4,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from stores.download_history_store import get_instance as get_download_history
 from gui.downloader.helpers import sanitize_webtoon_name
 from gui.common.styles import SECTION_LABEL_STYLE
@@ -18,7 +19,7 @@ class DownloaderPage(DownloadHistoryPageBase):
     OPEN_REFRESH_THROTTLE_MS = 3000
 
     def __init__(self, main_window):
-        super().__init__(main_window, "Downloader", "History", history_kind="download")
+        super().__init__(main_window, t("downloader.title"), t("downloader.history"), history_kind="download")
         self.history_store = get_download_history()
         self._auth_retry_in_progress = False
         self._last_auth_retry_by_url: dict[tuple[str, str], float] = {}
@@ -29,16 +30,16 @@ class DownloaderPage(DownloadHistoryPageBase):
         row.setSpacing(8)
 
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("Paste URL...")
+        self.url_input.setPlaceholderText(t("downloader.paste_url"))
         self.url_input.setStyleSheet(INPUT_STYLE)
         self.url_input.returnPressed.connect(self._start_download)
 
-        self.download_btn = QPushButton("Download")
+        self.download_btn = QPushButton(t("downloader.download"))
         self.download_btn.setStyleSheet(BTN_STYLE)
         self.download_btn.setFixedWidth(100)
         self.download_btn.clicked.connect(self._start_download)
 
-        self.cancel_btn = QPushButton("Cancel Active")
+        self.cancel_btn = QPushButton(t("downloader.cancel_active"))
         self.cancel_btn.setStyleSheet(BTN_STYLE)
         self.cancel_btn.setFixedWidth(110)
         self.cancel_btn.clicked.connect(self._cancel_active_downloads)
@@ -49,7 +50,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         row.addWidget(self.cancel_btn)
         self.layout().insertLayout(1, row)
 
-        self.activity_label = QLabel("Recent activity")
+        self.activity_label = QLabel(t("downloader.recent_activity"))
         self.activity_label.setStyleSheet(SECTION_LABEL_STYLE)
         self.history_layout.addWidget(self.activity_label)
 
@@ -131,7 +132,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         url = (url or "").strip()
 
         raw_entry_name = self._next_entry_name(preferred_name or url)
-        entry_name = sanitize_webtoon_name(raw_entry_name) or "download"
+        entry_name = sanitize_webtoon_name(raw_entry_name) or t("downloader.default_name")
 
         entry = CancellableDownloadEntry(
             entry_name,
@@ -162,7 +163,7 @@ class DownloaderPage(DownloadHistoryPageBase):
         return None
     
     def _next_entry_name(self, url: str) -> str:
-        base = url.strip().strip("'\"").rstrip("/").split("/")[-1] or "download"
+        base = url.strip().strip("'\"").rstrip("/").split("/")[-1] or t("downloader.default_name")
         candidate = base
         counter = 2
         while self._entry_for(candidate) is not None:
@@ -266,5 +267,7 @@ class DownloaderPage(DownloadHistoryPageBase):
             if thumb_path:
                 entry.set_thumbnail(thumb_path)
             self.activity_list.addWidget(entry)
+
+
 
 

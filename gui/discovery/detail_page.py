@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from gui.common.chapter_selection import (
     apply_select_icon,
     refresh_selector_visibility,
@@ -132,7 +133,7 @@ class DiscoveryDetailPage(QWidget):
         tb_layout = QHBoxLayout(top_bar)
         tb_layout.setContentsMargins(16, 0, 16, 0)
 
-        self.back_btn = QPushButton("  Back")
+        self.back_btn = QPushButton(t("discovery.detail.back"))
         self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color="#d8b7b0"))
         self.back_btn.setIconSize(QSize(14, 14))
         self.back_btn.setCursor(Qt.PointingHandCursor)
@@ -148,7 +149,7 @@ class DiscoveryDetailPage(QWidget):
         hero_layout.setContentsMargins(32, 28, 32, 28)
         hero_layout.setSpacing(28)
 
-        self.thumb_label = QLabel("No Cover")
+        self.thumb_label = QLabel(t("discovery.detail.no_cover"))
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setFixedSize(THUMB_W, THUMB_H)
         self.thumb_label.setStyleSheet(detail_thumb_style(RADIUS))
@@ -187,7 +188,7 @@ class DiscoveryDetailPage(QWidget):
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
 
-        self.download_all_btn = QPushButton("Download All Chapters")
+        self.download_all_btn = QPushButton(t("discovery.detail.download_all_chapters"))
         self.download_all_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
         self.download_all_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.download_all_btn.clicked.connect(self._download_all)
@@ -204,11 +205,11 @@ class DiscoveryDetailPage(QWidget):
         section_header.setStyleSheet(SECTION_HEADER_PANEL_STYLE)
         sh_layout = QHBoxLayout(section_header)
         sh_layout.setContentsMargins(32, 20, 32, 8)
-        self.section_caption_label = QLabel("CHAPTERS")
+        self.section_caption_label = QLabel(t("discovery.detail.chapters"))
         self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
         sh_layout.addWidget(self.section_caption_label)
         sh_layout.addStretch()
-        self.hide_specials_checkbox = QCheckBox("Hide filler")
+        self.hide_specials_checkbox = QCheckBox(t("discovery.detail.hide_filler"))
         self.hide_specials_checkbox.toggled.connect(self._rebuild_chapter_list)
         sh_layout.addWidget(self.hide_specials_checkbox)
         root.addWidget(section_header)
@@ -218,25 +219,25 @@ class DiscoveryDetailPage(QWidget):
         batch_layout = QHBoxLayout(self.batch_bar)
         batch_layout.setContentsMargins(32, 10, 32, 10)
         batch_layout.setSpacing(10)
-        self.selection_label = QLabel("0 selected")
+        self.selection_label = QLabel(t("discovery.detail.selection", count=0))
         self.selection_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.selection_label)
 
         batch_primary_btn_style = sized_button_style(PRIMARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
         batch_secondary_btn_style = sized_button_style(SECONDARY_ACTION_BUTTON_STYLE, BATCH_ACTION_BTN_H)
 
-        self.select_all_btn = QPushButton("Select All")
+        self.select_all_btn = QPushButton(t("discovery.detail.select_all"))
         self.select_all_btn.setStyleSheet(batch_secondary_btn_style)
         self.select_all_btn.clicked.connect(self._select_all_visible)
         batch_layout.addWidget(self.select_all_btn)
 
-        self.download_selected_btn = QPushButton("Download Selected")
+        self.download_selected_btn = QPushButton(t("discovery.detail.download_selected"))
         self.download_selected_btn.setStyleSheet(batch_primary_btn_style)
         self.download_selected_btn.clicked.connect(self._download_selected)
         self.download_selected_btn.setEnabled(False)
         batch_layout.addWidget(self.download_selected_btn)
 
-        self.clear_selection_btn = QPushButton("Clear")
+        self.clear_selection_btn = QPushButton(t("discovery.detail.clear"))
         self.clear_selection_btn.setStyleSheet(batch_secondary_btn_style)
         self.clear_selection_btn.clicked.connect(self._clear_selection)
         batch_layout.addWidget(self.clear_selection_btn)
@@ -267,16 +268,16 @@ class DiscoveryDetailPage(QWidget):
         self._request_id += 1
         self._cancel_pending_manga_page_render()
 
-        self.title_label.setText(getattr(entry, "title", "") or "Untitled")
-        self.author_label.setText(getattr(entry, "author", "") or "Unknown author")
+        self.title_label.setText(getattr(entry, "title", "") or t("discovery.card.untitled"))
+        self.author_label.setText(getattr(entry, "author", "") or t("discovery.detail.unknown_author"))
         self.chapter_count_label.setText(self._entry_count_text(entry))
-        self.description_label.setText(getattr(entry, "description", "") or "Loading series details...")
-        self.status_label.setText("Loading chapters...")
+        self.description_label.setText(getattr(entry, "description", "") or t("discovery.detail.loading_series_details"))
+        self.status_label.setText(t("discovery.detail.loading_chapters"))
         self.status_label.show()
         self.download_selected_btn.setEnabled(False)
         self.download_all_btn.setEnabled(False)
         self.thumb_label.setPixmap(QPixmap())
-        self.thumb_label.setText("No Cover")
+        self.thumb_label.setText(t("discovery.detail.no_cover"))
         if getattr(entry, "cover_url", ""):
             provider = self._providers_by_site.get(str(getattr(entry, "site", "") or "").strip())
             self._cover_loader.load(self, entry.cover_url, getattr(entry, "cover_headers", {}) or {}, provider)
@@ -387,10 +388,10 @@ class DiscoveryDetailPage(QWidget):
 
     def _refresh_mode_state(self) -> None:
         manga = self._is_manga_series() if self.series is not None else False
-        self.section_caption_label.setText("PAGES" if manga else "CHAPTERS")
+        self.section_caption_label.setText(t("discovery.detail.pages") if manga else t("discovery.detail.chapters"))
         self.hide_specials_checkbox.setVisible(not manga)
         self.batch_bar.setVisible((not manga) and bool(self._selected_urls))
-        self.download_all_btn.setText("Download All Pages" if manga else "Download All Chapters")
+        self.download_all_btn.setText(t("discovery.detail.download_all_pages") if manga else t("discovery.detail.download_all_chapters"))
 
     def _rebuild_chapter_list(self):
         self._cancel_pending_manga_page_render()
@@ -401,7 +402,7 @@ class DiscoveryDetailPage(QWidget):
                 widget.deleteLater()
 
         if self.series is None:
-            label = QLabel(self.status_label.text() or "Loading chapter list...")
+            label = QLabel(self.status_label.text() or t("discovery.detail.loading_list"))
             label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
             self.chapter_list_layout.addWidget(label)
             self._sync_selection_state()
@@ -412,7 +413,7 @@ class DiscoveryDetailPage(QWidget):
         if self._is_manga_series():
             page_entries = self._visible_manga_pages()
             if not page_entries:
-                label = QLabel("No pages available.")
+                label = QLabel(t("discovery.detail.no_pages"))
                 label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
                 self.chapter_list_layout.addWidget(label)
                 self._sync_selection_state()
@@ -435,7 +436,7 @@ class DiscoveryDetailPage(QWidget):
 
         chapters = self._visible_chapters()
         if not chapters:
-            label = QLabel("No chapters available.")
+            label = QLabel(t("discovery.detail.no_chapters"))
             label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
             self.chapter_list_layout.addWidget(label)
             self._sync_selection_state()
@@ -450,7 +451,7 @@ class DiscoveryDetailPage(QWidget):
         image_url = str(getattr(page, "image_url", "") or "")
         tile = MangaPageTile(image_url, page_number, self.chapter_list_widget)
         tile.setCursor(Qt.ArrowCursor)
-        tile.setToolTip(f"{chapter.title or chapter.url}\nPage {page_number}")
+        tile.setToolTip(t("discovery.detail.page_tooltip", chapter=chapter.title or chapter.url, page_number=page_number))
         if image_url:
             headers = self._page_preview_headers(image_url)
             provider = self._page_preview_provider(chapter)
@@ -569,7 +570,7 @@ class DiscoveryDetailPage(QWidget):
         layout.addWidget(title, 1)
 
         single_btn = QToolButton()
-        single_btn.setText("Download")
+        single_btn.setText(t("discovery.detail.single_download"))
         single_btn.setCursor(Qt.PointingHandCursor)
         single_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
         single_btn.clicked.connect(lambda checked=False, url=chapter.url: self._download_selected_urls([url]))
@@ -634,7 +635,7 @@ class DiscoveryDetailPage(QWidget):
 
     def _sync_selection_state(self):
         selected = len(self._selected_urls)
-        self.selection_label.setText(f"{selected} selected")
+        self.selection_label.setText(t("discovery.detail.selection", count=selected))
         manga = self._is_manga_series() if self.series is not None else False
         self.batch_bar.setVisible((not manga) and selected > 0)
         self.download_selected_btn.setEnabled((self.series is not None) and (not manga) and selected > 0)
@@ -663,13 +664,13 @@ class DiscoveryDetailPage(QWidget):
 
     def _handle_download_result(self, error: str | None, *, whole_series: bool, selected_count: int = 0):
         if error:
-            QMessageBox.warning(self, "Download", error)
+            QMessageBox.warning(self, t("discovery.detail.warning_title"), error)
             return
         if whole_series:
-            self.status_label.setText("Whole-comic download started.")
+            self.status_label.setText(t("discovery.detail.download_whole_started"))
         else:
-            noun = "chapter" if selected_count == 1 else "chapters"
-            self.status_label.setText(f"Download started for {selected_count} {noun}.")
+            noun = t("discovery.detail.chapter_noun_one") if selected_count == 1 else t("discovery.detail.chapter_noun_many")
+            self.status_label.setText(t("discovery.detail.download_selected_started", selected_count=selected_count, noun=noun))
         self.status_label.show()
         self.main_window.open_downloader()
 
@@ -691,7 +692,7 @@ class DiscoveryDetailPage(QWidget):
                 if normalized and normalized not in parts:
                     parts.append(normalized)
         if not parts:
-            return "No description available."
+            return t("discovery.detail.no_description")
         return " | ".join(parts)
 
     def _entry_count_text(self, entry) -> str:
@@ -715,3 +716,5 @@ class DiscoveryDetailPage(QWidget):
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"
+
+

@@ -27,6 +27,7 @@ from library.health_tools import (
     remove_orphaned_thumbnail_files,
 )
 from stores.settings_store import load_library_path
+from gui.common.strings import t
 
 
 class LibraryHealthDialog(QDialog):
@@ -35,7 +36,7 @@ class LibraryHealthDialog(QDialog):
         self.main_window = main_window
         self._report = None
 
-        self.setWindowTitle("Library Health Tools")
+        self.setWindowTitle(t("library_health.window"))
         self.setModal(True)
         self.resize(760, 620)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -49,12 +50,12 @@ class LibraryHealthDialog(QDialog):
         panel.setFixedHeight(0)
         panel.hide()
 
-        title = QLabel("Library Health Tools")
+        title = QLabel(t("library_health.title"))
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #f3ece8;")
         layout.addWidget(title)
 
         help_text = QLabel(
-            "Review library issues and run safe cleanup actions for stale metadata, empty series or chapter folders, and orphaned thumbnails."
+            t("library_health.help")
         )
         help_text.setWordWrap(True)
         help_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
@@ -73,29 +74,29 @@ class LibraryHealthDialog(QDialog):
         actions = QHBoxLayout()
         actions.setSpacing(8)
 
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = QPushButton(t("library_health.refresh"))
         self.refresh_btn.setStyleSheet(BUTTON_STYLE)
         self.refresh_btn.clicked.connect(self.refresh_report)
         actions.addWidget(self.refresh_btn)
 
-        self.cleanup_metadata_btn = QPushButton("Clear Orphaned Metadata")
+        self.cleanup_metadata_btn = QPushButton(t("library_health.clear_metadata"))
         self.cleanup_metadata_btn.setStyleSheet(BUTTON_STYLE)
         self.cleanup_metadata_btn.clicked.connect(self._cleanup_orphaned_metadata)
         actions.addWidget(self.cleanup_metadata_btn)
 
-        self.delete_invalid_btn = QPushButton("Delete Empty Folders")
+        self.delete_invalid_btn = QPushButton(t("library_health.delete_empty"))
         self.delete_invalid_btn.setStyleSheet(BUTTON_STYLE)
         self.delete_invalid_btn.clicked.connect(self._delete_invalid_folders)
         actions.addWidget(self.delete_invalid_btn)
 
-        self.remove_thumbs_btn = QPushButton("Remove Orphaned Thumbnails")
+        self.remove_thumbs_btn = QPushButton(t("library_health.remove_thumbs"))
         self.remove_thumbs_btn.setStyleSheet(BUTTON_STYLE)
         self.remove_thumbs_btn.clicked.connect(self._remove_orphaned_thumbnails)
         actions.addWidget(self.remove_thumbs_btn)
 
         actions.addStretch()
 
-        close_btn = QPushButton("Close")
+        close_btn = QPushButton(t("library_health.close"))
         close_btn.setStyleSheet(BUTTON_STYLE)
         close_btn.clicked.connect(self.accept)
         actions.addWidget(close_btn)
@@ -119,18 +120,18 @@ class LibraryHealthDialog(QDialog):
         self.cleanup_metadata_btn.setEnabled(bool(self._report.orphaned_settings or self._report.orphaned_progress))
         self.delete_invalid_btn.setEnabled(bool(self._report.invalid_series_folders or self._report.empty_chapter_folders))
         self.remove_thumbs_btn.setEnabled(bool(self._report.orphaned_thumbnail_files))
-        self.status_label.setText("Library health scan complete.")
+        self.status_label.setText(t("library_health.scan_complete"))
 
     def _cleanup_orphaned_metadata(self):
         if self._report is None:
             return
         if not (self._report.orphaned_settings or self._report.orphaned_progress):
-            self.status_label.setText("No orphaned metadata found.")
+            self.status_label.setText(t("library_health.no_metadata"))
             return
         answer = QMessageBox.question(
             self,
-            "Clear Orphaned Metadata",
-            "Delete settings and progress entries for titles that no longer exist in the library?",
+            t("library_health.clear_metadata_title"),
+            t("library_health.clear_metadata_text"),
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -143,18 +144,18 @@ class LibraryHealthDialog(QDialog):
         )
         self.main_window.library.load_library()
         self.refresh_report()
-        self.status_label.setText(f"Removed {removed} orphaned metadata entries.")
+        self.status_label.setText(t("library_health.metadata_removed", removed=removed))
 
     def _delete_invalid_folders(self):
         if self._report is None:
             return
         if not (self._report.invalid_series_folders or self._report.empty_chapter_folders):
-            self.status_label.setText("No empty folders found.")
+            self.status_label.setText(t("library_health.no_empty"))
             return
         answer = QMessageBox.question(
             self,
-            "Delete Empty Folders",
-            "Delete empty chapter folders and unreadable series folders from the library?",
+            t("library_health.delete_empty_title"),
+            t("library_health.delete_empty_text"),
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -163,18 +164,18 @@ class LibraryHealthDialog(QDialog):
         removed = delete_invalid_series_folders(self._report) + delete_empty_chapter_folders(self._report)
         self.main_window.library.load_library()
         self.refresh_report()
-        self.status_label.setText(f"Deleted {removed} empty folders.")
+        self.status_label.setText(t("library_health.empty_deleted", removed=removed))
 
     def _remove_orphaned_thumbnails(self):
         if self._report is None:
             return
         if not self._report.orphaned_thumbnail_files:
-            self.status_label.setText("No orphaned thumbnails found.")
+            self.status_label.setText(t("library_health.no_thumbs"))
             return
         answer = QMessageBox.question(
             self,
-            "Remove Orphaned Thumbnails",
-            "Delete cached thumbnail files that no longer belong to any library title?",
+            t("library_health.remove_thumbs_title"),
+            t("library_health.remove_thumbs_text"),
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -182,4 +183,4 @@ class LibraryHealthDialog(QDialog):
             return
         removed = remove_orphaned_thumbnail_files(self._report)
         self.refresh_report()
-        self.status_label.setText(f"Removed {removed} orphaned thumbnail files.")
+        self.status_label.setText(t("library_health.thumbs_removed", removed=removed))

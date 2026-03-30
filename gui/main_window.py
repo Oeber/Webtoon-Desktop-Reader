@@ -4,6 +4,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QStackedWid
 
 from core.app_logging import get_logger
 from gui.common.styles import STACK_BG_STYLE
+from gui.common.strings import t
 from gui.common.browser_html_fetcher import BrowserHtmlFetcher
 from gui.discovery.detail_page import DiscoveryDetailPage
 from gui.discovery.site_browser_page import SiteBrowserPage
@@ -25,7 +26,7 @@ from gui.viewer.viewer_page import ViewerPage
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 logger = get_logger(__name__)
-APP_TITLE = "Webtoon Desktop Reader"
+APP_TITLE = t("app.title")
 
 
 class MainWindow(QMainWindow):
@@ -238,7 +239,7 @@ class MainWindow(QMainWindow):
 
         result = QMessageBox.warning(
             self,
-            "Downloads in Progress",
+            t("main.close.downloads_title"),
             "Downloads are still running.\n\n"
             f"Closing now will cancel {count} active download(s): {detail_text}.\n"
             "The source URL will still be saved for later updates.\n\n"
@@ -258,3 +259,5 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self.chapter_overlay.position()
+
+

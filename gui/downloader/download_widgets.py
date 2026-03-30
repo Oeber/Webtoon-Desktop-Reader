@@ -16,6 +16,7 @@ from gui.common.styles import (
     TRANSPARENT_BORDERLESS_STYLE,
     status_text_style,
 )
+from gui.common.strings import t
 BTN_STYLE = BUTTON_STYLE_DISABLED
 
 STATUS_COLORS = {
@@ -28,18 +29,22 @@ STATUS_COLORS = {
 }
 
 
+def status_text(status: str) -> str:
+    return t(f"download.status.{status.casefold()}")
+
+
 def format_last_updated(timestamp: int | None) -> str:
     if timestamp is None:
-        return "Last updated: Never"
+        return t("download.meta.last_updated_never")
     stamp = datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
-    return f"Last updated: {stamp}"
+    return t("download.meta.last_updated", stamp=stamp)
 
 
 def format_last_activity(timestamp: int | None) -> str:
     if timestamp is None:
-        return "Last activity: Never"
+        return t("download.meta.last_activity_never")
     stamp = datetime.fromtimestamp(int(timestamp)).strftime("%Y-%m-%d %H:%M:%S")
-    return f"Last activity: {stamp}"
+    return t("download.meta.last_activity", stamp=stamp)
 
 
 class SpinnerCircle(QWidget):
@@ -138,6 +143,7 @@ class DownloadEntry(QFrame):
         self.name = name
         self.on_open = on_open
         self.thumbnail_path = ""
+        self._status = "Downloading"
         self.setCursor(Qt.ArrowCursor)
         self.setStyleSheet(DOWNLOAD_ENTRY_FRAME_STYLE)
         self.setProperty("clickable", False)
@@ -168,7 +174,7 @@ class DownloadEntry(QFrame):
 
         self.spinner = SpinnerCircle()
 
-        self.status_label = QLabel("Downloading")
+        self.status_label = QLabel(status_text("Downloading"))
         self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.status_label.setFixedWidth(110)
         self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
@@ -188,8 +194,9 @@ class DownloadEntry(QFrame):
         self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
 
     def set_status(self, status: str):
+        self._status = status
         color = STATUS_COLORS.get(status, ACCENT_MUTED)
-        self.status_label.setText(status)
+        self.status_label.setText(status_text(status))
         self.status_label.setStyleSheet(status_text_style(color))
 
         clickable = status == "Completed"
@@ -200,7 +207,7 @@ class DownloadEntry(QFrame):
         self.update()
 
         if clickable:
-            self.sub_label.setText("Click to open details")
+            self.sub_label.setText(t("download.entry.open_details"))
             self.sub_label.show()
         else:
             self.sub_label.hide()
@@ -234,7 +241,7 @@ class DownloadEntry(QFrame):
         self.thumb_label.setPixmap(pixmap.copy(x, y, target_w, target_h))
 
     def mousePressEvent(self, event):
-        if event.button() == Qt.LeftButton and self.status_label.text() == "Completed":
+        if event.button() == Qt.LeftButton and self.status_label.text() == status_text("Completed"):
             if callable(self.on_open):
                 self.on_open(self.name)
             event.accept()
@@ -248,7 +255,7 @@ class CancellableDownloadEntry(DownloadEntry):
         super().__init__(name, on_open=on_open)
         self.on_cancel = on_cancel
 
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton(t("download.action.cancel"))
         self.cancel_btn.setStyleSheet(BTN_STYLE)
         self.cancel_btn.setFixedWidth(100)
         self.cancel_btn.clicked.connect(self._cancel_requested)
@@ -290,7 +297,7 @@ class UpdateEntry(DownloadEntry):
         self._refresh_sub_label()
         self.sub_label.show()
 
-        self.update_btn = QPushButton("Update")
+        self.update_btn = QPushButton(t("download.action.update"))
         self.update_btn.setStyleSheet(BTN_STYLE)
         self.update_btn.setFixedWidth(100)
         self.update_btn.clicked.connect(lambda: self.on_update(self))
@@ -346,12 +353,12 @@ class HistoryDownloadEntry(DownloadEntry):
         self._on_authorize = on_authorize
         self.sub_label.setWordWrap(True)
 
-        self.retry_btn = QPushButton("Retry")
+        self.retry_btn = QPushButton(t("download.action.retry"))
         self.retry_btn.setStyleSheet(BTN_STYLE)
         self.retry_btn.setFixedWidth(90)
         self.retry_btn.clicked.connect(self._retry)
 
-        self.authorize_btn = QPushButton("Authorize")
+        self.authorize_btn = QPushButton(t("download.action.authorize"))
         self.authorize_btn.setStyleSheet(BTN_STYLE)
         self.authorize_btn.setFixedWidth(90)
         self.authorize_btn.clicked.connect(self._authorize)
@@ -376,7 +383,7 @@ class HistoryDownloadEntry(DownloadEntry):
         self._refresh_sub_label()
 
     def _refresh_actions(self):
-        retry_visible = self.status_label.text() in {"Failed", "Cancelled"} and bool(self.source_url)
+        retry_visible = self._status in {"Failed", "Cancelled"} and bool(self.source_url)
         self.retry_btn.setVisible(retry_visible)
         self.authorize_btn.setVisible(retry_visible and self._looks_like_auth_error())
 
@@ -388,14 +395,14 @@ class HistoryDownloadEntry(DownloadEntry):
         return any(marker in text for marker in markers)
 
     def _refresh_sub_label(self):
-        kind_label = "Update" if self.kind == "update" else "Manual download"
+        kind_label = t("download.kind.update") if self.kind == "update" else t("download.kind.manual")
         lines = [kind_label, format_last_activity(self.updated_at)]
         if self.source_url:
             lines.insert(1, self.source_url)
-        if self.last_error and self.status_label.text() in {"Failed", "Cancelled"}:
-            lines.append(f"Reason: {self.last_error}")
-        if self.status_label.text() == "Completed":
-            lines.append("Click to open details")
+        if self.last_error and self._status in {"Failed", "Cancelled"}:
+            lines.append(t("download.history.reason", error=self.last_error))
+        if self._status == "Completed":
+            lines.append(t("download.entry.open_details"))
         self.sub_label.setText("\n".join(lines))
         self.sub_label.show()
 

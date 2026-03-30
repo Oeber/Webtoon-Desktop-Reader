@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 
 from core.app_logging import get_logger
 from gui.common.notification_center import NotificationCenterDialog
+from gui.common.strings import t
 from gui.common.styles import (
     ACCENT,
     LOADING_DETAIL_LABEL_STYLE,
@@ -106,18 +107,18 @@ class NotificationCenterController(QObject):
         payload = entry.get("action_payload") or {}
         actions: list[tuple[str, str]] = []
         if kind in {"download_completed", "update_completed"} and str(entry.get("webtoon_name") or "").strip():
-            actions.append(("open_title", "Open"))
+            actions.append(("open_title", t("notifications.action.open")))
         if kind in {"download_failed", "download_cancelled"} and str(entry.get("source_url") or "").strip():
-            actions.append(("retry_download", "Retry"))
+            actions.append(("retry_download", t("notifications.action.retry")))
         if kind in {"update_failed", "update_cancelled"} and str(entry.get("webtoon_name") or "").strip():
-            actions.append(("retry_update", "Retry"))
-            actions.append(("open_updates", "Updates"))
+            actions.append(("retry_update", t("notifications.action.retry")))
+            actions.append(("open_updates", t("notifications.action.updates")))
         if kind == "update_check_summary":
-            actions.append(("open_updates", "Open Updates"))
+            actions.append(("open_updates", t("notifications.action.open_updates")))
         if kind == "auth_required" and str(entry.get("site_name") or "").strip():
-            actions.append(("authorize", "Authorize"))
+            actions.append(("authorize", t("notifications.action.authorize")))
         elif kind in {"download_failed", "update_failed"} and str(payload.get("site_name") or entry.get("site_name") or "").strip():
-            actions.append(("authorize", "Authorize"))
+            actions.append(("authorize", t("notifications.action.authorize")))
         return actions
 
     def execute_action(self, entry: dict, action_key: str):
@@ -169,18 +170,18 @@ class NotificationCenterController(QObject):
             if status == "Completed":
                 self._add_notification(
                     kind="update_completed",
-                    title=f"{name} updated",
-                    message="The update finished successfully.",
+                    title=t("notifications.update_completed.title", name=name),
+                    message=t("notifications.update_completed.message"),
                     severity="success",
                     webtoon_name=name,
                     source_url=source_url,
                 )
                 return
             if status in {"Failed", "Cancelled"}:
-                message = last_error or ("The update was cancelled." if status == "Cancelled" else "The update failed.")
+                message = last_error or (t("notifications.update_cancelled.message") if status == "Cancelled" else t("notifications.update_failed.message"))
                 self._add_notification(
                     kind="update_cancelled" if status == "Cancelled" else "update_failed",
-                    title=f"{name} update {status.lower()}",
+                    title=t("notifications.update_status.title", name=name, status=status.lower()),
                     message=message,
                     severity="warning" if status == "Cancelled" else "error",
                     webtoon_name=name,
@@ -198,18 +199,18 @@ class NotificationCenterController(QObject):
         if status == "Completed":
             self._add_notification(
                 kind="download_completed",
-                title=f"{name} downloaded",
-                message="The manual download finished successfully.",
+                title=t("notifications.download_completed.title", name=name),
+                message=t("notifications.download_completed.message"),
                 severity="success",
                 webtoon_name=name,
                 source_url=source_url,
             )
             return
         if status in {"Failed", "Cancelled"}:
-            message = last_error or ("The download was cancelled." if status == "Cancelled" else "The download failed.")
+            message = last_error or (t("notifications.download_cancelled.message") if status == "Cancelled" else t("notifications.download_failed.message"))
             self._add_notification(
                 kind="download_cancelled" if status == "Cancelled" else "download_failed",
-                title=f"{name} download {status.lower()}",
+                title=t("notifications.download_status.title", name=name, status=status.lower()),
                 message=message,
                 severity="warning" if status == "Cancelled" else "error",
                 webtoon_name=name,
@@ -237,10 +238,10 @@ class NotificationCenterController(QObject):
         self._last_auth_notification_at[dedupe_key] = now
 
         title_target = normalized_name or normalized_site
-        message = f"{normalized_site} needs authorization before {title_target} can continue."
+        message = t("notifications.auth_required.message", site_name=normalized_site, title_target=title_target)
         self._add_notification(
             kind="auth_required",
-            title=f"Authorization needed for {normalized_site}",
+            title=t("notifications.auth_required.title", site_name=normalized_site),
             message=message,
             severity="warning",
             webtoon_name=normalized_name,
@@ -261,17 +262,17 @@ class NotificationCenterController(QObject):
         if total_count <= 0 and error_count <= 0:
             return
         if total_count > 0 and error_count > 0:
-            message = f"{total_count} title(s) have updates, and {error_count} title(s) could not be checked."
+            message = t("notifications.update_check.has_updates_and_errors", count=total_count, errors=error_count)
             severity = "warning"
         elif total_count > 0:
-            message = f"{total_count} title(s) have updates."
+            message = t("notifications.update_check.has_updates", count=total_count)
             severity = "info"
         else:
-            message = f"{error_count} title(s) could not be checked for updates."
+            message = t("notifications.update_check.only_errors", errors=error_count)
             severity = "warning"
         self._add_notification(
             kind="update_check_summary",
-            title="Library update check finished",
+            title=t("notifications.update_check.finished"),
             message=message,
             severity=severity,
             action_payload={"reason": str(reason or "")},
@@ -437,8 +438,8 @@ class SiteAuthorizationController:
             logger.exception("Failed to open site authorization dialog for %s", site_name)
             QMessageBox.warning(
                 self.window,
-                "Source Authorization",
-                f"Could not open the authorization window for {site_name}: {exc}",
+                t("auth.error.title"),
+                t("auth.error.open_failed", site_name=site_name, error=exc),
             )
             return False
         finally:
@@ -460,7 +461,7 @@ class ChapterLoadingOverlayController:
         self.spinner = SpinnerCircle(self.overlay)
         self.spinner.set_spinning()
 
-        self.title_label = QLabel("Loading chapter...")
+        self.title_label = QLabel(t("overlay.loading_chapter"))
         self.title_label.setAlignment(Qt.AlignCenter)
         self.title_label.setStyleSheet(LOADING_TITLE_LABEL_STYLE)
 
@@ -478,7 +479,7 @@ class ChapterLoadingOverlayController:
     def show(self, webtoon_name: str, chapter: str):
         self.position()
         self.spinner.set_spinning()
-        self.title_label.setText(f"Loading {chapter}...")
+        self.title_label.setText(t("overlay.loading_specific", chapter=chapter))
         self.detail_label.setText(webtoon_name)
         self.overlay.show()
         self.overlay.raise_()
@@ -711,11 +712,11 @@ class SidebarController:
             self.sidebar_open = False
         else:
             self.widget.setFixedWidth(self.sidebar_expanded_width)
-            self.btn_library.setText("  Library")
-            self.btn_discovery.setText("  Discover")
-            self.btn_settings.setText("  Settings")
-            self.btn_updates.setText("  Updates")
-            self.btn_notifications.setText("  Notifications")
+            self.btn_library.setText(t("sidebar.library"))
+            self.btn_discovery.setText(t("sidebar.discover"))
+            self.btn_settings.setText(t("sidebar.settings"))
+            self.btn_updates.setText(t("sidebar.updates"))
+            self.btn_notifications.setText(t("sidebar.notifications"))
             self.sidebar_open = True
         self.apply_button_layout()
         self.refresh_download_indicator()
@@ -828,25 +829,25 @@ class SidebarController:
             self.btn_downloader.style().polish(self.btn_downloader)
             if self.sidebar_open:
                 if total > 0:
-                    self.btn_downloader.setText(f"  Download {current} done, {remaining} left")
+                    self.btn_downloader.setText(t("sidebar.download.summary", current=current, remaining=remaining))
                 else:
-                    self.btn_downloader.setText(f"  Download ({active_count} active)")
+                    self.btn_downloader.setText(t("sidebar.download.active", active_count=active_count))
             else:
                 self.btn_downloader.setText("")
             if total > 0:
                 self.btn_downloader.setToolTip(
-                    f"{active_count} active download(s): {current} done, {remaining} left"
+                    t("sidebar.download.tooltip_summary", active_count=active_count, current=current, remaining=remaining)
                 )
             else:
-                self.btn_downloader.setToolTip(f"{active_count} active download(s)")
+                self.btn_downloader.setToolTip(t("sidebar.download.tooltip_active", active_count=active_count))
             return
 
         if self._download_icon_state != ("idle", None):
             self._download_icon_state = ("idle", None)
         self._download_active = False
-        self.btn_downloader.setToolTip("Open downloader")
+        self.btn_downloader.setToolTip(t("sidebar.download.open"))
         if self.sidebar_open:
-            self.btn_downloader.setText("  Download")
+            self.btn_downloader.setText(t("sidebar.download.label"))
         else:
             self.btn_downloader.setText("")
         self.refresh_nav_state()
@@ -860,8 +861,10 @@ class SidebarController:
             self._notification_badge.resize(badge_w, 16)
             self._notification_badge.move(max(12, self.btn_notifications.width() - badge_w - 6), 4)
             self._notification_badge.show()
-            self.btn_notifications.setToolTip(f"{unread} unread notification(s)")
+            self.btn_notifications.setToolTip(t("sidebar.notifications.unread_tooltip", unread=unread))
         else:
             self._notification_badge.hide()
-            self.btn_notifications.setToolTip("Open notifications")
+            self.btn_notifications.setToolTip(t("sidebar.notifications.open_tooltip"))
+
+
 

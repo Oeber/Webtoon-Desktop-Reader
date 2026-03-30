@@ -5,6 +5,7 @@ from PySide6.QtGui import QIcon, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import QDialog, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from gui.common.styles import INPUT_STYLE
 from rapidfuzz import fuzz
 
@@ -19,70 +20,70 @@ COMMANDS = [
     {
         "name": "/download",
         "template": "/download ",
-        "summary": "Start a manual download from a link.",
+        "summary": t("search.command.download"),
         "mode": "download",
         "requires_argument": True,
     },
     {
         "name": "/update",
         "template": "/update ",
-        "summary": "Find a saved title and start an update.",
+        "summary": t("search.command.update"),
         "mode": "update",
         "requires_argument": True,
     },
     {
         "name": "/open",
         "template": "/open ",
-        "summary": "Open the last-read or first chapter, or jump with /open <title> <number>.",
+        "summary": t("search.command.open"),
         "mode": "open",
         "requires_argument": True,
     },
     {
         "name": "/read",
         "template": "/read ",
-        "summary": "Continue reading a title.",
+        "summary": t("search.command.read"),
         "mode": "read",
         "requires_argument": True,
     },
     {
         "name": "/search",
         "template": "/search ",
-        "summary": "Search Discover with /search <scraper> <title>.",
+        "summary": t("search.command.search"),
         "mode": "discover",
         "requires_argument": True,
     },
     {
         "name": "/library",
         "template": "/library",
-        "summary": "Go to the library page.",
+        "summary": t("search.command.library"),
         "mode": "library",
         "requires_argument": False,
     },
     {
         "name": "/updates",
         "template": "/updates",
-        "summary": "Open the updates page.",
+        "summary": t("search.command.updates"),
         "mode": "updates",
         "requires_argument": False,
     },
     {
         "name": "/settings",
         "template": "/settings",
-        "summary": "Open the settings page.",
+        "summary": t("search.command.settings"),
         "mode": "settings",
         "requires_argument": False,
     },
     {
         "name": "/logs",
         "template": "/logs",
-        "summary": "Open the settings logs tab.",
+        "summary": t("search.command.logs"),
         "mode": "logs",
         "requires_argument": False,
     },
     {
         "name": "/help",
         "template": "/help",
-        "summary": "Show available commands.",
+        "summary": t("search.command.help"),
         "mode": "help",
         "requires_argument": False,
     },
@@ -115,13 +116,13 @@ class GlobalSearchDialog(QDialog):
     def __init__(self, main_window):
         super().__init__(main_window)
         self.main_window = main_window
-        self.setWindowTitle("Search")
+        self.setWindowTitle(t("search.window"))
         self.resize(500, 400)
 
         layout = QVBoxLayout(self)
 
         self.input = QLineEdit()
-        self.input.setPlaceholderText("Quick Search (Ctrl+K)")
+        self.input.setPlaceholderText(t("search.placeholder"))
         self.input.setStyleSheet(INPUT_STYLE)
         self.input.installEventFilter(self)
         layout.addWidget(self.input)
@@ -206,7 +207,7 @@ class GlobalSearchDialog(QDialog):
         for score, webtoon in rank_webtoons(self.main_window.library._webtoons, query)[:20]:
             item = self._build_webtoon_item(webtoon)
             item.setData(ITEM_ACTION_ROLE, "open_detail")
-            item.setToolTip(f"Match score: {score}")
+            item.setToolTip(t("search.match_score", score=score))
             self.results.addItem(item)
 
     def _split_command_query(self, text: str) -> tuple[str, bool, str]:
@@ -240,7 +241,7 @@ class GlobalSearchDialog(QDialog):
                 if not typed or command["name"].lower().startswith(typed)
             ]
         if not matches:
-            self._add_message_item("No commands match.")
+            self._add_message_item(t("search.no_commands"))
             return
 
         for command_name in matches:
@@ -303,11 +304,11 @@ class GlobalSearchDialog(QDialog):
     def _show_download_results(self, command: dict, remainder: str):
         if not remainder:
             self._add_command_preview(command)
-            self._add_message_item("Type /download {link} to start a download.")
+            self._add_message_item(t("search.download.prompt"))
             self.results.setCurrentRow(0)
             return
 
-        item = QListWidgetItem(f"Download: {remainder}")
+        item = QListWidgetItem(t("search.download.result", remainder=remainder))
         item.setData(ITEM_ACTION_ROLE, "download")
         item.setData(ITEM_WEBTOON_ROLE, remainder)
         self.results.addItem(item)
@@ -324,9 +325,9 @@ class GlobalSearchDialog(QDialog):
         ranked = rank_webtoons(candidates, remainder)[:20]
         if not ranked:
             self._add_command_preview(command)
-            message = "No saved-source titles available to update."
+            message = t("search.update.none")
             if remainder:
-                message = "No update entries match your search."
+                message = t("search.update.no_matches")
             self._add_message_item(message)
             self.results.setCurrentRow(0)
             return
@@ -334,7 +335,7 @@ class GlobalSearchDialog(QDialog):
         for score, webtoon in ranked:
             item = self._build_webtoon_item(webtoon)
             item.setData(ITEM_ACTION_ROLE, "update")
-            item.setToolTip(f"Update '{webtoon.name}' (match score: {score})")
+            item.setToolTip(t("search.update.tooltip", name=webtoon.name, score=score))
             self.results.addItem(item)
 
         self.results.setCurrentRow(0)
@@ -349,7 +350,7 @@ class GlobalSearchDialog(QDialog):
         ranked = rank_webtoons(self.main_window.library._webtoons, remainder)[:20]
         if not ranked:
             self._add_command_preview(command)
-            self._add_message_item("No titles match your search.")
+            self._add_message_item(t("search.titles.no_matches"))
             self.results.setCurrentRow(0)
             return
 
@@ -361,25 +362,18 @@ class GlobalSearchDialog(QDialog):
                 item.setData(ITEM_COMMAND_ROLE, chapter_index)
             if action == "read_title":
                 progress = self.main_window.library.progress_store.get(webtoon.name)
-                hint = "Continue reading" if progress else "Start from beginning"
-                item.setToolTip(f"{hint} '{webtoon.name}' (match score: {score})")
+                hint = t("search.titles.continue") if progress else t("search.titles.start")
+                item.setToolTip(t("search.read.tooltip", hint=hint, name=webtoon.name, score=score))
             else:
                 if chapter_query:
                     chapter_index = item.data(ITEM_COMMAND_ROLE)
                     if chapter_index is not None:
                         chapter_name = webtoon.chapters[chapter_index]
-                        item.setToolTip(
-                            f"Open '{webtoon.name}' at '{chapter_name}' (match score: {score})"
-                        )
+                        item.setToolTip(t("search.open.chapter_tooltip", name=webtoon.name, chapter_name=chapter_name, score=score))
                     else:
-                        item.setToolTip(
-                            f"Open '{webtoon.name}' at the last-read or first chapter; no chapter matched '{chapter_query}' "
-                            f"(match score: {score})"
-                        )
+                        item.setToolTip(t("search.open.chapter_missing_tooltip", name=webtoon.name, chapter_query=chapter_query, score=score))
                 else:
-                    item.setToolTip(
-                        f"Open '{webtoon.name}' at the last-read or first chapter (match score: {score})"
-                    )
+                    item.setToolTip(t("search.open.tooltip", name=webtoon.name, score=score))
             self.results.addItem(item)
 
         self.results.setCurrentRow(0)
@@ -390,7 +384,7 @@ class GlobalSearchDialog(QDialog):
 
         if not remainder.strip():
             self._add_command_preview(command)
-            self._add_message_item("Type /search <scraper> <title> to search Discover.")
+            self._add_message_item(t("search.discovery.prompt"))
             self._add_discovery_scraper_items(scraper_matches)
             self.results.setCurrentRow(0)
             return
@@ -398,36 +392,36 @@ class GlobalSearchDialog(QDialog):
         if provider_key is None:
             self._add_command_preview(command)
             if scraper_matches:
-                self._add_message_item("Choose a scraper, then type a title.")
+                self._add_message_item(t("search.discovery.choose_scraper"))
                 self._add_discovery_scraper_items(scraper_matches)
             else:
-                self._add_message_item(f"No scrapers match '{scraper_query}'.")
+                self._add_message_item(t("search.discovery.no_scrapers", scraper_query=scraper_query))
                 providers = self.main_window.discovery.available_provider_labels()
                 if providers:
-                    self._add_message_item(f"Available scrapers: {', '.join(providers)}")
+                    self._add_message_item(t("search.discovery.available_scrapers", providers=", ".join(providers)))
             self.results.setCurrentRow(0)
             return
 
         if not title_query:
             self._add_command_preview(command)
-            self._add_message_item(f"Type a title after '{scraper_query}'.")
+            self._add_message_item(t("search.discovery.type_title", scraper_query=scraper_query))
             self._add_discovery_scraper_items(scraper_matches)
             self.results.setCurrentRow(0)
             return
 
-        item = QListWidgetItem(f"Discover: {scraper_query} -> {title_query}")
+        item = QListWidgetItem(t("search.discovery.result", scraper_query=scraper_query, title_query=title_query))
         item.setData(ITEM_ACTION_ROLE, "discovery_search")
         item.setData(ITEM_WEBTOON_ROLE, {"query": title_query, "scraper": scraper_query})
-        item.setToolTip(f"Search Discover for '{title_query}' using '{scraper_query}'")
+        item.setToolTip(t("search.discovery.tooltip", title_query=title_query, scraper_query=scraper_query))
         self.results.addItem(item)
         self.results.setCurrentItem(item)
 
     def _add_discovery_scraper_items(self, labels: list[str]):
         for label in labels[:20]:
-            item = QListWidgetItem(f"Scraper: {label}")
+            item = QListWidgetItem(t("search.discovery.scraper", label=label))
             item.setData(ITEM_ACTION_ROLE, "discovery_scraper_preview")
             item.setData(ITEM_COMMAND_ROLE, self._discovery_scraper_replacement(label))
-            item.setToolTip(f"Use scraper '{label}'")
+            item.setToolTip(t("search.discovery.use_scraper", label=label))
             self.results.addItem(item)
 
     def _split_discovery_query(self, text: str) -> tuple[str, str, str | None]:

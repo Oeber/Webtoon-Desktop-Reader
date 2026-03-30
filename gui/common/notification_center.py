@@ -26,6 +26,7 @@ from gui.common.styles import (
     TEXT_DIM,
     TEXT_MUTED,
 )
+from gui.common.strings import t
 
 
 NOTIFICATION_DIALOG_STYLE = f"""
@@ -114,7 +115,10 @@ class NotificationEntryWidget(QFrame):
             btn.clicked.connect(lambda _checked=False, key=action_key: self.controller.execute_action(self.entry, key))
             actions_row.addWidget(btn)
 
-        read_btn = QPushButton("Unread" if bool(self.entry.get("is_read", False)) else "Read", self)
+        read_btn = QPushButton(
+            t("notifications.dialog.unread_button") if bool(self.entry.get("is_read", False)) else t("notifications.dialog.read"),
+            self,
+        )
         read_btn.setStyleSheet(BUTTON_STYLE)
         read_btn.clicked.connect(lambda: self.controller.toggle_read(self.entry))
         actions_row.addWidget(read_btn)
@@ -128,7 +132,7 @@ class NotificationCenterDialog(QDialog):
     def __init__(self, controller, parent=None):
         super().__init__(parent)
         self.controller = controller
-        self.setWindowTitle("Notifications")
+        self.setWindowTitle(t("notifications.dialog.title"))
         self.setModal(False)
         self.resize(720, 560)
         self.setStyleSheet(PAGE_BG_STYLE + NOTIFICATION_DIALOG_STYLE)
@@ -141,7 +145,7 @@ class NotificationCenterDialog(QDialog):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(10)
 
-        self.title_label = QLabel("Notifications", self)
+        self.title_label = QLabel(t("notifications.dialog.title"), self)
         self.title_label.setStyleSheet("color: #fff0ec; font-size: 20px; font-weight: 700; background: transparent;")
         header.addWidget(self.title_label)
 
@@ -150,12 +154,12 @@ class NotificationCenterDialog(QDialog):
         header.addWidget(self.unread_label, 0, Qt.AlignVCenter)
         header.addStretch()
 
-        self.mark_all_btn = QPushButton("Mark All Read", self)
+        self.mark_all_btn = QPushButton(t("notifications.dialog.mark_all_read"), self)
         self.mark_all_btn.setStyleSheet(BUTTON_STYLE)
         self.mark_all_btn.clicked.connect(self.controller.mark_all_read)
         header.addWidget(self.mark_all_btn)
 
-        self.clear_read_btn = QPushButton("Clear Read", self)
+        self.clear_read_btn = QPushButton(t("notifications.dialog.clear_read"), self)
         self.clear_read_btn.setStyleSheet(BUTTON_STYLE)
         self.clear_read_btn.clicked.connect(self.controller.clear_read)
         header.addWidget(self.clear_read_btn)
@@ -190,11 +194,11 @@ class NotificationCenterDialog(QDialog):
             if widget is not None:
                 widget.deleteLater()
 
-        self.unread_label.setText(f"{int(unread_count)} unread")
-        self.meta_label.setText(f"{len(entries)} recent notification(s)")
+        self.unread_label.setText(t("notifications.dialog.unread", count=int(unread_count)))
+        self.meta_label.setText(t("notifications.dialog.recent_count", count=len(entries)))
 
         if not entries:
-            empty = QLabel("No notifications yet.", self.container)
+            empty = QLabel(t("notifications.dialog.empty"), self.container)
             empty.setStyleSheet("color: #b18b84; font-size: 13px; background: transparent; padding: 18px 6px;")
             self.list_layout.addWidget(empty)
             return
@@ -218,3 +222,5 @@ def _format_timestamp(timestamp: int | None) -> str:
     if value <= 0:
         return ""
     return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+
+

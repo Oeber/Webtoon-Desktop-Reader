@@ -26,6 +26,7 @@ from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QP
 
 from core.app_logging import get_logger
 from core.library_layout import resolve_webtoon_path
+from gui.common.strings import t
 from gui.common.styles import (
     ACCENT_MUTED,
     BATCH_BAR_STYLE,
@@ -158,7 +159,7 @@ class CategorySection(QFrame):
         self.content_layout.setContentsMargins(0, 0, 0, 8)
         self.content_layout.setSpacing(10)
 
-        self.empty_state = QLabel("Drop titles here", self.content)
+        self.empty_state = QLabel(t("library.category.drop_here"), self.content)
         self.empty_state.setAlignment(Qt.AlignCenter)
         self.empty_state.setMinimumSize(CARD_WIDTH + 16, int(CARD_WIDTH * (270 / 180)) + 16)
         self.empty_state.setStyleSheet("")
@@ -401,7 +402,7 @@ class FlatLibrarySection(QFrame):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        self.empty_state = QLabel("No webtoons found", self)
+        self.empty_state = QLabel(t("library.empty"), self)
         self.empty_state.setAlignment(Qt.AlignCenter)
         self.empty_state.hide()
         root.addWidget(self.empty_state)
@@ -480,7 +481,7 @@ class LibraryPage(QWidget):
         controls.setSpacing(16)
 
         self.search = QLineEdit(self)
-        self.search.setPlaceholderText("Search webtoons...")
+        self.search.setPlaceholderText(t("library.search_placeholder"))
         self.search.setFixedHeight(38)
         self.search.setStyleSheet(SEARCH_INPUT_STYLE)
         controls.addWidget(self.search, 1)
@@ -491,7 +492,7 @@ class LibraryPage(QWidget):
         scale_layout.setContentsMargins(12, 8, 12, 8)
         scale_layout.setSpacing(4)
 
-        self.size_label = QLabel("Library size", self)
+        self.size_label = QLabel(t("library.size"), self)
         self.size_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE)
         scale_layout.addWidget(self.size_label)
 
@@ -503,7 +504,7 @@ class LibraryPage(QWidget):
         self.size_slider.setRange(CARD_SCALE_MIN, CARD_SCALE_MAX)
         self.size_slider.setValue(self._card_scale)
         self.size_slider.setFixedWidth(160)
-        self.size_slider.setToolTip("Smaller cards fit more items per row")
+        self.size_slider.setToolTip(t("library.size_tooltip"))
         self.size_slider.setStyleSheet(library_scale_slider_style())
         self.size_slider.valueChanged.connect(self._on_size_slider_changed)
         self.size_slider.sliderReleased.connect(self._apply_pending_card_scale)
@@ -529,32 +530,32 @@ class LibraryPage(QWidget):
         self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
         batch_layout.addWidget(self.batch_label)
 
-        self.mark_completed_btn = QPushButton("Mark Completed", self.batch_bar)
+        self.mark_completed_btn = QPushButton(t("library.batch.mark_completed"), self.batch_bar)
         self.mark_completed_btn.setStyleSheet(BUTTON_STYLE)
         self.mark_completed_btn.clicked.connect(self._mark_selected_completed)
         batch_layout.addWidget(self.mark_completed_btn)
 
-        self.bookmark_selected_btn = QPushButton("Bookmark Selected", self.batch_bar)
+        self.bookmark_selected_btn = QPushButton(t("library.batch.bookmark_selected"), self.batch_bar)
         self.bookmark_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.bookmark_selected_btn.clicked.connect(self._toggle_selected_bookmarked)
         batch_layout.addWidget(self.bookmark_selected_btn)
 
-        self.update_selected_btn = QPushButton("Update Selected", self.batch_bar)
+        self.update_selected_btn = QPushButton(t("library.batch.update_selected"), self.batch_bar)
         self.update_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.update_selected_btn.clicked.connect(self._update_selected)
         batch_layout.addWidget(self.update_selected_btn)
 
-        self.move_selected_btn = QPushButton("Move to Category", self.batch_bar)
+        self.move_selected_btn = QPushButton(t("library.batch.move_to_category"), self.batch_bar)
         self.move_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.move_selected_btn.clicked.connect(self._show_move_selected_menu)
         batch_layout.addWidget(self.move_selected_btn)
 
-        self.delete_selected_btn = QPushButton("Delete Selected", self.batch_bar)
+        self.delete_selected_btn = QPushButton(t("library.batch.delete_selected"), self.batch_bar)
         self.delete_selected_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_selected_btn.clicked.connect(self._delete_selected)
         batch_layout.addWidget(self.delete_selected_btn)
 
-        self.clear_selection_btn = QPushButton("Clear", self.batch_bar)
+        self.clear_selection_btn = QPushButton(t("library.batch.clear"), self.batch_bar)
         self.clear_selection_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
         self.clear_selection_btn.clicked.connect(self._clear_selection)
         batch_layout.addWidget(self.clear_selection_btn)
@@ -703,7 +704,7 @@ class LibraryPage(QWidget):
             placeholders = self._download_placeholders()
             placeholders.sort(key=lambda item: item.name.lower())
             if show_download_section and placeholders:
-                defs.append((SECTION_DOWNLOADS, "Active Downloads", placeholders, None))
+                defs.append((SECTION_DOWNLOADS, t("library.section.active_downloads"), placeholders, None))
 
         if self._categories_enabled():
             continue_webtoons = [
@@ -711,28 +712,28 @@ class LibraryPage(QWidget):
                 if self._section_key_for_webtoon(webtoon) == SECTION_CONTINUE
             ]
             if self._show_continue_section():
-                defs.append((SECTION_CONTINUE, "Continue Reading", continue_webtoons, None))
+                defs.append((SECTION_CONTINUE, t("library.section.continue_reading"), continue_webtoons, None))
 
             update_webtoons = [
                 webtoon for webtoon in self._webtoons
                 if self._section_key_for_webtoon(webtoon) == SECTION_UPDATES
             ]
             if self._show_updates_section():
-                defs.append((SECTION_UPDATES, "Needs Update", update_webtoons, None))
+                defs.append((SECTION_UPDATES, t("library.section.needs_update"), update_webtoons, None))
 
         if self._show_new_section():
             new_webtoons = [
                 webtoon for webtoon in self._webtoons
                 if self._section_key_for_webtoon(webtoon) == SECTION_NEW
             ]
-            defs.append((SECTION_NEW, "New", new_webtoons, None))
+            defs.append((SECTION_NEW, t("library.section.new"), new_webtoons, None))
 
         if self._show_bookmarked_section():
             bookmarked_webtoons = [
                 webtoon for webtoon in self._webtoons
                 if self._section_key_for_webtoon(webtoon) == SECTION_BOOKMARKED
             ]
-            defs.append((SECTION_BOOKMARKED, "Bookmarked", bookmarked_webtoons, None))
+            defs.append((SECTION_BOOKMARKED, t("library.section.bookmarked"), bookmarked_webtoons, None))
 
         if self._categories_enabled():
             completed_webtoons = [
@@ -740,14 +741,14 @@ class LibraryPage(QWidget):
                 if self._section_key_for_webtoon(webtoon) == SECTION_COMPLETED
             ]
             if self._show_completed_section():
-                defs.append((SECTION_COMPLETED, "Completed", completed_webtoons, None))
+                defs.append((SECTION_COMPLETED, t("library.section.completed"), completed_webtoons, None))
 
         if self._categories_enabled():
             uncategorized = [
                 webtoon for webtoon in self._webtoons
                 if self._section_key_for_webtoon(webtoon) == SECTION_UNCATEGORIZED
             ]
-            defs.append((SECTION_UNCATEGORIZED, "Uncategorized", uncategorized, SECTION_UNCATEGORIZED))
+            defs.append((SECTION_UNCATEGORIZED, t("library.section.uncategorized"), uncategorized, SECTION_UNCATEGORIZED))
 
             for category in self._category_names:
                 webtoons = [
@@ -762,7 +763,7 @@ class LibraryPage(QWidget):
             ]
             if placeholders:
                 library_webtoons = [*placeholders, *library_webtoons]
-            defs.append((SECTION_LIBRARY, "Library", library_webtoons, None))
+            defs.append((SECTION_LIBRARY, t("library.section.library"), library_webtoons, None))
         return defs
     def _section_key_for_webtoon(self, webtoon) -> str:
         if getattr(webtoon, "_download_placeholder", False):
@@ -852,10 +853,10 @@ class LibraryPage(QWidget):
             self._section_cards[section_key] = []
             return section
         title = {
-            SECTION_NEW: "New",
-            SECTION_BOOKMARKED: "Bookmarked",
-            SECTION_LIBRARY: "Library",
-            SECTION_UNCATEGORIZED: "Uncategorized",
+            SECTION_NEW: t("library.section.new"),
+            SECTION_BOOKMARKED: t("library.section.bookmarked"),
+            SECTION_LIBRARY: t("library.section.library"),
+            SECTION_UNCATEGORIZED: t("library.section.uncategorized"),
         }.get(section_key, section_key)
         section = CategorySection(
             section_key,
@@ -1020,7 +1021,7 @@ class LibraryPage(QWidget):
         if not self._categories_enabled():
             return
         menu = QMenu(self)
-        new_category_action = menu.addAction("New Category")
+        new_category_action = menu.addAction(t("library.category.new"))
         chosen = menu.exec(self.container.mapToGlobal(pos))
         if chosen == new_category_action:
             self._prompt_new_category()
@@ -1028,11 +1029,11 @@ class LibraryPage(QWidget):
     def _show_section_menu(self, section: CategorySection):
         category = section.section_key
         menu = QMenu(self)
-        rename_action = menu.addAction("Rename Category")
-        delete_action = menu.addAction("Delete Category")
+        rename_action = menu.addAction(t("library.category.rename"))
+        delete_action = menu.addAction(t("library.category.delete"))
         chosen = menu.exec(section.menu_btn.mapToGlobal(section.menu_btn.rect().bottomLeft()))
         if chosen == rename_action:
-            new_name, ok = QInputDialog.getText(self, "Rename category", "Category name:", text=category)
+            new_name, ok = QInputDialog.getText(self, t("library.category.rename_title"), t("library.category.name_prompt"), text=category)
             if ok:
                 self._rename_category(category, new_name)
         elif chosen == delete_action:
@@ -1041,7 +1042,7 @@ class LibraryPage(QWidget):
     def _prompt_new_category(self):
         if not self._categories_enabled():
             return
-        name, ok = QInputDialog.getText(self, "New category", "Category name:")
+        name, ok = QInputDialog.getText(self, t("library.category.new_title"), t("library.category.name_prompt"))
         if not ok:
             return
         category = self._create_category(name)
@@ -1069,7 +1070,7 @@ class LibraryPage(QWidget):
         if not normalized or normalized == old_name:
             return
         if normalized in self._category_names:
-            QMessageBox.information(self, "Category exists", "A category with that name already exists.")
+            QMessageBox.information(self, t("library.category.exists_title"), t("library.category.exists_text"))
             return
         self._category_names = [normalized if name == old_name else name for name in self._category_names]
         self._section_order = [normalized if name == old_name else name for name in self._section_order]
@@ -1084,8 +1085,8 @@ class LibraryPage(QWidget):
     def _delete_category(self, category: str):
         answer = QMessageBox.question(
             self,
-            "Delete category",
-            f"Delete '{category}'? Titles in it will move to Uncategorized.",
+            t("library.category.delete_title"),
+            t("library.category.delete_text", category=category),
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
         )
@@ -1190,19 +1191,19 @@ class LibraryPage(QWidget):
         if not self._selected_webtoons or not self._categories_enabled():
             return
         menu = QMenu(self)
-        uncategorized_action = menu.addAction("Uncategorized")
+        uncategorized_action = menu.addAction(t("library.section.uncategorized"))
         menu.addSeparator()
         actions = {}
         for category in self._category_names:
             actions[menu.addAction(category)] = category
         menu.addSeparator()
-        new_category_action = menu.addAction("New Category...")
+        new_category_action = menu.addAction(t("library.category.new_ellipsis"))
         chosen = menu.exec(self.move_selected_btn.mapToGlobal(self.move_selected_btn.rect().bottomLeft()))
         if chosen == uncategorized_action:
             self._assign_category_to_webtoons(sorted(self._selected_webtoons), None)
             return
         if chosen == new_category_action:
-            name, ok = QInputDialog.getText(self, "New category", "Category name:")
+            name, ok = QInputDialog.getText(self, t("library.category.new_title"), t("library.category.name_prompt"))
             if ok:
                 category = self._create_category(name)
                 if category:
@@ -1330,7 +1331,7 @@ class LibraryPage(QWidget):
             if active_update is not None or (
                 self._update_service is not None and self._update_service.has_active_download(card.webtoon.name)
             ):
-                card.set_update_enabled(False, "Update in progress")
+                card.set_update_enabled(False, t("library.card.update_in_progress"))
                 card.set_update_status("Downloading")
                 current = active_update.get("current", 0) if active_update is not None else 0
                 total = active_update.get("total", 0) if active_update is not None else 0
@@ -1347,11 +1348,11 @@ class LibraryPage(QWidget):
             if remaining > 0:
                 card.set_update_enabled(
                     False,
-                    f"Wait {remaining}s before updating again",
+                    t("library.card.wait_update", remaining=remaining),
                     cooldown_text=f"{remaining}s",
                 )
             else:
-                card.set_update_enabled(True, "Update this webtoon")
+                card.set_update_enabled(True, t("library.card.update_this"))
             card.set_update_status("Ready")
 
     def _sync_manual_download_cards(self):
@@ -1388,11 +1389,11 @@ class LibraryPage(QWidget):
             card.set_selection_controls_visible(count > 0)
         if count <= 0:
             return
-        self.batch_label.setText(f"{count} selected")
+        self.batch_label.setText(t("library.batch.selected", count=count))
         all_completed = all(self.settings_store.get_completed(name) for name in self._selected_webtoons)
-        self.mark_completed_btn.setText("Mark Ongoing" if all_completed else "Mark Completed")
+        self.mark_completed_btn.setText(t("library.batch.mark_ongoing") if all_completed else t("library.batch.mark_completed"))
         all_bookmarked = all(self.settings_store.get_bookmarked(name) for name in self._selected_webtoons)
-        self.bookmark_selected_btn.setText("Remove Bookmark" if all_bookmarked else "Bookmark Selected")
+        self.bookmark_selected_btn.setText(t("library.batch.remove_bookmark") if all_bookmarked else t("library.batch.bookmark_selected"))
         updatable = any(
             self.settings_store.get_source_url(name) and not self.settings_store.get_completed(name)
             for name in self._selected_webtoons
@@ -1464,14 +1465,11 @@ class LibraryPage(QWidget):
         if not names or self._delete_in_progress:
             return False
         if len(names) == 1:
-            message = f"Delete '{names[0]}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings."
-            title = "Delete webtoon"
+            message = t("library.delete.single_text", name=names[0])
+            title = t("library.delete.single_title")
         else:
-            message = (
-                f"Delete {len(names)} webtoons from the library?\n\n"
-                "This removes their folders, progress, thumbnail overrides, and saved settings."
-            )
-            title = "Delete selected webtoons"
+            message = t("library.delete.multi_text", count=len(names))
+            title = t("library.delete.multi_title")
         answer = QMessageBox.question(self, title, message, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if answer != QMessageBox.Yes:
             return False
@@ -1536,9 +1534,8 @@ class LibraryPage(QWidget):
             self._delete_in_progress = False
 
         if failed_names:
-            suffix = "series" if len(failed_names) != 1 else "series"
             self.main_window.statusBar().showMessage(
-                f"Some {suffix} could not be deleted.",
+                t("library.delete.failed_some"),
                 5000,
             )
 

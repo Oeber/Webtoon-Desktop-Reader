@@ -30,6 +30,7 @@ from gui.common.styles import (
     TEXT_MUTED_BODY_STYLE,
     VERTICAL_SCROLLBAR_STYLE,
 )
+from gui.common.strings import t
 
 
 class ScraperConfigDialog(QDialog):
@@ -55,8 +56,8 @@ class ScraperConfigDialog(QDialog):
         )
         self._reset_label = str(reset_label or "").strip()
 
-        display_name = str(getattr(scraper_class, "site_display_name", "") or getattr(scraper_class, "site_name", "Source")).strip()
-        self.setWindowTitle(f"{display_name} Settings")
+        display_name = str(getattr(scraper_class, "site_display_name", "") or getattr(scraper_class, "site_name", t("scraper_config.source_fallback"))).strip()
+        self.setWindowTitle(t("scraper_config.window", display_name=display_name))
         self.setModal(True)
         self.resize(560, 0)
         self.setStyleSheet(EDIT_DIALOG_STYLE)
@@ -65,11 +66,11 @@ class ScraperConfigDialog(QDialog):
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(18)
 
-        title = QLabel(f"{display_name} Settings")
+        title = QLabel(t("scraper_config.title", display_name=display_name))
         title.setStyleSheet(EDIT_DIALOG_TITLE_STYLE)
         root.addWidget(title)
 
-        subtitle = QLabel("These options are saved with this source in the library and reused for chapter checks and downloads.")
+        subtitle = QLabel(t("scraper_config.subtitle"))
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet(TEXT_MUTED_BODY_STYLE)
         root.addWidget(subtitle)
@@ -95,9 +96,9 @@ class ScraperConfigDialog(QDialog):
             reset_button.setStyleSheet(BUTTON_STYLE)
             reset_button.clicked.connect(self._reset_to_defaults)
             buttons.addButton(reset_button, QDialogButtonBox.ResetRole)
-        buttons.button(QDialogButtonBox.Save).setText("Save")
+        buttons.button(QDialogButtonBox.Save).setText(t("scraper_config.save"))
         buttons.button(QDialogButtonBox.Save).setStyleSheet(BUTTON_STYLE)
-        buttons.button(QDialogButtonBox.Cancel).setText("Cancel")
+        buttons.button(QDialogButtonBox.Cancel).setText(t("scraper_config.cancel"))
         buttons.button(QDialogButtonBox.Cancel).setStyleSheet(BUTTON_STYLE)
         root.addWidget(buttons)
 

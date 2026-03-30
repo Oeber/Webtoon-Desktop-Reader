@@ -4,7 +4,8 @@
 *.md
 *.db
 *.bak
-*.json 
+*.json
+!gui/i18n/*.json
 *.log
 *.zip
 *.exe
@@ -24,3 +25,4 @@ teste/*
 !/scrapers/sites/__init__.py
 !SCRAPPER GUIDE.MD
 !README.MD
+

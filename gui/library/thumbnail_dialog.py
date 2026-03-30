@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from gui.common.styles import (
     TEXT_DIM,
     THUMBNAIL_DIALOG_STYLE,
@@ -116,7 +117,7 @@ class _DropZone(QFrame):
         self._icon.setStyleSheet(THUMBNAIL_DROPZONE_ICON_STYLE)
         layout.addWidget(self._icon)
 
-        self._main_lbl = QLabel("Drop image here")
+        self._main_lbl = QLabel(t("thumbnail.drop_here"))
         self._main_lbl.setAlignment(Qt.AlignCenter)
         self._main_lbl.setStyleSheet(THUMBNAIL_DROPZONE_TITLE_STYLE)
         layout.addWidget(self._main_lbl)
@@ -151,8 +152,8 @@ class _DropZone(QFrame):
         if e.button() == Qt.LeftButton:
             from PySide6.QtWidgets import QFileDialog
             path, _ = QFileDialog.getOpenFileName(
-                self, "Select thumbnail image", "",
-                "Images (*.jpg *.jpeg *.png *.webp *.bmp)"
+                self, t("thumbnail.select_image"), "",
+                t("thumbnail.file_filter")
             )
             if path:
                 self.file_dropped.emit(path)
@@ -174,7 +175,7 @@ class ThumbnailDialog(QDialog):
         self._worker     = None
         self.saved_path  = None      # set on successful save
 
-        self.setWindowTitle("Set Thumbnail")
+        self.setWindowTitle(t("thumbnail.window"))
         self.setModal(True)
         self.setFixedWidth(480)
         self.setStyleSheet(THUMBNAIL_DIALOG_STYLE)
@@ -188,7 +189,7 @@ class ThumbnailDialog(QDialog):
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(20)
 
-        title = QLabel("Set Thumbnail")
+        title = QLabel(t("thumbnail.title"))
         title.setStyleSheet(THUMBNAIL_DIALOG_TITLE_STYLE)
         root.addWidget(title)
 
@@ -201,7 +202,7 @@ class ThumbnailDialog(QDialog):
         self._preview_label.setFixedSize(THUMB_W, THUMB_H)
         self._preview_label.setAlignment(Qt.AlignCenter)
         self._preview_label.setStyleSheet(THUMBNAIL_PREVIEW_STYLE)
-        self._preview_label.setText("preview")
+        self._preview_label.setText(t("thumbnail.preview"))
 
         # fade-in effect for preview
         self._preview_effect = QGraphicsOpacityEffect(self._preview_label)
@@ -227,7 +228,7 @@ class ThumbnailDialog(QDialog):
             line.setFrameShape(QFrame.HLine)
             line.setStyleSheet(THUMBNAIL_DIVIDER_LINE_STYLE)
             div_row.addWidget(line)
-        or_lbl = QLabel("or paste URL")
+        or_lbl = QLabel(t("thumbnail.or_paste_url"))
         or_lbl.setStyleSheet(THUMBNAIL_STATUS_IDLE_STYLE)
         or_lbl.setAlignment(Qt.AlignCenter)
         div_row.addWidget(or_lbl)
@@ -242,10 +243,10 @@ class ThumbnailDialog(QDialog):
         url_row = QHBoxLayout()
         url_row.setSpacing(8)
         self._url_input = QLineEdit()
-        self._url_input.setPlaceholderText("https://example.com/cover.jpg")
+        self._url_input.setPlaceholderText(t("thumbnail.url_placeholder"))
         self._url_input.returnPressed.connect(self._handle_url)
         url_row.addWidget(self._url_input)
-        fetch_btn = QPushButton("Fetch")
+        fetch_btn = QPushButton(t("thumbnail.fetch"))
         fetch_btn.setFixedWidth(64)
         fetch_btn.setCursor(Qt.PointingHandCursor)
         fetch_btn.setStyleSheet(thumbnail_action_button_style())
@@ -266,14 +267,14 @@ class ThumbnailDialog(QDialog):
         # footer buttons
         footer = QHBoxLayout()
         footer.addStretch()
-        cancel_btn = QPushButton("Cancel")
+        cancel_btn = QPushButton(t("thumbnail.cancel"))
         cancel_btn.setFixedWidth(90)
         cancel_btn.setCursor(Qt.PointingHandCursor)
         cancel_btn.setStyleSheet(thumbnail_action_button_style())
         cancel_btn.clicked.connect(self.reject)
         footer.addWidget(cancel_btn)
 
-        self._apply_btn = QPushButton("Apply")
+        self._apply_btn = QPushButton(t("thumbnail.apply"))
         self._apply_btn.setFixedWidth(90)
         self._apply_btn.setCursor(Qt.PointingHandCursor)
         self._apply_btn.setEnabled(False)

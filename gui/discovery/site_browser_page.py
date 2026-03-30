@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from gui.common.styles import (
     BUTTON_STYLE,
     DISCOVERY_CARD_COUNT_STYLE,
@@ -135,15 +136,15 @@ class DiscoveryEntryWidget(QFrame):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
 
-        self.thumb_label = QLabel("No Cover", self)
+        self.thumb_label = QLabel(t("discovery.card.no_cover"), self)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setFixedSize(self._card_width, self._card_height)
         self.thumb_label.setStyleSheet(card_image_border_style("#2a2a2a", CARD_RADIUS))
         layout.addWidget(self.thumb_label)
 
-        self.title_label = DiscoveryTitleLabel(entry.title or "Untitled", self)
+        self.title_label = DiscoveryTitleLabel(entry.title or t("discovery.card.untitled"), self)
         self.title_label.setFixedWidth(max(80, self._card_width - 4))
-        self.title_label.setToolTip(entry.title or "Untitled")
+        self.title_label.setToolTip(entry.title or t("discovery.card.untitled"))
         self.title_label.setStyleSheet(DISCOVERY_CARD_TITLE_STYLE)
         layout.addWidget(self.title_label)
 
@@ -298,18 +299,18 @@ class DiscoveryEntryWidget(QFrame):
         if count is None or count <= 0:
             return ""
         if count == 1:
-            return "1 chapter"
-        return f"{count} chapters"
+            return t("discovery.card.chapter_one")
+        return t("discovery.card.chapter_many", count=count)
 
     def _build_tooltip(self) -> str:
-        parts = [self.entry.title or "Untitled"]
+        parts = [self.entry.title or t("discovery.card.untitled")]
         local_count = self._local_info.get("chapters")
         if local_count:
-            parts.append(f"In library: {local_count} chapters")
+            parts.append(t("discovery.card.in_library", count=local_count))
         remote_count = self.entry.total_chapters
         if local_count and remote_count and remote_count > local_count:
-            parts.append(f"New chapters available: {remote_count - local_count}")
-        parts.append("Click to open details")
+            parts.append(t("discovery.card.new_available", count=remote_count - local_count))
+        parts.append(t("discovery.card.open_details"))
         return "\n".join(parts)
 
     def _refresh_new_chip(self):
@@ -319,7 +320,7 @@ class DiscoveryEntryWidget(QFrame):
         if local_count and remote_count and remote_count > local_count:
             new_count = remote_count - local_count
         if new_count > 0:
-            self.new_chip.setText(f"+{new_count} New")
+            self.new_chip.setText(t("discovery.card.new_chip", count=new_count))
             self.new_chip.show()
         else:
             self.new_chip.hide()
@@ -404,7 +405,7 @@ class SiteBrowserPage(QWidget):
         root.setSpacing(20)
         root.setAlignment(Qt.AlignTop)
 
-        title = QLabel("Discover")
+        title = QLabel(t("discovery.title"))
         title.setStyleSheet(PAGE_TITLE_STYLE)
         root.addWidget(title)
 
@@ -420,30 +421,30 @@ class SiteBrowserPage(QWidget):
         self.site_combo.currentIndexChanged.connect(self._on_site_changed)
         controls.addWidget(self.site_combo)
 
-        self.page_label = QLabel("Page 1")
+        self.page_label = QLabel(t("discovery.page", page=1))
         self.page_label.setStyleSheet(SECTION_LABEL_STYLE)
         controls.addWidget(self.page_label)
 
         self.search_input = QLineEdit(self)
-        self.search_input.setPlaceholderText("Search series...")
+        self.search_input.setPlaceholderText(t("discovery.search_placeholder"))
         self.search_input.setFixedHeight(36)
         self.search_input.setMinimumWidth(220)
         self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
         self.search_input.textChanged.connect(self._on_search_text_changed)
         controls.addWidget(self.search_input)
 
-        self.downloaded_only_btn = QPushButton("Downloaded Only")
+        self.downloaded_only_btn = QPushButton(t("discovery.downloaded_only"))
         self.downloaded_only_btn.setCheckable(True)
         self.downloaded_only_btn.setStyleSheet(DISCOVERY_FILTER_BUTTON_STYLE)
         self.downloaded_only_btn.toggled.connect(self._on_downloaded_only_toggled)
         controls.addWidget(self.downloaded_only_btn)
 
-        self.load_more_btn = QPushButton("Load More")
+        self.load_more_btn = QPushButton(t("discovery.load_more"))
         self.load_more_btn.setStyleSheet(BUTTON_STYLE)
         self.load_more_btn.clicked.connect(self.load_more_catalog)
         self.load_more_btn.hide()
 
-        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn = QPushButton(t("discovery.refresh"))
         self.refresh_btn.setStyleSheet(BUTTON_STYLE)
         self.refresh_btn.clicked.connect(lambda: self.refresh_catalog(reset=True, force=True))
         controls.addWidget(self.refresh_btn)
@@ -468,7 +469,7 @@ class SiteBrowserPage(QWidget):
         loading_text_layout = QVBoxLayout()
         loading_text_layout.setContentsMargins(0, 0, 0, 0)
         loading_text_layout.setSpacing(0)
-        self.loading_title_label = QLabel("Loading discovery catalog")
+        self.loading_title_label = QLabel(t("discovery.loading_catalog"))
         self.loading_title_label.setStyleSheet(DISCOVERY_LOADING_TITLE_STYLE)
         loading_text_layout.addWidget(self.loading_title_label)
         self.loading_detail_label = QLabel("")
@@ -482,7 +483,7 @@ class SiteBrowserPage(QWidget):
         self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
         root.addWidget(self.status_label)
 
-        self.section_label = QLabel("Available series")
+        self.section_label = QLabel(t("discovery.available_series"))
         self.section_label.setStyleSheet(SECTION_LABEL_STYLE)
         self.section_label.hide()
         root.addWidget(self.section_label)
@@ -789,7 +790,7 @@ class SiteBrowserPage(QWidget):
         self.refresh_catalog(reset=False, page_override=next_page)
 
     def _sync_paging(self):
-        self.page_label.setText(f"Page {self._current_page}")
+        self.page_label.setText(t("discovery.page", page=self._current_page))
         self.load_more_btn.setEnabled(self._has_next_page and not self._catalog_loading)
 
     def _is_near_bottom(self, scrollbar, *, value: int | None = None, maximum: int | None = None) -> bool:
@@ -881,7 +882,7 @@ class SiteBrowserPage(QWidget):
     def _set_loading_more_visible(self, visible: bool):
         if visible:
             if self._loading_more_label is None:
-                label = QLabel("Loading more series...")
+                label = QLabel(t("discovery.loading_more_series"))
                 label.setAlignment(Qt.AlignCenter)
                 label.setStyleSheet(DISCOVERY_LOADING_LABEL_STYLE)
                 label.setMinimumHeight(44)
@@ -907,11 +908,11 @@ class SiteBrowserPage(QWidget):
 
     def _show_empty_state(self):
         self._update_results_visibility(False)
-        empty = QLabel("No series found for this page.")
+        empty = QLabel(t("discovery.empty.page"))
         if self._search_text.strip():
-            empty.setText("No series match your search.")
+            empty.setText(t("discovery.empty.search"))
         elif self.downloaded_only_btn.isChecked():
-            empty.setText("No downloaded titles match the loaded discovery results.")
+            empty.setText(t("discovery.empty.downloaded_only"))
         empty.setAlignment(Qt.AlignCenter)
         empty.setMinimumHeight(120)
         empty.setStyleSheet(EMPTY_STATE_LABEL_STYLE)
@@ -934,7 +935,7 @@ class SiteBrowserPage(QWidget):
 
     def _open_entry_detail(self, entry):
         if not getattr(entry, "url", ""):
-            self._show_message("This entry does not expose a downloadable series URL.", is_error=True)
+            self._show_message(t("discovery.message.no_series_url"), is_error=True)
             return
         self.main_window.open_discovery_detail(entry)
 
@@ -944,19 +945,19 @@ class SiteBrowserPage(QWidget):
         self.status_label.setText("" if is_error else text)
 
     def _show_loading_state(self, provider_name: str, page_number: int, search_query: str, reset: bool):
-        provider_text = provider_name or "this source"
+        provider_text = provider_name or t("discovery.message.source_fallback")
         if search_query:
-            title = f"Searching {provider_text}"
-            detail = f"Looking for '{search_query}' on page {page_number}."
+            title = t("discovery.message.searching", provider_text=provider_text)
+            detail = t("discovery.message.searching_detail", search_query=search_query, page_number=page_number)
         elif reset and page_number == 1:
-            title = f"Loading {provider_text}"
-            detail = "Fetching the latest discovery picks."
+            title = t("discovery.message.loading", provider_text=provider_text)
+            detail = t("discovery.message.loading_detail")
         elif reset:
-            title = f"Refreshing {provider_text}"
-            detail = f"Reloading page {page_number}."
+            title = t("discovery.message.refreshing", provider_text=provider_text)
+            detail = t("discovery.message.refreshing_detail", page_number=page_number)
         else:
-            title = "Loading more series"
-            detail = f"Fetching page {page_number} from {provider_text}."
+            title = t("discovery.message.loading_more")
+            detail = t("discovery.message.loading_more_detail", page_number=page_number, provider_text=provider_text)
         self.loading_title_label.setText(title)
         self.loading_detail_label.setText(detail)
         self.loading_spinner.set_spinning()
@@ -1460,3 +1461,5 @@ class SiteBrowserPage(QWidget):
         speed = ((abs(dy) - deadzone) ** 1.4) * (0.08 if dy > 0 else -0.08)
         bar = self.scroll.verticalScrollBar()
         bar.setValue(bar.value() + int(speed))
+
+

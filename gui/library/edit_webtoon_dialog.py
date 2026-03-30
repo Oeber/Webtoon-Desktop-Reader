@@ -7,6 +7,7 @@ import shutil
 import qtawesome as qta
 
 from core.app_logging import get_logger
+from gui.common.strings import t
 from gui.common.styles import (
     DELETE_BUTTON_STYLE,
     EDIT_DIALOG_DELETE_BOX_STYLE,
@@ -95,7 +96,7 @@ class EditWebtoonDialog(QDialog):
         self._pending_source_config = dict(self.settings_store.get_source_config(self.webtoon.name) or {})
         self._pending_source_site = str(self.settings_store.get_source_site(self.webtoon.name) or "").strip()
 
-        self.setWindowTitle("Edit Webtoon")
+        self.setWindowTitle(t("edit_webtoon.window"))
         self.setModal(True)
         self.resize(700, 0)
         self.setStyleSheet(EDIT_DIALOG_STYLE)
@@ -108,7 +109,7 @@ class EditWebtoonDialog(QDialog):
         root.setContentsMargins(24, 24, 24, 24)
         root.setSpacing(18)
 
-        title = QLabel("Edit Webtoon")
+        title = QLabel(t("edit_webtoon.title"))
         title.setStyleSheet(EDIT_DIALOG_TITLE_STYLE)
         root.addWidget(title)
 
@@ -118,7 +119,7 @@ class EditWebtoonDialog(QDialog):
         preview_col = QVBoxLayout()
         preview_col.setSpacing(12)
 
-        self.thumbnail_preview = QLabel("No thumbnail")
+        self.thumbnail_preview = QLabel(t("edit_webtoon.no_thumbnail"))
         self.thumbnail_preview.setAlignment(Qt.AlignCenter)
         self.thumbnail_preview.setFixedSize(CARD_W, CARD_H)
         self.thumbnail_preview.setStyleSheet(EDIT_DIALOG_THUMB_PREVIEW_STYLE)
@@ -127,12 +128,12 @@ class EditWebtoonDialog(QDialog):
         thumb_btn_row = QHBoxLayout()
         thumb_btn_row.setSpacing(8)
 
-        self.change_thumb_btn = QPushButton("Change Thumbnail")
+        self.change_thumb_btn = QPushButton(t("edit_webtoon.change_thumbnail"))
         self.change_thumb_btn.setIcon(qta.icon("fa5s.image", color="#d8d8d8"))
         self.change_thumb_btn.clicked.connect(self._change_thumbnail)
         thumb_btn_row.addWidget(self.change_thumb_btn)
 
-        self.reset_thumb_btn = QPushButton("Reset")
+        self.reset_thumb_btn = QPushButton(t("edit_webtoon.reset"))
         self.reset_thumb_btn.setIcon(qta.icon("fa5s.undo", color="#d8d8d8"))
         self.reset_thumb_btn.clicked.connect(self._reset_thumbnail)
         thumb_btn_row.addWidget(self.reset_thumb_btn)
@@ -154,14 +155,14 @@ class EditWebtoonDialog(QDialog):
 
         self.name_input = QLineEdit()
         self.name_input.setFixedHeight(ROW_H)
-        form.addRow(self._form_label("Name"), self._field_row(self.name_input))
+        form.addRow(self._form_label(t("edit_webtoon.label.name")), self._field_row(self.name_input))
 
         self.url_input = QLineEdit()
-        self.url_input.setPlaceholderText("https://example.com/series")
+        self.url_input.setPlaceholderText(t("edit_webtoon.source_placeholder"))
         self.url_input.setFixedHeight(ROW_H)
         self.url_input.textChanged.connect(self._refresh_source_settings_button)
 
-        self.source_settings_btn = QPushButton("Source Settings")
+        self.source_settings_btn = QPushButton(t("edit_webtoon.source_settings"))
         self.source_settings_btn.setFixedHeight(ROW_H)
         self.source_settings_btn.clicked.connect(self._open_source_settings)
 
@@ -171,7 +172,7 @@ class EditWebtoonDialog(QDialog):
         source_layout.setSpacing(8)
         source_layout.addWidget(self.url_input, 1)
         source_layout.addWidget(self.source_settings_btn)
-        form.addRow(self._form_label("Source URL"), self._field_row(source_row))
+        form.addRow(self._form_label(t("edit_webtoon.label.source_url")), self._field_row(source_row))
 
         self.zoom_input = QDoubleSpinBox()
         self.zoom_input.setDecimals(0)
@@ -181,34 +182,34 @@ class EditWebtoonDialog(QDialog):
         self.zoom_input.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.zoom_input.setFixedHeight(ROW_H)
         self.zoom_input.valueChanged.connect(self._mark_zoom_dirty)
-        form.addRow(self._form_label("Zoom"), self._field_row(self.zoom_input))
+        form.addRow(self._form_label(t("edit_webtoon.label.zoom")), self._field_row(self.zoom_input))
 
         self.category_input = QComboBox()
         self.category_input.setEditable(True)
         self.category_input.setInsertPolicy(QComboBox.NoInsert)
         self.category_input.setFixedHeight(ROW_H)
-        self.category_label = self._form_label("Category")
+        self.category_label = self._form_label(t("edit_webtoon.label.category"))
         self.category_row = self._field_row(self.category_input)
         form.addRow(self.category_label, self.category_row)
 
-        self.hide_filler_input = QCheckBox("Hide filler chapters for this webtoon")
-        form.addRow(self._form_label("Filler"), self._field_row(self.hide_filler_input))
+        self.hide_filler_input = QCheckBox(t("edit_webtoon.hide_filler"))
+        form.addRow(self._form_label(t("edit_webtoon.label.filler")), self._field_row(self.hide_filler_input))
 
-        self.completed_input = QCheckBox("Mark this webtoon as completed")
-        form.addRow(self._form_label("Status"), self._field_row(self.completed_input))
+        self.completed_input = QCheckBox(t("edit_webtoon.mark_completed"))
+        form.addRow(self._form_label(t("edit_webtoon.label.status")), self._field_row(self.completed_input))
 
         self.update_mode_input = QComboBox()
-        self.update_mode_input.addItem("Notify only", "notify")
-        self.update_mode_input.addItem("Auto-download", "auto_download")
-        self.update_mode_input.addItem("Ignore update checks", "ignore")
+        self.update_mode_input.addItem(t("edit_webtoon.update_mode.notify"), "notify")
+        self.update_mode_input.addItem(t("edit_webtoon.update_mode.auto"), "auto_download")
+        self.update_mode_input.addItem(t("edit_webtoon.update_mode.ignore"), "ignore")
         self.update_mode_input.setFixedHeight(ROW_H)
-        form.addRow(self._form_label("Updates"), self._field_row(self.update_mode_input))
+        form.addRow(self._form_label(t("edit_webtoon.label.updates")), self._field_row(self.update_mode_input))
 
         self.auto_download_limit_input = QSpinBox()
         self.auto_download_limit_input.setRange(0, 200)
-        self.auto_download_limit_input.setSpecialValueText("All new chapters")
+        self.auto_download_limit_input.setSpecialValueText(t("edit_webtoon.auto_limit.all"))
         self.auto_download_limit_input.setFixedHeight(ROW_H)
-        form.addRow(self._form_label("Auto limit"), self._field_row(self.auto_download_limit_input))
+        form.addRow(self._form_label(t("edit_webtoon.label.auto_limit")), self._field_row(self.auto_download_limit_input))
 
         right.addWidget(form_frame)
 
@@ -218,12 +219,12 @@ class EditWebtoonDialog(QDialog):
         delete_layout.setContentsMargins(16, 14, 16, 14)
         delete_layout.setSpacing(12)
 
-        delete_text = QLabel("Delete this webtoon from the library and remove its saved metadata.")
+        delete_text = QLabel(t("edit_webtoon.delete_text"))
         delete_text.setWordWrap(True)
         delete_text.setStyleSheet(EDIT_DIALOG_DELETE_TEXT_STYLE)
         delete_layout.addWidget(delete_text, 1)
 
-        self.delete_btn = QPushButton("Delete Webtoon")
+        self.delete_btn = QPushButton(t("edit_webtoon.delete_button"))
         self.delete_btn.setIcon(qta.icon("fa5s.trash-alt", color="#ffffff"))
         self.delete_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_btn.clicked.connect(self._delete_webtoon)
@@ -238,10 +239,10 @@ class EditWebtoonDialog(QDialog):
         buttons.rejected.connect(self.reject)
         buttons.accepted.connect(self._save)
         save_btn = buttons.button(QDialogButtonBox.Save)
-        save_btn.setText("Save")
+        save_btn.setText(t("edit_webtoon.save"))
         save_btn.setIcon(qta.icon("fa5s.save", color="#ffffff"))
         cancel_btn = buttons.button(QDialogButtonBox.Cancel)
-        cancel_btn.setText("Cancel")
+        cancel_btn.setText(t("edit_webtoon.cancel"))
         cancel_btn.setIcon(qta.icon("fa5s.times", color="#d8d8d8"))
         root.addWidget(buttons)
 
@@ -327,17 +328,17 @@ class EditWebtoonDialog(QDialog):
         enabled = scraper is not None and bool(scraper.get_source_config_fields())
         self.source_settings_btn.setEnabled(enabled)
         if enabled:
-            display_name = str(getattr(scraper, "site_display_name", "") or getattr(scraper, "site_name", "Source")).strip()
-            self.source_settings_btn.setToolTip(f"Configure saved-source settings for {display_name}.")
+            display_name = str(getattr(scraper, "site_display_name", "") or getattr(scraper, "site_name", t("edit_webtoon.source_default_name"))).strip()
+            self.source_settings_btn.setToolTip(t("edit_webtoon.source_settings_tooltip", display_name=display_name))
         elif str(self.url_input.text() or "").strip():
-            self.source_settings_btn.setToolTip("This source does not expose custom settings.")
+            self.source_settings_btn.setToolTip(t("edit_webtoon.source_settings_none"))
         else:
-            self.source_settings_btn.setToolTip("Enter a source URL first.")
+            self.source_settings_btn.setToolTip(t("edit_webtoon.source_settings_enter_url"))
 
     def _open_source_settings(self):
         scraper = self._scraper_for_url(self.url_input.text())
         if scraper is None or not scraper.get_source_config_fields():
-            QMessageBox.information(self, "Source settings", "This source does not expose custom settings.")
+            QMessageBox.information(self, t("edit_webtoon.source_settings_title"), t("edit_webtoon.source_settings_missing"))
             return
         site_name = str(getattr(scraper, "site_name", "") or "").strip()
         current_config = self._pending_source_config if site_name == self._pending_source_site else load_scraper_default_config(site_name)
@@ -352,7 +353,7 @@ class EditWebtoonDialog(QDialog):
         if pixmap.isNull():
             self.thumbnail_preview.setPixmap(QPixmap())
             self.thumbnail_preview.clear()
-            self.thumbnail_preview.setText("No thumbnail")
+            self.thumbnail_preview.setText(t("edit_webtoon.no_thumbnail"))
             return
 
         self.thumbnail_preview.setText("")
@@ -375,14 +376,14 @@ class EditWebtoonDialog(QDialog):
         old_name = self.webtoon.name
         new_name = _safe_name(self.name_input.text())
         if not new_name:
-            QMessageBox.warning(self, "Invalid name", "Name cannot be empty.")
+            QMessageBox.warning(self, t("edit_webtoon.invalid_name_title"), t("edit_webtoon.invalid_name_text"))
             return
 
         old_path = self.webtoon.path
         new_path = os.path.join(os.path.dirname(old_path), new_name)
 
         if new_name != old_name and os.path.exists(new_path):
-            QMessageBox.warning(self, "Name already exists", "A webtoon with that name already exists.")
+            QMessageBox.warning(self, t("edit_webtoon.name_exists_title"), t("edit_webtoon.name_exists_text"))
             return
 
         try:
@@ -453,7 +454,7 @@ class EditWebtoonDialog(QDialog):
 
         except Exception as e:
             logger.error("Failed to save edit dialog changes for %s", old_name, exc_info=e)
-            QMessageBox.critical(self, "Save failed", str(e))
+            QMessageBox.critical(self, t("edit_webtoon.save_failed"), str(e))
             return
 
         logger.info("Edit dialog saved for %s", self.webtoon.name)
@@ -462,7 +463,7 @@ class EditWebtoonDialog(QDialog):
     def _delete_webtoon(self):
         answer = QMessageBox.question(
             self,
-            "Delete webtoon",
+            t("edit_webtoon.delete_confirm_title"),
             f"Delete '{self.webtoon.name}' from the library?\n\nThis removes the folder, progress, thumbnail overrides, and saved settings.",
             QMessageBox.Yes | QMessageBox.Cancel,
             QMessageBox.Cancel,
@@ -479,7 +480,7 @@ class EditWebtoonDialog(QDialog):
             self.settings_store.delete_webtoon(self.webtoon.name)
         except Exception as e:
             logger.error("Failed to delete webtoon %s", self.webtoon.name, exc_info=e)
-            QMessageBox.critical(self, "Delete failed", str(e))
+            QMessageBox.critical(self, t("edit_webtoon.delete_failed"), str(e))
             return
 
         self.deleted = True
