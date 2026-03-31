@@ -36,12 +36,12 @@ class DownloaderPage(DownloadHistoryPageBase):
 
         self.download_btn = QPushButton(t("downloader.download"))
         self.download_btn.setStyleSheet(BTN_STYLE)
-        self.download_btn.setFixedWidth(100)
+        self.download_btn.setMinimumWidth(100)
         self.download_btn.clicked.connect(self._start_download)
 
         self.cancel_btn = QPushButton(t("downloader.cancel_active"))
         self.cancel_btn.setStyleSheet(BTN_STYLE)
-        self.cancel_btn.setFixedWidth(110)
+        self.cancel_btn.setMinimumWidth(132)
         self.cancel_btn.clicked.connect(self._cancel_active_downloads)
         self.cancel_btn.setEnabled(False)
 

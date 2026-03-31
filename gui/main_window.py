@@ -15,7 +15,6 @@ from gui.library.library_page import LibraryPage
 from gui.main_window_controllers import (
     ChapterLoadingOverlayController,
     LibraryUpdateScheduler,
-    NotificationCenterController,
     SidebarController,
     SiteAuthorizationController,
     WindowNavigator,
@@ -50,7 +49,6 @@ class MainWindow(QMainWindow):
         self.downloader = DownloaderPage(self)
         self.updates = UpdatePage(self)
         self.browser_fetcher = BrowserHtmlFetcher(self)
-        self.notifications = NotificationCenterController(self)
 
         for page in (
             self.library,
@@ -90,11 +88,9 @@ class MainWindow(QMainWindow):
         self._shutdown_done = False
         self.sidebar_controller.connect_download_signals(self.downloader.service, "manual")
         self.sidebar_controller.connect_download_signals(self.updates.service, "updates")
-        self.notifications.unread_count_changed.connect(self.sidebar_controller.set_notification_unread_count)
         self.viewer.chapter_loading_started.connect(self._on_viewer_chapter_loading_started)
         self.viewer.chapter_loading_finished.connect(self._on_viewer_chapter_loading_finished)
         self.sidebar_controller.refresh_download_indicator()
-        self.notifications.refresh_unread_count()
         self.library_update_scheduler.refresh_schedule()
 
     def _attach_shared_services(self):
@@ -107,9 +103,6 @@ class MainWindow(QMainWindow):
         self.discovery.attach_update_service(self.updates.service)
         self.discovery.attach_manual_download_service(self.downloader.service)
         self.downloader.attach_history_service(self.updates.service)
-        self.notifications.connect_service(self.downloader.service, history_kind="download")
-        self.notifications.connect_service(self.updates.service, history_kind="update")
-        self.notifications.connect_update_check_cycle(self.updates)
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)
@@ -145,9 +138,6 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         self.navigator.open_settings()
-
-    def open_notifications(self):
-        self.notifications.open_dialog()
 
     def reload_scraper_availability(self):
         self.navigator.reload_scraper_availability()

@@ -2,7 +2,7 @@ import time
 from typing import TYPE_CHECKING
 
 import qtawesome as qta
-from PySide6.QtCore import QObject, Signal, QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
 )
 
 from core.app_logging import get_logger
-from gui.common.notification_center import NotificationCenterDialog
 from gui.common.strings import t
 from gui.common.styles import (
     ACCENT,
@@ -25,9 +24,6 @@ from gui.common.styles import (
     sidebar_button_style,
 )
 from gui.downloader.download_widgets import SpinnerCircle
-from library.library_manager import build_webtoon_from_folder
-from stores.download_history_store import get_instance as get_download_history
-from stores.notification_store import get_instance as get_notification_store
 from stores.settings_store import (
     LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY,
     LIBRARY_UPDATE_INTERVAL_MINUTES_KEY,
@@ -35,7 +31,6 @@ from stores.settings_store import (
     LIBRARY_UPDATE_LAST_NOTIFIED_SIGNATURE_KEY,
     LIBRARY_UPDATE_LAST_RESULT_KEY,
     load_setting,
-    load_library_path,
     save_setting,
 )
 
@@ -46,250 +41,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 SIDEBAR_ICON_COLOR = "#d8b7b0"
 STARTUP_LIBRARY_UPDATE_DISCOVERY_RETRY_MS = 15000
-
-
-class NotificationCenterController(QObject):
-    unread_count_changed = Signal(int)
-
-    def __init__(self, window: "MainWindow"):
-        super().__init__(window)
-        self.window = window
-        self.store = get_notification_store()
-        self.history_store = get_download_history()
-        self.dialog = NotificationCenterDialog(self, parent=window)
-        self._last_auth_notification_at: dict[tuple[str, str, str], float] = {}
-        self.refresh_unread_count()
-
-    def connect_service(self, service, *, history_kind: str):
-        service.download_finished.connect(
-            lambda name, status, kind=history_kind: self._on_download_finished(kind, name, status)
-        )
-        service.auth_required.connect(
-            lambda site_name, url, preferred_name, chapter_urls, kind=history_kind:
-                self._on_auth_required(kind, site_name, url, preferred_name, chapter_urls)
-        )
-
-    def connect_update_check_cycle(self, updates_page):
-        updates_page.check_cycle_finished.connect(self._on_check_cycle_finished)
-
-    def open_dialog(self):
-        self.refresh_dialog()
-        self.dialog.show()
-        self.dialog.raise_()
-        self.dialog.activateWindow()
-
-    def refresh_dialog(self):
-        self.dialog.refresh_entries(self.store.list_entries(), self.store.unread_count())
-
-    def refresh_unread_count(self):
-        count = self.store.unread_count()
-        self.unread_count_changed.emit(count)
-        if self.dialog.isVisible():
-            self.refresh_dialog()
-
-    def mark_all_read(self):
-        self.store.mark_all_read()
-        self.refresh_unread_count()
-
-    def clear_read(self):
-        self.store.clear_read()
-        self.refresh_unread_count()
-
-    def toggle_read(self, entry: dict):
-        if bool(entry.get("is_read", False)):
-            self.store.mark_unread(int(entry.get("id", 0)))
-        else:
-            self.store.mark_read(int(entry.get("id", 0)))
-        self.refresh_unread_count()
-
-    def actions_for(self, entry: dict) -> list[tuple[str, str]]:
-        kind = str(entry.get("kind") or "").strip()
-        payload = entry.get("action_payload") or {}
-        actions: list[tuple[str, str]] = []
-        if kind in {"download_completed", "update_completed"} and str(entry.get("webtoon_name") or "").strip():
-            actions.append(("open_title", t("notifications.action.open")))
-        if kind in {"download_failed", "download_cancelled"} and str(entry.get("source_url") or "").strip():
-            actions.append(("retry_download", t("notifications.action.retry")))
-        if kind in {"update_failed", "update_cancelled"} and str(entry.get("webtoon_name") or "").strip():
-            actions.append(("retry_update", t("notifications.action.retry")))
-            actions.append(("open_updates", t("notifications.action.updates")))
-        if kind == "update_check_summary":
-            actions.append(("open_updates", t("notifications.action.open_updates")))
-        if kind == "auth_required" and str(entry.get("site_name") or "").strip():
-            actions.append(("authorize", t("notifications.action.authorize")))
-        elif kind in {"download_failed", "update_failed"} and str(payload.get("site_name") or entry.get("site_name") or "").strip():
-            actions.append(("authorize", t("notifications.action.authorize")))
-        return actions
-
-    def execute_action(self, entry: dict, action_key: str):
-        notification_id = int(entry.get("id", 0) or 0)
-        if notification_id > 0:
-            self.store.mark_read(notification_id)
-
-        payload = entry.get("action_payload") or {}
-        webtoon_name = str(entry.get("webtoon_name") or payload.get("webtoon_name") or "").strip()
-        source_url = str(entry.get("source_url") or payload.get("source_url") or "").strip()
-        site_name = str(entry.get("site_name") or payload.get("site_name") or "").strip()
-
-        if action_key == "open_title" and webtoon_name:
-            webtoon = build_webtoon_from_folder(load_library_path(), webtoon_name, self.window.settings_store)
-            if webtoon is not None:
-                self.window.open_detail(webtoon)
-        elif action_key == "retry_download" and source_url:
-            self.window.open_downloader()
-            self.window.downloader.start_download_from_url(source_url, preferred_name=webtoon_name or None)
-        elif action_key == "retry_update" and webtoon_name:
-            self.window.open_updates()
-            self.window.updates.start_update_for_webtoon(webtoon_name)
-        elif action_key == "open_updates":
-            self.window.open_updates()
-        elif action_key == "authorize" and site_name:
-            authorized = self.window.open_site_authorization(site_name, url=source_url)
-            if authorized:
-                retry_kind = str(payload.get("retry_kind") or "").strip()
-                if retry_kind == "download" and source_url:
-                    self.window.open_downloader()
-                    self.window.downloader.start_download_from_url(
-                        source_url,
-                        preferred_name=webtoon_name or None,
-                        chapter_urls=list(payload.get("chapter_urls") or []),
-                    )
-                elif retry_kind == "update" and webtoon_name:
-                    self.window.open_updates()
-                    self.window.updates.start_update_for_webtoon(webtoon_name)
-
-        self.refresh_unread_count()
-
-    def _on_download_finished(self, history_kind: str, name: str, status: str):
-        entry = self.history_store.get_entry(history_kind, name) or {}
-        source_url = str(entry.get("source_url") or "").strip()
-        last_error = str(entry.get("last_error") or "").strip()
-        site_name = str(self._site_name_for_url(source_url) or "").strip()
-
-        if history_kind == "update":
-            if status == "Completed":
-                self._add_notification(
-                    kind="update_completed",
-                    title=t("notifications.update_completed.title", name=name),
-                    message=t("notifications.update_completed.message"),
-                    severity="success",
-                    webtoon_name=name,
-                    source_url=source_url,
-                )
-                return
-            if status in {"Failed", "Cancelled"}:
-                message = last_error or (t("notifications.update_cancelled.message") if status == "Cancelled" else t("notifications.update_failed.message"))
-                self._add_notification(
-                    kind="update_cancelled" if status == "Cancelled" else "update_failed",
-                    title=t("notifications.update_status.title", name=name, status=status.lower()),
-                    message=message,
-                    severity="warning" if status == "Cancelled" else "error",
-                    webtoon_name=name,
-                    source_url=source_url,
-                    site_name=site_name,
-                    action_payload={
-                        "retry_kind": "update",
-                        "webtoon_name": name,
-                        "source_url": source_url,
-                        "site_name": site_name,
-                    },
-                )
-                return
-
-        if status == "Completed":
-            self._add_notification(
-                kind="download_completed",
-                title=t("notifications.download_completed.title", name=name),
-                message=t("notifications.download_completed.message"),
-                severity="success",
-                webtoon_name=name,
-                source_url=source_url,
-            )
-            return
-        if status in {"Failed", "Cancelled"}:
-            message = last_error or (t("notifications.download_cancelled.message") if status == "Cancelled" else t("notifications.download_failed.message"))
-            self._add_notification(
-                kind="download_cancelled" if status == "Cancelled" else "download_failed",
-                title=t("notifications.download_status.title", name=name, status=status.lower()),
-                message=message,
-                severity="warning" if status == "Cancelled" else "error",
-                webtoon_name=name,
-                source_url=source_url,
-                site_name=site_name,
-                action_payload={
-                    "retry_kind": "download",
-                    "webtoon_name": name,
-                    "source_url": source_url,
-                    "site_name": site_name,
-                },
-            )
-
-    def _on_auth_required(self, history_kind: str, site_name: str, url: str, preferred_name, chapter_urls):
-        normalized_site = str(site_name or "").strip()
-        normalized_url = str(url or "").strip()
-        normalized_name = str(preferred_name or "").strip()
-        if not normalized_site:
-            return
-
-        dedupe_key = (history_kind, normalized_site, normalized_url)
-        now = time.monotonic()
-        if now - self._last_auth_notification_at.get(dedupe_key, 0.0) < 20.0:
-            return
-        self._last_auth_notification_at[dedupe_key] = now
-
-        title_target = normalized_name or normalized_site
-        message = t("notifications.auth_required.message", site_name=normalized_site, title_target=title_target)
-        self._add_notification(
-            kind="auth_required",
-            title=t("notifications.auth_required.title", site_name=normalized_site),
-            message=message,
-            severity="warning",
-            webtoon_name=normalized_name,
-            source_url=normalized_url,
-            site_name=normalized_site,
-            action_payload={
-                "retry_kind": str(history_kind or "").strip(),
-                "webtoon_name": normalized_name,
-                "source_url": normalized_url,
-                "site_name": normalized_site,
-                "chapter_urls": list(chapter_urls or []),
-            },
-        )
-
-    def _on_check_cycle_finished(self, reason: str, count: int, errors: int):
-        total_count = int(count or 0)
-        error_count = int(errors or 0)
-        if total_count <= 0 and error_count <= 0:
-            return
-        if total_count > 0 and error_count > 0:
-            message = t("notifications.update_check.has_updates_and_errors", count=total_count, errors=error_count)
-            severity = "warning"
-        elif total_count > 0:
-            message = t("notifications.update_check.has_updates", count=total_count)
-            severity = "info"
-        else:
-            message = t("notifications.update_check.only_errors", errors=error_count)
-            severity = "warning"
-        self._add_notification(
-            kind="update_check_summary",
-            title=t("notifications.update_check.finished"),
-            message=message,
-            severity=severity,
-            action_payload={"reason": str(reason or "")},
-        )
-
-    def _add_notification(self, **kwargs):
-        self.store.add(**kwargs)
-        self.refresh_unread_count()
-
-    def _site_name_for_url(self, source_url: str) -> str:
-        if not source_url:
-            return ""
-        try:
-            from scrapers.registry import get_scraper
-            return str(getattr(get_scraper(source_url), "site_name", "") or "").strip()
-        except Exception:
-            return ""
 
 
 class WindowNavigator:
@@ -649,15 +400,6 @@ class SidebarController:
         self.btn_updates = self._make_button("fa5s.sync", window.open_updates)
         layout.addWidget(self.btn_updates)
 
-        self.btn_notifications = self._make_button("fa5s.bell", window.open_notifications)
-        self._notification_badge = QLabel("", self.btn_notifications)
-        self._notification_badge.setAlignment(Qt.AlignCenter)
-        self._notification_badge.setStyleSheet(
-            "background: #ff8a7a; color: #140d0d; border-radius: 8px; font-size: 10px; font-weight: 700; padding: 0 4px;"
-        )
-        self._notification_badge.hide()
-        layout.addWidget(self.btn_notifications)
-
         layout.addStretch()
 
         self.btn_settings = self._make_button("fa5s.cog", window.open_settings)
@@ -708,7 +450,6 @@ class SidebarController:
             self.btn_discovery.setText("")
             self.btn_settings.setText("")
             self.btn_updates.setText("")
-            self.btn_notifications.setText("")
             self.sidebar_open = False
         else:
             self.widget.setFixedWidth(self.sidebar_expanded_width)
@@ -716,7 +457,6 @@ class SidebarController:
             self.btn_discovery.setText(t("sidebar.discover"))
             self.btn_settings.setText(t("sidebar.settings"))
             self.btn_updates.setText(t("sidebar.updates"))
-            self.btn_notifications.setText(t("sidebar.notifications"))
             self.sidebar_open = True
         self.apply_button_layout()
         self.refresh_download_indicator()
@@ -731,7 +471,6 @@ class SidebarController:
             self.btn_discovery,
             self.btn_downloader,
             self.btn_updates,
-            self.btn_notifications,
             self.btn_settings,
         ):
             button.setStyleSheet(button_style)
@@ -750,7 +489,6 @@ class SidebarController:
             (self.btn_library, "library", "fa5s.book-open"),
             (self.btn_discovery, "discovery", "fa5s.compass"),
             (self.btn_updates, "updates", "fa5s.sync"),
-            (self.btn_notifications, "notifications", "fa5s.bell"),
             (self.btn_settings, "settings", "fa5s.cog"),
         )
         for button, name, icon_name in button_specs:
@@ -851,20 +589,6 @@ class SidebarController:
         else:
             self.btn_downloader.setText("")
         self.refresh_nav_state()
-
-    def set_notification_unread_count(self, count: int):
-        unread = max(0, int(count))
-        if unread > 0:
-            self._notification_badge.setText("99+" if unread > 99 else str(unread))
-            self._notification_badge.adjustSize()
-            badge_w = max(16, self._notification_badge.width() + 6)
-            self._notification_badge.resize(badge_w, 16)
-            self._notification_badge.move(max(12, self.btn_notifications.width() - badge_w - 6), 4)
-            self._notification_badge.show()
-            self.btn_notifications.setToolTip(t("sidebar.notifications.unread_tooltip", unread=unread))
-        else:
-            self._notification_badge.hide()
-            self.btn_notifications.setToolTip(t("sidebar.notifications.open_tooltip"))
 
 
 

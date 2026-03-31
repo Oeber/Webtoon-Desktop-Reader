@@ -148,6 +148,18 @@ logger = get_logger(__name__)
 
 _LEVEL_RE = re.compile(r"\[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]")
 
+
+def _library_update_interval_label(minutes: int) -> str:
+    labels = {
+        0: t("settings.general.interval.off"),
+        15: t("settings.general.interval.15m"),
+        30: t("settings.general.interval.30m"),
+        60: t("settings.general.interval.1h"),
+        120: t("settings.general.interval.2h"),
+        240: t("settings.general.interval.4h"),
+    }
+    return labels.get(int(minutes), str(minutes))
+
 class _AppUpdateWorker(QThread):
     result_ready = Signal(object)
 
@@ -376,7 +388,11 @@ class _StartupUpdateDialog(QDialog):
         self.progress_bar.hide()
         self.progress_label.hide()
         self.install_btn.setEnabled(True)
-        self.install_btn.setText("Update App" if self._can_install else "View Releases")
+        self.install_btn.setText(
+            t("settings.startup_update.update_app")
+            if self._can_install
+            else t("settings.startup_update.view_releases")
+        )
         self.close_btn.setEnabled(True)
 
     def install_launching(self):
@@ -714,8 +730,8 @@ class SettingsPage(QWidget):
         interval_view = QListView(self.library_update_interval_combo)
         interval_view.setFont(QFont("Segoe UI", 10))
         self.library_update_interval_combo.setView(interval_view)
-        for minutes, label in LIBRARY_UPDATE_INTERVAL_OPTIONS:
-            self.library_update_interval_combo.addItem(label, minutes)
+        for minutes, _label in LIBRARY_UPDATE_INTERVAL_OPTIONS:
+            self.library_update_interval_combo.addItem(_library_update_interval_label(minutes), minutes)
         self._set_library_update_interval_selection(
             int(load_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60))
         )
@@ -1015,10 +1031,11 @@ class SettingsPage(QWidget):
         label.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
         label.setFixedWidth(100)
         row.addWidget(label)
+        button.setMinimumWidth(92)
         row.addWidget(button)
         reset_btn = QPushButton(t("settings.reader.reset"))
         reset_btn.setStyleSheet(BUTTON_STYLE)
-        reset_btn.setFixedWidth(64)
+        reset_btn.setMinimumWidth(92)
         reset_btn.clicked.connect(reset_callback)
         row.addWidget(reset_btn)
         row.addStretch()
@@ -1559,7 +1576,7 @@ class SettingsPage(QWidget):
 
         self._save(DEFAULT_LIBRARY_PATH)
         self.main_window.reload_scraper_availability()
-        self._set_settings_status("Settings reset to defaults.")
+        self._set_settings_status(t("settings.status.reset_defaults"))
 
     def _on_auto_skip_changed(self, checked: bool):
         save_setting(VIEWER_AUTO_SKIP_KEY, checked)
@@ -1701,13 +1718,13 @@ class SettingsPage(QWidget):
     def _on_show_downloads_section_changed(self, checked: bool):
         save_setting(LIBRARY_SHOW_DOWNLOADS_SECTION_KEY, checked)
         logger.info("Library Active Downloads section visibility changed: %s", checked)
-        self._set_settings_status("Library settings saved.")
+        self._set_settings_status(t("settings.status.library_saved"))
         self.main_window.library.load_library()
 
     def _on_check_updates_on_startup_changed(self, checked: bool):
         save_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, checked)
         logger.info("App update startup checks changed: %s", checked)
-        self._set_settings_status("Update settings saved.")
+        self._set_settings_status(t("settings.status.app_update_saved"))
 
     def _set_library_update_interval_selection(self, minutes: int):
         normalized = int(minutes)
@@ -1721,22 +1738,26 @@ class SettingsPage(QWidget):
     def refresh_library_update_status(self):
         last_checked_at = int(load_setting(LIBRARY_UPDATE_LAST_CHECK_AT_KEY, 0) or 0)
         last_result = str(load_setting(LIBRARY_UPDATE_LAST_RESULT_KEY, "") or "").strip()
-        self.library_update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
+        self.library_update_meta_label.setText(
+            t("settings.general.last_checked", time=format_check_time(last_checked_at))
+        )
         self.library_update_status_label.setText(
-            f"Latest result: {last_result}" if last_result else "Latest result: Not checked yet."
+            t("settings.general.latest_result", result=last_result)
+            if last_result
+            else t("settings.general.latest_result_not_checked")
         )
 
     def _on_library_update_check_on_startup_changed(self, checked: bool):
         save_setting(LIBRARY_UPDATE_CHECK_ON_STARTUP_KEY, checked)
         logger.info("Library update startup checks changed: %s", checked)
-        self._set_settings_status("Library update settings saved.")
+        self._set_settings_status(t("settings.status.library_update_saved"))
         self.main_window.refresh_library_update_schedule()
 
     def _on_library_update_interval_changed(self, _index: int):
         minutes = int(self.library_update_interval_combo.currentData() or 0)
         save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, minutes)
         logger.info("Library update interval changed: %s minutes", minutes)
-        self._set_settings_status("Library update settings saved.")
+        self._set_settings_status(t("settings.status.library_update_saved"))
         self.main_window.refresh_library_update_schedule()
 
     def _open_library_health_report(self):
@@ -1745,13 +1766,13 @@ class SettingsPage(QWidget):
 
     def _check_library_updates_now(self):
         if self.main_window.run_library_update_check(reason="settings_manual"):
-            self.library_update_status_label.setText("Latest result: Checking saved titles...")
-            self.library_update_meta_label.setText("Last checked: In progress...")
+            self.library_update_status_label.setText(t("settings.general.latest_result_checking"))
+            self.library_update_meta_label.setText(t("settings.general.last_checked_in_progress"))
         else:
-            self._set_settings_status("A library update check is already in progress.")
+            self._set_settings_status(t("settings.status.library_update_in_progress"))
 
     def notify_library_update_check_completed(self):
-        self._set_settings_status("Library update check completed.")
+        self._set_settings_status(t("settings.status.library_update_completed"))
 
     def _set_settings_status(self, message: str):
         self.status_label.setText(message)
@@ -1774,7 +1795,7 @@ class SettingsPage(QWidget):
     def _open_source_config_defaults(self, site_name: str):
         scraper = self._scraper_for_site_name(site_name)
         if scraper is None or not scraper.get_source_config_fields():
-            self._set_settings_status("This source does not expose custom settings.")
+            self._set_settings_status(t("edit_webtoon.source_settings_none"))
             return
         dialog = ScraperConfigDialog(
             type(scraper),
@@ -2261,10 +2282,10 @@ class SettingsPage(QWidget):
             return ""
         first_line = error.splitlines()[0].strip()
         if not first_line:
-            first_line = "Unknown update error."
-        return (
-            f"Previous automatic update failed: {first_line} "
-            "See data/last_update_error.txt and data/last_update_trace.txt for details."
+            first_line = t("settings.general.unknown_update_error")
+        return t(
+            "settings.general.previous_update_failed",
+            error=first_line,
         )
 
     def _format_bytes(self, size: int) -> str:
@@ -2292,27 +2313,31 @@ class SettingsPage(QWidget):
         self._set_update_action_idle()
         self._reset_update_progress()
         self._set_update_diagnostic(self._load_previous_update_diagnostic())
-        self.update_meta_label.setText(f"Last checked: {format_check_time(last_checked_at)}")
+        self.update_meta_label.setText(
+            t("settings.general.last_checked", time=format_check_time(last_checked_at))
+        )
 
         if last_status == "error" and last_error:
-            self.update_status_label.setText(f"Latest release: Check failed. {last_error}")
+            self.update_status_label.setText(
+                t("settings.general.release_check_failed", error=last_error)
+            )
             self.download_update_btn.setEnabled(False)
             return
 
         if not last_version:
-            self.update_status_label.setText("Latest release: Not checked yet.")
+            self.update_status_label.setText(t("settings.general.latest_not_checked"))
             self.download_update_btn.setEnabled(False)
             return
 
         if last_version == APP_VERSION:
             self.update_status_label.setText(
-                f"Latest release: {display_version(last_version)}. You are up to date."
+                t("settings.general.release_up_to_date", version=display_version(last_version))
             )
             self.download_update_btn.setEnabled(False)
             return
 
         self.update_status_label.setText(
-            f"Latest release: {display_version(last_version)} is available."
+            t("settings.general.release_available", version=display_version(last_version))
         )
         self.download_update_btn.setEnabled(bool(self._latest_asset_url or self._latest_release_url))
 
@@ -2326,8 +2351,8 @@ class SettingsPage(QWidget):
         self._pending_update_check_mode = mode
         self.check_updates_btn.setEnabled(False)
         self.download_update_btn.setEnabled(False)
-        self.update_status_label.setText("Latest release: Checking GitHub...")
-        self.update_meta_label.setText("Last checked: In progress...")
+        self.update_status_label.setText(t("settings.general.release_checking"))
+        self.update_meta_label.setText(t("settings.general.last_checked_in_progress"))
 
         worker = _AppUpdateWorker(self)
         worker.result_ready.connect(self._on_update_check_finished)
@@ -2355,11 +2380,11 @@ class SettingsPage(QWidget):
         if self._pending_update_check_mode == "startup":
             self._maybe_notify_startup_update(result)
         elif result.error_message:
-            self.status_label.setText("Could not check for app updates.")
+            self.status_label.setText(t("settings.status.app_update_check_failed"))
         elif result.is_update_available:
-            self.status_label.setText("A newer app release is available.")
+            self.status_label.setText(t("settings.status.app_update_available"))
         else:
-            self.status_label.setText("You are on the latest app release.")
+            self.status_label.setText(t("settings.status.app_update_current"))
 
     def _save_update_result(self, result: UpdateCheckResult):
         values = {
@@ -2389,16 +2414,20 @@ class SettingsPage(QWidget):
         self._set_update_action_idle()
         self._reset_update_progress()
         self._set_update_diagnostic(self._load_previous_update_diagnostic())
-        self.update_meta_label.setText(f"Last checked: {format_check_time(result.checked_at)}")
+        self.update_meta_label.setText(
+            t("settings.general.last_checked", time=format_check_time(result.checked_at))
+        )
 
         if result.error_message:
-            self.update_status_label.setText(f"Latest release: Check failed. {result.error_message}")
+            self.update_status_label.setText(
+                t("settings.general.release_check_failed", error=result.error_message)
+            )
             self.download_update_btn.setEnabled(False)
             return
 
         release = result.latest_release
         if release is None:
-            self.update_status_label.setText("Latest release: No release information returned.")
+            self.update_status_label.setText(t("settings.general.release_none"))
             self.download_update_btn.setEnabled(False)
             return
 
@@ -2407,15 +2436,19 @@ class SettingsPage(QWidget):
         self._set_update_action_idle()
 
         if result.is_update_available:
-            asset_text = release.asset.name if release.asset else "latest release"
+            asset_text = release.asset.name if release.asset else t("settings.general.latest_release_fallback")
             self.update_status_label.setText(
-                f"Latest release: {display_version(release.version)} is available. Package: {asset_text}"
+                t(
+                    "settings.general.release_available_package",
+                    version=display_version(release.version),
+                    asset=asset_text,
+                )
             )
             self.download_update_btn.setEnabled(bool(self._latest_asset_url or self._latest_release_url))
             return
 
         self.update_status_label.setText(
-            f"Latest release: {display_version(release.version)}. You are up to date."
+            t("settings.general.release_up_to_date", version=display_version(release.version))
         )
         self.download_update_btn.setEnabled(False)
 
@@ -2482,13 +2515,13 @@ class SettingsPage(QWidget):
 
         self.check_updates_btn.setEnabled(False)
         self.download_update_btn.setEnabled(False)
-        self.download_update_btn.setText("Downloading...")
+        self.download_update_btn.setText(t("settings.startup_update.downloading_simple"))
         self.update_status_label.setText(
-            f"Latest release: Downloading {display_version(release.version)} for automatic install..."
+            t("settings.general.downloading_release", version=display_version(release.version))
         )
         self.update_progress_bar.setRange(0, 100)
         self.update_progress_bar.setValue(0)
-        self.update_progress_label.setText("Preparing download...")
+        self.update_progress_label.setText(t("settings.startup_update.preparing"))
         self._set_update_progress_visible(True)
         if startup_dialog is not None:
             startup_dialog.begin_install()
@@ -2515,13 +2548,22 @@ class SettingsPage(QWidget):
             self.update_progress_bar.setRange(0, 100)
             self.update_progress_bar.setValue(percent)
             self.update_progress_label.setText(
-                f"Downloaded {self._format_bytes(current)} of {self._format_bytes(total)} ({percent}%)"
+                t(
+                    "settings.general.downloaded_of",
+                    current=self._format_bytes(current),
+                    total=self._format_bytes(total),
+                    percent=percent,
+                )
             )
-            self.download_update_btn.setText(f"Downloading {percent}%")
+            self.download_update_btn.setText(
+                t("settings.startup_update.downloading_percent", percent=percent)
+            )
         else:
             self.update_progress_bar.setRange(0, 0)
-            self.update_progress_label.setText(f"Downloaded {self._format_bytes(current)}")
-            self.download_update_btn.setText("Downloading...")
+            self.update_progress_label.setText(
+                t("settings.general.downloaded", current=self._format_bytes(current))
+            )
+            self.download_update_btn.setText(t("settings.startup_update.downloading_simple"))
 
         if self._startup_update_dialog is not None:
             self._startup_update_dialog.set_progress(current, total, self._format_bytes)
@@ -2542,8 +2584,10 @@ class SettingsPage(QWidget):
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
             self._reset_update_progress()
-            self.update_status_label.setText(f"Latest release: Automatic update failed. {error}")
-            self.status_label.setText("Automatic app update failed.")
+            self.update_status_label.setText(
+                t("settings.general.release_auto_update_failed", error=error)
+            )
+            self.status_label.setText(t("settings.status.auto_update_failed"))
             if self._startup_update_dialog is not None:
                 self._startup_update_dialog.install_failed(error)
             return
@@ -2555,8 +2599,10 @@ class SettingsPage(QWidget):
             self.download_update_btn.setEnabled(True)
             self._set_update_action_idle()
             self._reset_update_progress()
-            self.update_status_label.setText(f"Latest release: Could not launch update helper. {launch_error}")
-            self.status_label.setText("Automatic app update could not start.")
+            self.update_status_label.setText(
+                t("settings.general.release_launch_failed", error=launch_error)
+            )
+            self.status_label.setText(t("settings.status.auto_update_start_failed"))
             if self._startup_update_dialog is not None:
                 self._startup_update_dialog.install_failed(launch_error)
             return
@@ -2564,11 +2610,11 @@ class SettingsPage(QWidget):
         logger.info("Self-update package launch started successfully zip=%s", zip_path)
         self.update_progress_bar.setRange(0, 100)
         self.update_progress_bar.setValue(100)
-        self.update_progress_label.setText("Download complete. Closing the app so the update helper can replace files.")
+        self.update_progress_label.setText(t("settings.general.download_complete_installing"))
         self._set_update_progress_visible(True)
-        self.download_update_btn.setText("Installing...")
-        self.update_status_label.setText("Latest release: Installing update and restarting...")
-        self.status_label.setText("Closing the app to install the update...")
+        self.download_update_btn.setText(t("settings.startup_update.installing"))
+        self.update_status_label.setText(t("settings.general.installing_restart"))
+        self.status_label.setText(t("settings.general.closing_for_update"))
         if self._startup_update_dialog is not None:
             self._startup_update_dialog.install_launching()
         self.main_window.close()
