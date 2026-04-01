@@ -1,3 +1,39 @@
+import inspect
+from functools import wraps
+
+from core.app_logging import get_logger
+
+logger = get_logger(__name__)
+
+
+def _trace_viewer_callable(label: str, func):
+    if getattr(func, "_viewer_trace_wrapped", False):
+        return func
+
+    signature = inspect.signature(func)
+    positional_params = [
+        param
+        for param in signature.parameters.values()
+        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    has_varargs = any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in signature.parameters.values())
+    accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    max_positional = None if has_varargs else len(positional_params)
+
+    @wraps(func)
+    def _wrapped(*args, **kwargs):
+        try:
+            logger.info("VIEWER TRACE %s", label)
+        except Exception:
+            pass
+        call_args = args if max_positional is None else args[:max_positional]
+        call_kwargs = kwargs if accepts_kwargs else {}
+        return func(*call_args, **call_kwargs)
+
+    _wrapped._viewer_trace_wrapped = True
+    return _wrapped
+
+
 def merge_close_targets(targets: list[int], min_gap: int) -> list[int]:
     if not targets:
         return []
@@ -460,3 +496,10 @@ def build_skip_targets(
     if targets and merged_targets and targets[-1] > merged_targets[-1]:
         merged_targets.append(targets[-1])
     return merged_targets
+
+
+for _name, _value in list(globals().items()):
+    if _name.startswith("_trace_viewer_"):
+        continue
+    if inspect.isfunction(_value) and getattr(_value, "__module__", "") == __name__:
+        globals()[_name] = _trace_viewer_callable(_name, _value)

@@ -171,6 +171,71 @@ class ProgressStore:
         )
         conn.commit()
 
+    def apply_chapter_page_changes(
+        self,
+        webtoon_name: str,
+        chapter: str,
+        page_index_map: dict[int, int],
+        *,
+        page_count: int,
+        deleted_old_indexes: set[int] | None = None,
+        new_page_count: int | None = None,
+    ) -> None:
+        mapping = {
+            max(0, int(old_index)): max(0, int(new_index))
+            for old_index, new_index in (page_index_map or {}).items()
+        }
+        deleted = {max(0, int(value)) for value in (deleted_old_indexes or set())}
+        target_total = max(0, int(new_page_count if new_page_count is not None else page_count))
+        if (not mapping and not deleted) or page_count <= 0:
+            return
+
+        with self._pending_condition:
+            pending_key = (webtoon_name, chapter)
+            pending_value = self._pending_entries.get(pending_key)
+            if pending_value is not None:
+                scroll, total_images, updated_at = pending_value
+                if target_total <= 0:
+                    self._pending_entries.pop(pending_key, None)
+                else:
+                    self._pending_entries[pending_key] = (
+                        self._remap_packed_position(scroll, total_images, mapping, page_count, deleted, target_total),
+                        target_total,
+                        updated_at,
+                    )
+
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT scroll, total_images, updated_at FROM progress WHERE webtoon_name = ? AND chapter = ?",
+            (webtoon_name, chapter),
+        ).fetchone()
+        if row is None:
+            return
+        if target_total <= 0:
+            conn.execute(
+                "DELETE FROM progress WHERE webtoon_name = ? AND chapter = ?",
+                (webtoon_name, chapter),
+            )
+            conn.commit()
+            return
+
+        total_images = int(row["total_images"] or page_count or 0)
+        conn.execute(
+            """
+            UPDATE progress
+            SET scroll = ?, total_images = ?, updated_at = ?
+            WHERE webtoon_name = ? AND chapter = ?
+            """,
+            (
+                self._remap_packed_position(row["scroll"], total_images, mapping, page_count, deleted, target_total),
+                target_total,
+                int(row["updated_at"] or 0),
+                webtoon_name,
+                chapter,
+            ),
+        )
+        conn.commit()
+
     def _discard_pending(self, webtoon_name: str, chapter: str) -> None:
         with self._pending_condition:
             self._pending_entries.pop((webtoon_name, chapter), None)
@@ -218,3 +283,46 @@ class ProgressStore:
             if latest_new_chapter and latest_new_chapter in chapters:
                 settings_store.clear_latest_new_chapter(webtoon_name)
 
+    @staticmethod
+    def _remap_packed_position(
+        scroll: float,
+        total_images: int,
+        page_index_map: dict[int, int],
+        page_count: int,
+        deleted_old_indexes: set[int],
+        new_page_count: int,
+    ) -> float:
+        total = max(0, int(total_images or page_count or 0))
+        packed = max(0.0, float(scroll or 0.0))
+        if total <= 0 or new_page_count <= 0:
+            return packed
+        if packed >= float(total):
+            return float(new_page_count)
+        old_index = max(0, min(total - 1, int(packed)))
+        frac = max(0.0, min(1.0, packed - int(packed)))
+        new_index = ProgressStore._resolve_target_index(
+            old_index,
+            page_index_map,
+            deleted_old_indexes,
+            new_page_count,
+        )
+        return float(new_index) + frac
+
+    @staticmethod
+    def _resolve_target_index(
+        old_index: int,
+        page_index_map: dict[int, int],
+        deleted_old_indexes: set[int],
+        new_page_count: int,
+    ) -> int:
+        if old_index in page_index_map:
+            return max(0, min(new_page_count - 1, int(page_index_map[old_index])))
+        if old_index not in deleted_old_indexes:
+            return max(0, min(new_page_count - 1, old_index))
+        for next_old in range(old_index + 1, old_index + new_page_count + len(deleted_old_indexes) + 2):
+            if next_old in page_index_map:
+                return max(0, min(new_page_count - 1, int(page_index_map[next_old])))
+        for prev_old in range(old_index - 1, -1, -1):
+            if prev_old in page_index_map:
+                return max(0, min(new_page_count - 1, int(page_index_map[prev_old])))
+        return 0

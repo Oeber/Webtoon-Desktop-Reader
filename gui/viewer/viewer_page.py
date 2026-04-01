@@ -1,8 +1,10 @@
 import json
 import os
 import time
+import inspect
 from pathlib import Path
 from bisect import bisect_right
+from functools import wraps
 
 import qtawesome as qta
 from bs4 import BeautifulSoup
@@ -84,6 +86,34 @@ VIEWER_TOOLBAR_BUTTON_SIZE = 30
 VIEWER_TOOLBAR_TRIGGER_HEIGHT = 96
 MANGA_SPREAD_GAP = 0
 logger = get_logger(__name__)
+
+
+def _trace_viewer_callable(label: str, func):
+    if getattr(func, "_viewer_trace_wrapped", False):
+        return func
+
+    signature = inspect.signature(func)
+    positional_params = [
+        param
+        for param in signature.parameters.values()
+        if param.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    has_varargs = any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in signature.parameters.values())
+    accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    max_positional = None if has_varargs else len(positional_params)
+
+    @wraps(func)
+    def _wrapped(*args, **kwargs):
+        try:
+            logger.info("VIEWER TRACE %s", label)
+        except Exception:
+            pass
+        call_args = args if max_positional is None else args[:max_positional]
+        call_kwargs = kwargs if accepts_kwargs else {}
+        return func(*call_args, **call_kwargs)
+
+    _wrapped._viewer_trace_wrapped = True
+    return _wrapped
 
 
 class TextReaderSettingsDialog(QDialog):
@@ -401,6 +431,7 @@ class ViewerPage(QWidget):
         self._resize_packed = None
         self._resize_anchor_px = 0
         self._applying_restore = False
+        self._manual_navigation_since_chapter_open = False
         self._manga_page_index = 0
         self._chapter_mode = "image"
         self._text_loaded_segments: list[dict] = []
@@ -747,6 +778,7 @@ class ViewerPage(QWidget):
         self._chapter_load_loaded = 0
         self._chapter_loading_active = False
 
+        self.scroll.verticalScrollBar().valueChanged.connect(self._on_scrollbar_value_changed)
         self.scroll.verticalScrollBar().valueChanged.connect(self.check_visible_images)
         self.scroll.verticalScrollBar().valueChanged.connect(self.preview.update)
         self.scroll.verticalScrollBar().valueChanged.connect(self._update_session_overlay)
@@ -1789,6 +1821,11 @@ class ViewerPage(QWidget):
         self._restore_image_offset = 0.0
         self._restore_text_scroll = 0.0
 
+    def _mark_manual_navigation(self) -> None:
+        self._manual_navigation_since_chapter_open = True
+        self._resize_packed = None
+        self._resize_anchor_px = 0
+
     def _on_scrollbar_action_triggered(self, _action: int) -> None:
         # Some key presses can be handled by the focused scroll area or child widget
         # instead of ViewerPage.keyPressEvent(). Clear pending restore there too so
@@ -1796,8 +1833,45 @@ class ViewerPage(QWidget):
         if self._restore_image_index is not None and not self._applying_restore:
             self._clear_pending_restore()
 
+    def _on_scrollbar_value_changed(self, value: int) -> None:
+        try:
+            bar = self.scroll.verticalScrollBar()
+            logger.info(
+                "VIEWER DEBUG scrollbar_changed value=%d max=%d applying_restore=%s restore_idx=%s manual_nav=%s chapter_mode=%s loaded=%d/%d",
+                int(value),
+                int(bar.maximum()),
+                self._applying_restore,
+                self._restore_image_index,
+                self._manual_navigation_since_chapter_open,
+                self._chapter_mode,
+                int(self._chapter_load_loaded),
+                int(self._chapter_load_total),
+            )
+        except Exception:
+            logger.exception("VIEWER DEBUG failed to log scrollbar change")
+        if self._chapter_mode == "image" and not self._applying_restore and int(value) > 0:
+            self._mark_manual_navigation()
+        # Startup restore can finish after the user has already scrolled if the
+        # key event was handled by the scroll area instead of the viewer widget.
+        # Once the viewport has moved away from the top under user control, let
+        # manual navigation win and cancel the deferred restore.
+        if (
+            self._chapter_mode == "image"
+            and self._restore_image_index is not None
+            and not self._applying_restore
+            and int(value) > 0
+        ):
+            self._clear_pending_restore()
+
     def _apply_restore(self):
         idx = self._restore_image_index
+        logger.info(
+            "VIEWER DEBUG apply_restore idx=%s offset=%.4f image_count=%d chapter_mode=%s",
+            idx,
+            float(self._restore_image_offset),
+            len(self.image_labels),
+            self._chapter_mode,
+        )
         if idx is None or idx >= len(self.image_labels):
             return
         if self._is_manga_image_mode():
@@ -1827,7 +1901,23 @@ class ViewerPage(QWidget):
         target_px = cumulative + int(height * offset_frac) - max(0, anchor_px)
 
         bar = self.scroll.verticalScrollBar()
+        logger.info(
+            "VIEWER DEBUG jump_to_packed idx=%d offset=%.4f anchor_px=%d cumulative=%d height=%d before=%d target=%d max=%d",
+            int(idx),
+            float(offset_frac),
+            int(anchor_px),
+            int(cumulative),
+            int(height),
+            int(bar.value()),
+            int(target_px),
+            int(bar.maximum()),
+        )
         bar.setValue(max(0, min(target_px, bar.maximum())))
+        logger.info(
+            "VIEWER DEBUG jump_to_packed_applied idx=%d after=%d",
+            int(idx),
+            int(bar.value()),
+        )
 
         return not (bar.value() < target_px - 5)
 
@@ -1835,10 +1925,12 @@ class ViewerPage(QWidget):
         if (
             not changed_indexes
             or not self.image_labels
+            or self._chapter_mode == "image"
             or self._is_manga_image_mode()
             or self._restore_image_index is not None
             or self._applying_restore
             or self._resize_packed is not None
+            or self._manual_navigation_since_chapter_open
         ):
             return None
 
@@ -1848,7 +1940,19 @@ class ViewerPage(QWidget):
         return self._current_packed_position()
 
     def _restore_layout_anchor(self, packed: float | None) -> None:
-        if packed is None or not self.image_labels:
+        logger.info(
+            "VIEWER DEBUG restore_layout_anchor packed=%s image_count=%d chapter_mode=%s manual_nav=%s",
+            packed,
+            len(self.image_labels),
+            self._chapter_mode,
+            self._manual_navigation_since_chapter_open,
+        )
+        if (
+            packed is None
+            or not self.image_labels
+            or self._chapter_mode == "image"
+            or self._manual_navigation_since_chapter_open
+        ):
             return
         idx = max(0, min(len(self.image_labels) - 1, int(packed)))
         self._jump_to_packed(idx, packed - int(packed))
@@ -1900,6 +2004,15 @@ class ViewerPage(QWidget):
             return
 
         anchor = self._capture_layout_anchor(list(self._pending_batch.keys()))
+        logger.info(
+            "VIEWER DEBUG flush_batch batch_indexes=%s anchor=%s restore_idx=%s manual_nav=%s loaded=%d/%d",
+            sorted(self._pending_batch.keys()),
+            anchor,
+            self._restore_image_index,
+            self._manual_navigation_since_chapter_open,
+            int(self._chapter_load_loaded),
+            int(self._chapter_load_total),
+        )
         self.container.setUpdatesEnabled(False)
         try:
             needs_restore_check = False
@@ -1933,7 +2046,9 @@ class ViewerPage(QWidget):
             idx = int(self._resize_packed)
             frac = self._resize_packed - idx
             if (
-                self.image_labels
+                not self._manual_navigation_since_chapter_open
+                and self._resize_packed is not None
+                and self.image_labels
                 and idx < len(self.image_labels)
                 and getattr(self.image_labels[idx], '_source_pixmap', None) is not None
             ):
@@ -2000,6 +2115,7 @@ class ViewerPage(QWidget):
         if not self.webtoon:
             return
         self._progress_save_timer.stop()
+        self._manual_navigation_since_chapter_open = False
         self.current_chapter_index = index
         chapter = self.webtoon.chapters[index]
         logger.info("Viewer loading chapter without prompt: %s / %s", self.webtoon.name, chapter)
@@ -2553,6 +2669,7 @@ class ViewerPage(QWidget):
     def _load_chapter_images(self, chapter):
         self.clear_images()
         self._set_chapter_mode("image")
+        self._manual_navigation_since_chapter_open = False
         self._show_loading_overlay(chapter)
 
         chapter_path = os.path.join(self.webtoon.path, chapter)
@@ -2810,12 +2927,13 @@ class ViewerPage(QWidget):
 
         # Defer the jump so Qt finishes reflowing label geometry first.
         def _restore():
-            if self._resize_packed is None or not self.image_labels:
+            if self._resize_packed is None or not self.image_labels or self._manual_navigation_since_chapter_open:
                 return
             idx = int(self._resize_packed)
             frac = self._resize_packed - idx
             if idx < len(self.image_labels):
                 self._jump_to_packed(idx, frac, self._resize_anchor_px)
+                self._resize_packed = None
 
         QTimer.singleShot(0, _restore)
 
@@ -3010,6 +3128,7 @@ class ViewerPage(QWidget):
         if self._chapter_mode != "image" or self._is_manga_image_mode():
             return False
 
+        self._mark_manual_navigation()
         bar = self.scroll.verticalScrollBar()
         view_h = self.scroll.viewport().height()
         pos = bar.value()
@@ -3092,7 +3211,19 @@ class ViewerPage(QWidget):
         view_h = self.scroll.viewport().height()
         pos = bar.value()
         if move_down or move_up:
+            self._mark_manual_navigation()
             direction_key = Qt.Key_Down if move_down else Qt.Key_Up
+            logger.info(
+                "VIEWER DEBUG key_nav direction=%s pos=%d view_h=%d auto_skip=%s targets_pending=%s restore_idx=%s loaded=%d/%d",
+                "down" if direction_key == Qt.Key_Down else "up",
+                int(pos),
+                int(view_h),
+                self.auto_skip_enabled,
+                "unknown",
+                self._restore_image_index,
+                int(self._chapter_load_loaded),
+                int(self._chapter_load_total),
+            )
 
             if self._chapter_mode == "text":
                 if direction_key == Qt.Key_Down:
@@ -3111,6 +3242,12 @@ class ViewerPage(QWidget):
             targets = self._get_skip_targets()
 
             if not targets:
+                logger.info(
+                    "VIEWER DEBUG key_nav_no_targets direction=%s pos=%d step=%d",
+                    "down" if direction_key == Qt.Key_Down else "up",
+                    int(pos),
+                    int(view_h * 0.9),
+                )
                 if direction_key == Qt.Key_Down:
                     bar.setValue(pos + int(view_h * 0.9))
                 else:
@@ -3121,11 +3258,31 @@ class ViewerPage(QWidget):
             MIN_MOVE = max(56, int(view_h * 0.10))
 
             if direction_key == Qt.Key_Down:
+                if pos <= max(8, SNAP):
+                    logger.info(
+                        "VIEWER DEBUG key_nav_top_step pos=%d snap=%d step=%d max=%d",
+                        int(pos),
+                        int(SNAP),
+                        int(view_h * 0.9),
+                        int(bar.maximum()),
+                    )
+                    bar.setValue(pos + int(view_h * 0.9))
+                    return
                 next_index = bisect_right(targets, pos + SNAP)
                 while next_index < len(targets) and (targets[next_index] - pos) < MIN_MOVE:
                     next_index += 1
 
                 next_target = targets[next_index] if next_index < len(targets) else None
+                logger.info(
+                    "VIEWER DEBUG key_nav_targets pos=%d snap=%d min_move=%d next_index=%d target_count=%d next_target=%s first_targets=%s",
+                    int(pos),
+                    int(SNAP),
+                    int(MIN_MOVE),
+                    int(next_index),
+                    len(targets),
+                    next_target,
+                    targets[:8],
+                )
 
                 if next_target is not None:
                     logger.info(
@@ -3417,6 +3574,19 @@ class ViewerPage(QWidget):
         logger.info("Viewer navigation mode changed auto_skip=%s", self.auto_skip_enabled)
         self._apply_reader_session_state()
         self.setFocus()
+
+
+for _name, _value in list(globals().items()):
+    if _name.startswith("_trace_viewer_"):
+        continue
+    if isinstance(_value, type) and getattr(_value, "__module__", "") == __name__:
+        for _attr_name, _attr_value in list(_value.__dict__.items()):
+            if _attr_name.startswith("__"):
+                continue
+            if inspect.isfunction(_attr_value):
+                setattr(_value, _attr_name, _trace_viewer_callable(f"{_value.__name__}.{_attr_name}", _attr_value))
+    elif inspect.isfunction(_value) and getattr(_value, "__module__", "") == __name__:
+        globals()[_name] = _trace_viewer_callable(_name, _value)
 
 
 

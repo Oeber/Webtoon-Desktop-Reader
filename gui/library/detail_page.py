@@ -72,6 +72,7 @@ from scrapers.registry import get_scraper, is_scraper_enabled_for_url
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
+from gui.library.chapter_editor_dialog import ChapterEditorDialog
 from stores.scraper_settings_store import load_scraper_default_config
 from stores.settings_store import load_library_path
 
@@ -886,6 +887,17 @@ class DetailPage(QWidget):
         title_row.addStretch()
         layout.addLayout(title_row, 1)
 
+        if self._can_edit_chapter_pages(chapter):
+            edit_pages_btn = QToolButton(row)
+            edit_pages_btn.setCursor(Qt.PointingHandCursor)
+            edit_pages_btn.setAutoRaise(True)
+            edit_pages_btn.setIcon(qta.icon("fa5s.th-large", color="#d8b7b0"))
+            edit_pages_btn.setIconSize(QSize(14, 14))
+            edit_pages_btn.setToolTip(t("library.detail.edit_chapter"))
+            edit_pages_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
+            edit_pages_btn.clicked.connect(lambda checked=False, ch=chapter: self._open_chapter_editor(ch))
+            layout.addWidget(edit_pages_btn)
+
         scene_count = int(self.scene_bookmark_counts.get(chapter, 0) or 0)
         if scene_count > 0:
             scene_btn = QToolButton(row)
@@ -1606,6 +1618,16 @@ class DetailPage(QWidget):
     def _is_manga_webtoon(self) -> bool:
         return str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold() == "manga"
 
+    def _is_image_webtoon(self) -> bool:
+        content_type = str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip().casefold()
+        return content_type in {"webtoon", "manga"}
+
+    def _can_edit_chapter_pages(self, chapter: str) -> bool:
+        if not self._is_image_webtoon() or self.webtoon is None:
+            return False
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        return os.path.isdir(chapter_path)
+
     def _sync_detail_filter_visibility(self) -> None:
         manga = self._is_manga_webtoon()
         self.section_caption_label.setText("" if manga else t("library.detail.chapters"))
@@ -1979,6 +2001,41 @@ class DetailPage(QWidget):
         self._maybe_auto_open_single_manga_preview()
         self._sync_chapter_batch_actions()
         return True
+
+    def _open_chapter_editor(self, chapter: str) -> None:
+        if self.webtoon is None or self.progress_store is None or not self._can_edit_chapter_pages(chapter):
+            return
+        chapter_path = os.path.join(self.webtoon.path, chapter)
+        dialog = ChapterEditorDialog(
+            self.webtoon.name,
+            chapter,
+            chapter_path,
+            progress_store=self.progress_store,
+            scene_bookmark_store=self.scene_bookmark_store,
+            parent=self,
+        )
+        if dialog.exec() != QDialog.Accepted or not dialog.changed:
+            return
+
+        logger.info("Chapter page order updated for %s / %s", self.webtoon.name, chapter)
+        self.progress_map = self.progress_store.get_progress_map(self.webtoon.name)
+        self.scene_bookmark_counts = self.scene_bookmark_store.counts_for_webtoon(self.webtoon.name)
+        progress = self.progress_store.get(self.webtoon.name)
+        if self._manga_preview_active and self._manga_preview_chapter == chapter and chapter in self.webtoon.chapters:
+            self._open_manga_chapter_preview(chapter, self.webtoon.chapters.index(chapter))
+        else:
+            self._build_chapter_list(progress)
+
+        single_manga_chapter = self._single_manga_chapter()
+        if single_manga_chapter:
+            total_pages = self._chapter_total_images(single_manga_chapter)
+            self.last_read_label.setText(t("library.detail.pages", count=total_pages) if total_pages > 0 else "")
+        elif progress:
+            scroll, total = self._progress_for_chapter(progress["chapter"])
+            percent = self._calc_percent(scroll, total)
+            self.last_read_label.setText(t("library.detail.last_read_status", chapter=progress["chapter"], percent=percent))
+        else:
+            self.last_read_label.setText(t("library.detail.not_started"))
 
     def _open_chapter(self, chapter: str):
         logger.info("Opening chapter from detail page: %s / %s", self.webtoon.name if self.webtoon else "<none>", chapter)
