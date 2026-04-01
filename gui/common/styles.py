@@ -1,3 +1,6 @@
+import json
+import sys
+
 ACCENT = "#ff8a7a"
 ACCENT_HOVER = "#ff9e90"
 ACCENT_MUTED = "#ffc2b8"
@@ -243,8 +246,8 @@ LOG_META_STYLE = f"""
     QLabel {{
         color: {TEXT_MUTED};
         font-size: 12px;
-        background: #171111;
-        border: none;
+        background: {SURFACE};
+        border: 1px solid {BORDER};
         border-radius: 10px;
         padding: 10px 12px;
     }}
@@ -252,9 +255,9 @@ LOG_META_STYLE = f"""
 
 LOG_VIEW_STYLE = f"""
     QTextEdit {{
-        background: #0d0d0d;
+        background: {SURFACE_ALT};
         color: {TEXT_SOFT};
-        border: none;
+        border: 1px solid {BORDER};
         border-radius: 14px;
         padding: 10px;
         font-family: Consolas, 'Courier New', monospace;
@@ -565,17 +568,17 @@ VIEWER_TOOLBAR_COMBO_STYLE = f"""
     }}
 """
 VIEWER_ZOOM_LABEL_STYLE = "color: #d8b7b0; font-size: 12px;"
-VIEWER_ZOOM_BUTTON_STYLE = """
-    QPushButton {
+VIEWER_ZOOM_BUTTON_STYLE = f"""
+    QPushButton {{
         background: transparent;
-        color: #c09992;
-        border: 1px solid #4b302c;
+        color: {TEXT_MUTED};
+        border: 1px solid {BORDER};
         border-radius: 4px;
         padding: 2px 6px;
         font-size: 11px;
-    }
-    QPushButton:hover { background: #241615; color: #fff0ec; }
-    QPushButton:disabled { color: #624a46; border-color: #261817; }
+    }}
+    QPushButton:hover {{ background: {SURFACE_ALT}; color: {TEXT}; border-color: {ACCENT}; }}
+    QPushButton:disabled {{ color: {TEXT_DIM}; border-color: {BORDER}; background: {SURFACE}; }}
 """
 DOWNLOAD_ENTRY_FRAME_STYLE = """
     QFrame {
@@ -1000,3 +1003,333 @@ def sized_button_style(base_style: str, min_height: int, *, padding: str = "0 16
             font-size: {font_size}px;
         }}
     """
+
+
+_STYLE_EXPORT_NAMES = tuple(
+    name
+    for name, value in globals().items()
+    if name.isupper() and isinstance(value, str)
+)
+_BASE_STYLE_VALUES = {name: globals()[name] for name in _STYLE_EXPORT_NAMES}
+
+THEME_PRESET_KEY = "app_theme_preset"
+THEME_CUSTOM_COLORS_KEY = "app_theme_custom_colors"
+DEFAULT_THEME_PRESET = "ember"
+CUSTOM_THEME_PRESET = "custom"
+THEME_BASE_KEYS = ("accent", "bg", "surface", "border", "text")
+THEME_PRESETS = {
+    "ember": {
+        "label": "Ember",
+        "accent": "#ff8a7a",
+        "bg": "#101010",
+        "surface": "#171111",
+        "border": "#4b302c",
+        "text": "#fff0ec",
+    },
+    "ocean": {
+        "label": "Ocean",
+        "accent": "#4db6ff",
+        "bg": "#08131b",
+        "surface": "#10202d",
+        "border": "#2f5f80",
+        "text": "#e7f7ff",
+    },
+    "forest": {
+        "label": "Forest",
+        "accent": "#7ddc8b",
+        "bg": "#0b140f",
+        "surface": "#132018",
+        "border": "#35583c",
+        "text": "#edf9ef",
+    },
+    "light": {
+        "label": "Light",
+        "accent": "#d0674f",
+        "bg": "#f5eee9",
+        "surface": "#fffaf7",
+        "border": "#c79f93",
+        "text": "#241917",
+    },
+}
+_CURRENT_THEME_PRESET = DEFAULT_THEME_PRESET
+_CURRENT_THEME_COLORS = dict(THEME_PRESETS[DEFAULT_THEME_PRESET])
+
+
+def _clamp_channel(value: float) -> int:
+    return max(0, min(255, int(round(value))))
+
+
+def _normalize_hex(color: str, fallback: str) -> str:
+    value = str(color or "").strip()
+    if len(value) == 4 and value.startswith("#"):
+        value = "#" + "".join(ch * 2 for ch in value[1:])
+    if len(value) == 7 and value.startswith("#"):
+        try:
+            int(value[1:], 16)
+            return value.lower()
+        except ValueError:
+            return fallback.lower()
+    return fallback.lower()
+
+
+def _hex_to_rgb(color: str) -> tuple[int, int, int]:
+    normalized = _normalize_hex(color, "#000000")
+    return tuple(int(normalized[index:index + 2], 16) for index in (1, 3, 5))
+
+
+def _rgb_to_hex(red: int, green: int, blue: int) -> str:
+    return f"#{_clamp_channel(red):02x}{_clamp_channel(green):02x}{_clamp_channel(blue):02x}"
+
+
+def _rgba(color: str, alpha: float) -> str:
+    red, green, blue = _hex_to_rgb(color)
+    alpha_value = max(0.0, min(1.0, float(alpha)))
+    return f"rgba({red}, {green}, {blue}, {alpha_value:.2f})"
+
+
+def _mix(color_a: str, color_b: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, float(ratio)))
+    a_r, a_g, a_b = _hex_to_rgb(color_a)
+    b_r, b_g, b_b = _hex_to_rgb(color_b)
+    return _rgb_to_hex(
+        a_r + (b_r - a_r) * ratio,
+        a_g + (b_g - a_g) * ratio,
+        a_b + (b_b - a_b) * ratio,
+    )
+
+
+def _build_theme_colors(theme: dict | None = None) -> dict[str, str]:
+    source = dict(THEME_PRESETS[DEFAULT_THEME_PRESET])
+    source.update({key: value for key, value in dict(theme or {}).items() if key in THEME_BASE_KEYS})
+    accent = _normalize_hex(source["accent"], THEME_PRESETS[DEFAULT_THEME_PRESET]["accent"])
+    bg = _normalize_hex(source["bg"], THEME_PRESETS[DEFAULT_THEME_PRESET]["bg"])
+    surface = _normalize_hex(source["surface"], THEME_PRESETS[DEFAULT_THEME_PRESET]["surface"])
+    border = _normalize_hex(source["border"], THEME_PRESETS[DEFAULT_THEME_PRESET]["border"])
+    text = _normalize_hex(source["text"], THEME_PRESETS[DEFAULT_THEME_PRESET]["text"])
+    return {
+        "accent": accent,
+        "accent_hover": _mix(accent, text, 0.18),
+        "accent_muted": _mix(accent, text, 0.46),
+        "bg": bg,
+        "bg_alt": _mix(bg, surface, 0.35),
+        "surface": surface,
+        "surface_alt": _mix(surface, border, 0.22),
+        "surface_soft": _mix(surface, bg, 0.22),
+        "border": border,
+        "border_strong": _mix(border, accent, 0.42),
+        "text": text,
+        "text_soft": _mix(text, accent, 0.12),
+        "text_muted": _mix(text, surface, 0.22),
+        "text_dim": _mix(text, border, 0.35),
+    }
+
+
+def _literal_replacements(colors: dict[str, str]) -> dict[str, str]:
+    return {
+        "#ff8a7a": colors["accent"],
+        "#ff9e90": colors["accent_hover"],
+        "#ffc2b8": colors["accent_muted"],
+        "#101010": colors["bg"],
+        "#151010": colors["bg_alt"],
+        "#171111": colors["surface"],
+        "#1c1413": colors["surface_alt"],
+        "#221615": colors["surface_soft"],
+        "#4b302c": colors["border"],
+        "#704540": colors["border_strong"],
+        "#fff0ec": colors["text"],
+        "#ffd7cf": colors["text_soft"],
+        "#d8b7b0": colors["text_muted"],
+        "#b18b84": colors["text_dim"],
+        "#9b7670": _mix(colors["text"], colors["border"], 0.45),
+        "#181212": _mix(colors["surface"], colors["bg"], 0.28),
+        "#130f0f": _mix(colors["bg"], colors["surface"], 0.08),
+        "#2b1c1b": _mix(colors["surface"], colors["accent"], 0.18),
+        "#2a1716": _mix(colors["surface"], colors["accent"], 0.22),
+        "#2f2815": _mix(colors["surface_soft"], colors["accent"], 0.18),
+        "#2b1d1b": _mix(colors["surface"], colors["border"], 0.14),
+        "#30201e": _mix(colors["border"], colors["surface"], 0.26),
+        "#35211f": _mix(colors["border"], colors["accent"], 0.16),
+        "#2d1d1b": _mix(colors["surface"], colors["border"], 0.18),
+        "#3c2522": _mix(colors["border"], colors["surface"], 0.18),
+        "#f6ddd6": _mix(colors["text"], colors["accent"], 0.10),
+        "#b8948d": _mix(colors["text"], colors["border"], 0.42),
+        "#140f0f": _mix(colors["bg"], colors["surface"], 0.18),
+        "#140e0c": _mix(colors["bg"], colors["surface_soft"], 0.12),
+        "#f6ece5": _mix(colors["text"], colors["surface"], 0.05),
+        "#171212": _mix(colors["surface"], colors["bg"], 0.20),
+        "#c09992": _mix(colors["text"], colors["border"], 0.30),
+        "#261716": _mix(colors["surface"], colors["accent"], 0.20),
+        "#1f1413": _mix(colors["surface"], colors["border"], 0.12),
+        "#241615": _mix(colors["surface"], colors["accent"], 0.14),
+        "#2d1b1a": _mix(colors["surface"], colors["accent"], 0.24),
+        "#2b1716": _mix(colors["surface"], colors["accent"], 0.22),
+        "#341c1b": _mix(colors["surface"], colors["accent"], 0.30),
+        "#5f322d": _mix(colors["border"], colors["accent"], 0.34),
+        "#5a3834": _mix(colors["border"], colors["accent"], 0.18),
+        "#2a1c1a": _mix(colors["surface"], colors["border"], 0.20),
+        "#6d5551": _mix(colors["text_muted"], colors["border"], 0.44),
+        "#7a625d": _mix(colors["text_muted"], colors["border"], 0.52),
+        "#8c6e68": _mix(colors["text"], colors["border"], 0.58),
+        "#7d615c": _mix(colors["text_muted"], colors["border"], 0.56),
+        "#735955": _mix(colors["text_muted"], colors["border"], 0.50),
+        "#2b1b1a": _mix(colors["surface"], colors["border"], 0.16),
+        "#352120": _mix(colors["surface"], colors["accent"], 0.30),
+        "#161111": _mix(colors["surface"], colors["bg"], 0.10),
+        "#0d0d0d": _mix(colors["bg"], colors["surface"], 0.06),
+        "#211615": _mix(colors["surface"], colors["border"], 0.12),
+        "#1c1312": _mix(colors["surface"], colors["border"], 0.10),
+        "#1f1514": _mix(colors["surface"], colors["border"], 0.14),
+        "#261918": _mix(colors["surface"], colors["accent"], 0.18),
+        "#222222": _mix(colors["surface"], colors["border"], 0.24),
+        "#d1aba4": _mix(colors["text"], colors["border"], 0.24),
+        "#d8d8d8": colors["text"],
+        "rgba(255, 138, 122, 0.78)": _rgba(colors["accent"], 0.78),
+        "rgba(255, 194, 184, 0.92)": _rgba(colors["accent_muted"], 0.92),
+        "rgba(255, 158, 144, 0.92)": _rgba(colors["accent_hover"], 0.92),
+        "rgba(255, 222, 216, 0.98)": _rgba(colors["text_soft"], 0.98),
+        "rgba(255, 212, 203, 0.98)": _rgba(colors["text_soft"], 0.98),
+        "rgba(112, 69, 64, 220)": _rgba(colors["border_strong"], 220/255),
+        "rgba(43, 28, 27, 220)": _rgba(_mix(colors["surface"], colors["accent"], 0.16), 220/255),
+        "rgba(255, 138, 122, 180)": _rgba(colors["accent"], 180/255),
+        "rgba(255, 138, 122, 34)": _rgba(colors["accent"], 34/255),
+        "rgba(255, 138, 122, 220)": _rgba(colors["accent"], 220/255),
+        "rgba(24, 18, 18, 236)": _rgba(_mix(colors["surface"], colors["bg"], 0.28), 236/255),
+        "rgba(17, 12, 12, 236)": _rgba(_mix(colors["bg"], colors["surface"], 0.12), 236/255),
+        "rgba(255, 138, 122, 0.95)": _rgba(colors["accent"], 0.95),
+        "#666666": _mix(colors["text_muted"], colors["border"], 0.40),
+        "#666": _mix(colors["text_muted"], colors["border"], 0.40),
+    }
+
+
+def _replace_theme_literals(value: str, replacements: dict[str, str]) -> str:
+    themed = str(value)
+    for old, new in replacements.items():
+        themed = themed.replace(old, new)
+    return themed
+
+
+def _propagate_theme_globals() -> None:
+    themed_values = {name: globals()[name] for name in _STYLE_EXPORT_NAMES}
+    for module in list(sys.modules.values()):
+        module_name = getattr(module, "__name__", "")
+        if not module_name.startswith("gui.") and not module_name.startswith("core."):
+            continue
+        for name, value in themed_values.items():
+            if hasattr(module, name):
+                try:
+                    setattr(module, name, value)
+                except Exception:
+                    continue
+
+
+def current_theme_preset() -> str:
+    return _CURRENT_THEME_PRESET
+
+
+def current_theme_colors() -> dict[str, str]:
+    return {key: _CURRENT_THEME_COLORS.get(key, "") for key in THEME_BASE_KEYS}
+
+
+def save_theme_selection(preset: str, custom_colors: dict | None = None) -> None:
+    from stores.app_settings_store import get_instance as get_app_settings_store
+
+    store = get_app_settings_store()
+    normalized_preset = str(preset or DEFAULT_THEME_PRESET).strip().casefold() or DEFAULT_THEME_PRESET
+    payload = {
+        key: _normalize_hex(value, THEME_PRESETS[DEFAULT_THEME_PRESET][key])
+        for key, value in dict(custom_colors or {}).items()
+        if key in THEME_BASE_KEYS
+    }
+    store.set_many({
+        THEME_PRESET_KEY: normalized_preset,
+        THEME_CUSTOM_COLORS_KEY: payload,
+    })
+
+
+def load_theme_selection() -> tuple[str, dict[str, str]]:
+    from stores.app_settings_store import get_instance as get_app_settings_store
+
+    store = get_app_settings_store()
+    preset = str(store.get(THEME_PRESET_KEY, DEFAULT_THEME_PRESET) or DEFAULT_THEME_PRESET).strip().casefold()
+    if preset not in THEME_PRESETS and preset != CUSTOM_THEME_PRESET:
+        preset = DEFAULT_THEME_PRESET
+    custom = store.get(THEME_CUSTOM_COLORS_KEY, {})
+    if not isinstance(custom, dict):
+        custom = {}
+    return preset, {
+        key: _normalize_hex(custom.get(key), THEME_PRESETS[DEFAULT_THEME_PRESET][key])
+        for key in THEME_BASE_KEYS
+        if custom.get(key)
+    }
+
+
+def set_theme(preset: str, custom_colors: dict | None = None, *, persist: bool = False, propagate: bool = True) -> None:
+    global _CURRENT_THEME_PRESET, _CURRENT_THEME_COLORS
+
+    normalized_preset = str(preset or DEFAULT_THEME_PRESET).strip().casefold() or DEFAULT_THEME_PRESET
+    if normalized_preset not in THEME_PRESETS and normalized_preset != CUSTOM_THEME_PRESET:
+        normalized_preset = DEFAULT_THEME_PRESET
+
+    base_preset = DEFAULT_THEME_PRESET if normalized_preset == CUSTOM_THEME_PRESET else normalized_preset
+    resolved_colors = dict(THEME_PRESETS[base_preset])
+    resolved_colors.update({
+        key: value
+        for key, value in dict(custom_colors or {}).items()
+        if key in THEME_BASE_KEYS and str(value or "").strip()
+    })
+    derived = _build_theme_colors(resolved_colors)
+    replacements = _literal_replacements(derived)
+
+    globals()["ACCENT"] = derived["accent"]
+    globals()["ACCENT_HOVER"] = derived["accent_hover"]
+    globals()["ACCENT_MUTED"] = derived["accent_muted"]
+    globals()["BG"] = derived["bg"]
+    globals()["BG_ALT"] = derived["bg_alt"]
+    globals()["SURFACE"] = derived["surface"]
+    globals()["SURFACE_ALT"] = derived["surface_alt"]
+    globals()["SURFACE_SOFT"] = derived["surface_soft"]
+    globals()["BORDER"] = derived["border"]
+    globals()["BORDER_STRONG"] = derived["border_strong"]
+    globals()["TEXT"] = derived["text"]
+    globals()["TEXT_SOFT"] = derived["text_soft"]
+    globals()["TEXT_MUTED"] = derived["text_muted"]
+    globals()["TEXT_DIM"] = derived["text_dim"]
+
+    for name, value in _BASE_STYLE_VALUES.items():
+        if name in {
+            "ACCENT",
+            "ACCENT_HOVER",
+            "ACCENT_MUTED",
+            "BG",
+            "BG_ALT",
+            "SURFACE",
+            "SURFACE_ALT",
+            "SURFACE_SOFT",
+            "BORDER",
+            "BORDER_STRONG",
+            "TEXT",
+            "TEXT_SOFT",
+            "TEXT_MUTED",
+            "TEXT_DIM",
+        }:
+            continue
+        globals()[name] = _replace_theme_literals(value, replacements)
+
+    _CURRENT_THEME_PRESET = normalized_preset
+    _CURRENT_THEME_COLORS = {
+        "accent": resolved_colors["accent"],
+        "bg": resolved_colors["bg"],
+        "surface": resolved_colors["surface"],
+        "border": resolved_colors["border"],
+        "text": resolved_colors["text"],
+    }
+
+    if persist:
+        save_theme_selection(normalized_preset, _CURRENT_THEME_COLORS)
+    if propagate:
+        _propagate_theme_globals()
+
+
+def initialize_from_settings() -> None:
+    preset, custom_colors = load_theme_selection()
+    set_theme(preset, custom_colors, persist=False, propagate=False)

@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         self.viewer.chapter_loading_finished.connect(self._on_viewer_chapter_loading_finished)
         self.sidebar_controller.refresh_download_indicator()
         self.library_update_scheduler.refresh_schedule()
+        self.apply_theme()
 
     def _attach_shared_services(self):
         self.downloader.service.set_browser_fetcher(self.browser_fetcher)
@@ -103,6 +104,28 @@ class MainWindow(QMainWindow):
         self.discovery.attach_update_service(self.updates.service)
         self.discovery.attach_manual_download_service(self.downloader.service)
         self.downloader.attach_history_service(self.updates.service)
+
+    def apply_theme(self):
+        self.stack.setStyleSheet(STACK_BG_STYLE)
+        root = self.centralWidget()
+        if root is not None:
+            root.setStyleSheet(STACK_BG_STYLE)
+        if hasattr(self, "sidebar_controller"):
+            self.sidebar_controller.apply_theme()
+        if hasattr(self, "chapter_overlay"):
+            self.chapter_overlay.apply_theme()
+        for page in (
+            getattr(self, "library", None),
+            getattr(self, "detail", None),
+            getattr(self, "viewer", None),
+            getattr(self, "settings", None),
+            getattr(self, "discovery", None),
+            getattr(self, "discovery_detail", None),
+            getattr(self, "downloader", None),
+            getattr(self, "updates", None),
+        ):
+            if page is not None and hasattr(page, "apply_theme"):
+                page.apply_theme()
 
     def iconSizeHint(self) -> QSize:
         return QSize(60, 90)

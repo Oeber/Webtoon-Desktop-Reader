@@ -22,6 +22,12 @@ from gui.common.styles import (
     TRANSPARENT_BG_STYLE,
     card_badge_button_style,
     card_image_border_style,
+    TEXT,
+    TEXT_MUTED,
+    TEXT_SOFT,
+    ACCENT,
+    BORDER,
+    BG,
 )
 from gui.common.card_utils import ElidedLabel, card_toggle_icon, load_rounded_cover, retain_hidden_size
 from gui.downloader.download_widgets import SpinnerCircle
@@ -111,7 +117,7 @@ class WebtoonCard(QWidget):
         self.dots_btn.move(self.card_width - 34, 6)
         self.dots_btn.setCursor(Qt.PointingHandCursor)
         self.dots_btn.setStyleSheet(CARD_DOTS_BUTTON_STYLE)
-        self.dots_btn.setIcon(qta.icon("fa5s.ellipsis-h", color="#ffffff"))
+        self.dots_btn.setIcon(qta.icon("fa5s.ellipsis-h", color=TEXT))
         self.dots_btn.setIconSize(QSize(12, 12))
         self.dots_btn.hide()
         self.dots_btn.clicked.connect(self._show_context_menu_at_btn)
@@ -121,7 +127,7 @@ class WebtoonCard(QWidget):
         self.cancel_download_btn.move(6, 6)
         self.cancel_download_btn.setCursor(Qt.PointingHandCursor)
         self.cancel_download_btn.setStyleSheet(CARD_CANCEL_BUTTON_STYLE)
-        self.cancel_download_btn.setIcon(qta.icon("fa5s.times", color="#ffffff"))
+        self.cancel_download_btn.setIcon(qta.icon("fa5s.times", color=TEXT))
         self.cancel_download_btn.setIconSize(QSize(11, 11))
         self.cancel_download_btn.setToolTip(t("library.card.cancel_download"))
         self.cancel_download_btn.clicked.connect(self._cancel_manual_download)
@@ -206,6 +212,31 @@ class WebtoonCard(QWidget):
         self._refresh_badges()
         if self._download_placeholder:
             self._apply_download_placeholder_mode()
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(TRANSPARENT_BG_STYLE)
+        self.image_container.setStyleSheet(TRANSPARENT_BG_STYLE)
+        self.title_label.setStyleSheet(CARD_TITLE_LABEL_STYLE)
+        self.info_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
+        self.latest_btn.setStyleSheet(card_badge_button_style(False))
+        self.lastread_btn.setStyleSheet(card_badge_button_style(True))
+        self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
+        self.dots_btn.setStyleSheet(CARD_DOTS_BUTTON_STYLE)
+        self.dots_btn.setIcon(qta.icon("fa5s.ellipsis-h", color=TEXT))
+        self.cancel_download_btn.setStyleSheet(CARD_CANCEL_BUTTON_STYLE)
+        self.cancel_download_btn.setIcon(qta.icon("fa5s.times", color=TEXT))
+        self.update_btn.setStyleSheet(CARD_ACTION_BUTTON_DISABLED_STYLE if not self.update_btn.isEnabled() else CARD_ACTION_BUTTON_STYLE)
+        if self.update_btn.icon() is not None:
+            self.update_btn.setIcon(qta.icon("fa5s.sync", color=ACCENT))
+        self._apply_select_button_style()
+        self._refresh_select_button()
+        self._apply_bookmark_button_style()
+        self._refresh_bookmark_button()
+        self.progress_overlay.setStyleSheet(CARD_PROGRESS_OVERLAY_STYLE)
+        self._apply_border_style(hovered=self.underMouse())
+        if self._update_menu is not None:
+            self._update_menu.setStyleSheet(CARD_MENU_STYLE)
 
     def _make_badge_btn(self, accent=False) -> QPushButton:
         btn = QPushButton(self)
@@ -458,9 +489,9 @@ class WebtoonCard(QWidget):
 
     def _apply_border_style(self, hovered: bool):
         if self._selected:
-            color = "#ff8a7a"
+            color = ACCENT
         else:
-            color = "#666" if hovered else "#2a2a2a"
+            color = BORDER if hovered else TEXT_MUTED
         self.image_label.setStyleSheet(card_image_border_style(color, CARD_RADIUS))
 
     def mousePressEvent(self, event):
@@ -625,10 +656,10 @@ class WebtoonCard(QWidget):
             self.update_btn.setText("")
             if self._remote_update_available:
                 self.update_btn.setToolTip(t("library.card.remote_updates_found"))
-                self.update_btn.setIcon(qta.icon("fa5s.exclamation", color="#ff8a7a"))
+                self.update_btn.setIcon(qta.icon("fa5s.exclamation", color=ACCENT))
             else:
                 self.update_btn.setToolTip(t("library.card.update_this"))
-                self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
+                self.update_btn.setIcon(qta.icon("fa5s.sync", color=ACCENT))
             self.update_btn.setIconSize(QSize(12, 12))
         self._layout_update_button()
 
@@ -702,10 +733,10 @@ class WebtoonCard(QWidget):
             self.on_cancel_download(self.webtoon.name)
 
     def _apply_select_button_style(self):
-        self.select_btn.setStyleSheet(action_button_checked_style("rgba(255,138,122,0.95)"))
+        self.select_btn.setStyleSheet(action_button_checked_style(ACCENT))
 
     def _apply_bookmark_button_style(self):
-        self.bookmark_btn.setStyleSheet(action_button_checked_style("rgba(245,196,81,0.95)"))
+        self.bookmark_btn.setStyleSheet(action_button_checked_style(ACCENT))
 
     def _refresh_select_button(self):
         card_toggle_icon(self.select_btn, self._selected)
@@ -714,7 +745,7 @@ class WebtoonCard(QWidget):
         self.bookmark_btn.blockSignals(True)
         self.bookmark_btn.setChecked(self._bookmarked)
         self.bookmark_btn.blockSignals(False)
-        color = "#ffffff" if self._bookmarked else "#f5c451"
+        color = BG if self._bookmarked else TEXT_SOFT
         self.bookmark_btn.setIcon(qta.icon("fa5s.star", color=color))
         self.bookmark_btn.setIconSize(QSize(12, 12))
 

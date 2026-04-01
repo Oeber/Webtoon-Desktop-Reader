@@ -38,6 +38,9 @@ from gui.common.styles import (
     VIEWER_TOOLBAR_STYLE,
     VIEWER_ZOOM_BUTTON_STYLE,
     VIEWER_ZOOM_LABEL_STYLE,
+    TEXT_SOFT,
+    ACCENT_HOVER,
+    BG,
 )
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.viewer.viewer_skip_logic import (
@@ -100,6 +103,11 @@ def _trace_viewer_callable(label: str, func):
     ]
     has_varargs = any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in signature.parameters.values())
     accepts_kwargs = any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+    accepted_kwarg_names = {
+        param.name
+        for param in signature.parameters.values()
+        if param.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+    }
     max_positional = None if has_varargs else len(positional_params)
 
     @wraps(func)
@@ -109,7 +117,9 @@ def _trace_viewer_callable(label: str, func):
         except Exception:
             pass
         call_args = args if max_positional is None else args[:max_positional]
-        call_kwargs = kwargs if accepts_kwargs else {}
+        call_kwargs = kwargs if accepts_kwargs else {
+            key: value for key, value in kwargs.items() if key in accepted_kwarg_names
+        }
         return func(*call_args, **call_kwargs)
 
     _wrapped._viewer_trace_wrapped = True
@@ -385,12 +395,12 @@ class MangaReaderSettingsDialog(QDialog):
                 font-weight: 700;
             }}
             QPushButton:hover {{
-                background: #ff9e90;
-                border-color: #ff9e90;
+                background: {ACCENT_HOVER};
+                border-color: {ACCENT_HOVER};
             }}
             QPushButton:pressed {{
-                background: #ff7c69;
-                border-color: #ff7c69;
+                background: {ACCENT_HOVER};
+                border-color: {ACCENT_HOVER};
             }}
             """
         )
@@ -498,6 +508,7 @@ class ViewerPage(QWidget):
         # Maps selector combo index to real webtoon.chapters index (used when skip_specials is on)
         self._chapter_index_map: list[int] = []
         self._toolbar_hover_active = False
+        self._toolbar_buttons = []
 
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -836,12 +847,47 @@ class ViewerPage(QWidget):
         button.setFocusPolicy(Qt.NoFocus)
         button.setCheckable(checkable)
         button.setFixedSize(VIEWER_TOOLBAR_BUTTON_SIZE, VIEWER_TOOLBAR_BUTTON_SIZE)
-        button.setIcon(qta.icon(icon_name, color="#ffd7cf"))
+        button.setIcon(qta.icon(icon_name, color=TEXT_SOFT))
         button.setIconSize(VIEWER_TOOLBAR_ICON_SIZE)
         button.setToolTip(tooltip)
         button.setStyleSheet(VIEWER_TOOLBAR_BUTTON_STYLE)
-        button.clicked.connect(callback)
+        if checkable:
+            button.toggled.connect(callback)
+        else:
+            button.clicked.connect(callback)
+        self._toolbar_buttons.append(button)
         return button
+
+    def apply_theme(self):
+        self.top_bar_widget.setStyleSheet(VIEWER_TOOLBAR_STYLE)
+        self.chapter_selector.setStyleSheet(VIEWER_TOOLBAR_COMBO_STYLE)
+        self._zoom_label.setStyleSheet(VIEWER_ZOOM_LABEL_STYLE)
+        self._zoom_reset_btn.setStyleSheet(VIEWER_ZOOM_BUTTON_STYLE)
+        self.loading_overlay.setStyleSheet(VIEWER_LOADING_OVERLAY_STYLE)
+        self.loading_label.setStyleSheet(LOADING_TITLE_LABEL_STYLE)
+        self.loading_detail_label.setStyleSheet(LOADING_DETAIL_LABEL_STYLE)
+        self._apply_text_reader_style()
+        button_icons = {
+            getattr(self, "back_button", None): "fa5s.arrow-left",
+            getattr(self, "prev_button", None): "fa5s.chevron-left",
+            getattr(self, "next_button", None): "fa5s.chevron-right",
+            getattr(self, "nav_toggle", None): "fa5s.magic",
+            getattr(self, "save_scene_btn", None): "fa5s.bookmark",
+            getattr(self, "scene_list_btn", None): "fa5s.images",
+            getattr(self, "focus_mode_btn", None): "fa5s.bullseye",
+            getattr(self, "text_progress_btn", None): "fa5s.stream",
+            getattr(self, "text_settings_btn", None): "fa5s.font",
+            getattr(self, "minimap_btn", None): "fa5s.map",
+            getattr(self, "manga_settings_btn", None): "fa5s.book-open",
+            getattr(self, "anchors_btn", None): "fa5s.map-pin",
+            getattr(self, "zoom_out_btn", None): "fa5s.search-minus",
+            getattr(self, "zoom_in_btn", None): "fa5s.search-plus",
+        }
+        for button in getattr(self, "_toolbar_buttons", []):
+            button.setStyleSheet(VIEWER_TOOLBAR_BUTTON_STYLE)
+            icon_name = button_icons.get(button)
+            if icon_name:
+                button.setIcon(qta.icon(icon_name, color=TEXT_SOFT))
 
     def _position_toolbar(self):
         if not hasattr(self, "top_bar_widget"):
@@ -899,15 +945,20 @@ class ViewerPage(QWidget):
 
     def _apply_reader_session_state(self, *, persist: bool = True):
         self._apply_toolbar_visibility()
+        preview = getattr(self, "preview", None)
+        manga_preview = getattr(self, "manga_preview", None)
+        text_progress_panel = getattr(self, "text_progress_panel", None)
+        if preview is None or manga_preview is None or text_progress_panel is None:
+            return
         image_mode = self._chapter_mode == "image"
         manga_mode = self._is_manga_image_mode()
         text_mode = self._chapter_mode == "text"
         preview_visible = self._minimap_visible and image_mode and not manga_mode
         manga_preview_visible = self._minimap_visible and image_mode and manga_mode
-        self.preview.setVisible(preview_visible)
-        self.manga_preview.setVisible(manga_preview_visible)
-        self.text_progress_panel.setVisible(text_mode and self._text_progress_visible)
-        self.preview.set_scene_marks_visible(self._scene_anchors_visible)
+        preview.setVisible(preview_visible)
+        manga_preview.setVisible(manga_preview_visible)
+        text_progress_panel.setVisible(text_mode and self._text_progress_visible)
+        preview.set_scene_marks_visible(self._scene_anchors_visible)
         self.focus_mode_btn.setChecked(self._focus_mode_enabled)
         self.text_progress_btn.setChecked(self._text_progress_visible)
         self.minimap_btn.setChecked(self._minimap_visible)
@@ -971,14 +1022,18 @@ class ViewerPage(QWidget):
             save_setting(VIEWER_SCENE_ANCHORS_VISIBLE_KEY, self._scene_anchors_visible)
             save_setting(VIEWER_TEXT_PROGRESS_VISIBLE_KEY, self._text_progress_visible)
 
-    def _toggle_focus_mode(self, checked: bool):
+    def _toggle_focus_mode(self, checked: bool | None = None):
+        if checked is None:
+            checked = not self._focus_mode_enabled
         self._focus_mode_enabled = bool(checked)
         if self._focus_mode_enabled:
             self._minimap_visible = True
         self._apply_reader_session_state()
         self.setFocus()
 
-    def _toggle_text_progress(self, checked: bool):
+    def _toggle_text_progress(self, checked: bool | None = None):
+        if checked is None:
+            checked = not self._text_progress_visible
         self._text_progress_visible = bool(checked)
         self._apply_reader_session_state()
         self.setFocus()
@@ -1012,7 +1067,9 @@ class ViewerPage(QWidget):
         self._apply_text_reader_style()
         self._sync_text_content_height()
 
-    def _toggle_minimap(self, checked: bool):
+    def _toggle_minimap(self, checked: bool | None = None):
+        if checked is None:
+            checked = not self._minimap_visible
         self._minimap_visible = bool(checked)
         self._apply_reader_session_state()
         self.setFocus()
@@ -1056,7 +1113,9 @@ class ViewerPage(QWidget):
             self._progress_save_timer.start()
         self.setFocus()
 
-    def _toggle_scene_anchors(self, checked: bool):
+    def _toggle_scene_anchors(self, checked: bool | None = None):
+        if checked is None:
+            checked = not self._scene_anchors_visible
         self._scene_anchors_visible = bool(checked)
         self._apply_reader_session_state()
         self.setFocus()
@@ -3568,8 +3627,11 @@ class ViewerPage(QWidget):
         bar.setValue(bar.value() + int(speed))
         self.setFocus()
 
-    def _toggle_navigation_mode(self):
-        self.auto_skip_enabled = self.nav_toggle.isChecked()
+    def _toggle_navigation_mode(self, checked: bool | None = None):
+        if checked is None:
+            checked = self.nav_toggle.isChecked()
+        self.auto_skip_enabled = bool(checked)
+        self.nav_toggle.setChecked(self.auto_skip_enabled)
         save_setting(VIEWER_AUTO_SKIP_KEY, self.auto_skip_enabled)
         logger.info("Viewer navigation mode changed auto_skip=%s", self.auto_skip_enabled)
         self._apply_reader_session_state()

@@ -67,6 +67,8 @@ VIEWER_NAV_DIRECTION_KEY = "viewer_nav_direction"
 DISCOVERY_DEFAULT_PROVIDER_KEY = "discovery_default_provider"
 LIBRARY_PATH_KEY = "library_path"
 APP_LOCALE_KEY = "app_locale"
+APP_THEME_PRESET_KEY = "app_theme_preset"
+APP_THEME_CUSTOM_COLORS_KEY = "app_theme_custom_colors"
 
 _app_settings = get_app_settings_store()
 

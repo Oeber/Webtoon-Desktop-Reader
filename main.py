@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
     from core.app_update import APP_NAME, APP_VERSION
     from core.library_layout import ensure_library_content_layout
     from core.profiler import create_session_profiler
+    from gui.common import styles as app_styles
+    app_styles.initialize_from_settings()
     from gui.main_window import MainWindow
     from stores.settings_store import load_library_path
     from stores.db import prewarm_connection, prewarm_connection_async

@@ -17,6 +17,7 @@ from core.app_logging import get_logger
 from gui.common.strings import t
 from gui.common.styles import (
     ACCENT,
+    TEXT_MUTED,
     LOADING_DETAIL_LABEL_STYLE,
     LOADING_TITLE_LABEL_STYLE,
     MAIN_WINDOW_CHAPTER_OVERLAY_STYLE,
@@ -39,7 +40,7 @@ if TYPE_CHECKING:
 
 
 logger = get_logger(__name__)
-SIDEBAR_ICON_COLOR = "#d8b7b0"
+SIDEBAR_ICON_COLOR = TEXT_MUTED
 STARTUP_LIBRARY_UPDATE_DISCOVERY_RETRY_MS = 15000
 
 
@@ -223,6 +224,11 @@ class ChapterLoadingOverlayController:
         layout.addWidget(self.spinner, 0, Qt.AlignCenter)
         layout.addWidget(self.title_label)
         layout.addWidget(self.detail_label)
+
+    def apply_theme(self):
+        self.overlay.setStyleSheet(MAIN_WINDOW_CHAPTER_OVERLAY_STYLE)
+        self.title_label.setStyleSheet(LOADING_TITLE_LABEL_STYLE)
+        self.detail_label.setStyleSheet(LOADING_DETAIL_LABEL_STYLE)
 
     def position(self):
         self.overlay.setGeometry(self.stack.rect())
@@ -442,6 +448,14 @@ class SidebarController:
         service.download_finished.connect(
             lambda name, status, prefix=prefix: self._on_download_finished(prefix, name)
         )
+
+    def apply_theme(self):
+        global SIDEBAR_ICON_COLOR
+        SIDEBAR_ICON_COLOR = TEXT_MUTED
+        self.widget.setStyleSheet(SIDEBAR_STYLE)
+        self.apply_button_layout()
+        self.refresh_nav_state()
+        self.refresh_download_indicator()
 
     def toggle(self):
         if self.sidebar_open:

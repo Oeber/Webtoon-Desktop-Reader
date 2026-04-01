@@ -116,6 +116,7 @@ from stores.settings_store import (
 )
 from gui.settings.library_health_dialog import LibraryHealthDialog
 from gui.common.strings import available_locales, get_locale, set_locale, t
+import gui.common.styles as app_styles
 from gui.common.styles import (
     APP_UPDATE_PROGRESS_STYLE,
     BUTTON_STYLE,
@@ -136,6 +137,7 @@ from gui.common.styles import (
     SURFACE_PANEL_STYLE,
     reliability_badge_button_style,
     TAB_STYLE,
+    TEXT,
     TEXT_MUTED_BODY_STYLE,
     TEXT_MUTED_LABEL_STYLE,
     TEXT_MUTED_TRANSPARENT_STYLE,
@@ -437,6 +439,9 @@ class SettingsPage(QWidget):
         self._open_refresh_timer = QTimer(self)
         self._open_refresh_timer.setSingleShot(True)
         self._open_refresh_timer.timeout.connect(self._run_open_refresh)
+        self._theme_cards = []
+        self._theme_color_buttons = {}
+        self._theme_buttons = []
 
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -524,6 +529,42 @@ class SettingsPage(QWidget):
         locale_layout.addLayout(locale_row)
 
         layout.addWidget(locale_card)
+
+        appearance_card, appearance_layout = self._build_card()
+        appearance_label = QLabel("Appearance")
+        appearance_label.setStyleSheet(SECTION_LABEL_TRANSPARENT_STYLE)
+        appearance_layout.addWidget(appearance_label)
+
+        appearance_help = QLabel("Choose a preset or build a custom app theme. Changes apply immediately.")
+        appearance_help.setWordWrap(True)
+        appearance_help.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        appearance_layout.addWidget(appearance_help)
+
+        theme_row = QHBoxLayout()
+        theme_row.setSpacing(10)
+        theme_text = QLabel("Theme")
+        theme_text.setStyleSheet(TEXT_MUTED_TRANSPARENT_STYLE)
+        theme_text.setFixedWidth(100)
+        self.theme_preset_combo = QComboBox()
+        self.theme_preset_combo.setStyleSheet(INPUT_STYLE)
+        for preset_key, preset_meta in app_styles.THEME_PRESETS.items():
+            self.theme_preset_combo.addItem(preset_meta["label"], preset_key)
+        self.theme_preset_combo.addItem("Custom", app_styles.CUSTOM_THEME_PRESET)
+        self.theme_preset_combo.currentIndexChanged.connect(self._on_theme_preset_changed)
+        theme_row.addWidget(theme_text)
+        theme_row.addWidget(self.theme_preset_combo, 1)
+        appearance_layout.addLayout(theme_row)
+
+        for theme_key, label_text in (("accent", "Accent"), ("bg", "Background"), ("surface", "Surface"), ("border", "Border"), ("text", "Text")):
+            button = QPushButton()
+            button.setStyleSheet(BUTTON_STYLE)
+            self._theme_buttons.append(button)
+            button.clicked.connect(lambda _checked=False, key=theme_key: self._pick_theme_color(key))
+            self._theme_color_buttons[theme_key] = button
+            appearance_layout.addLayout(self._build_color_setting_row(label_text, button, lambda _checked=False, key=theme_key: self._reset_theme_color(key)))
+
+        self._refresh_theme_controls()
+        layout.addWidget(appearance_card)
 
         library_card, library_layout = self._build_card()
         header_row = QHBoxLayout()
@@ -961,6 +1002,7 @@ class SettingsPage(QWidget):
         reader_layout.addLayout(self._build_color_setting_row(t("settings.reader.text_color"), self.text_color_button, lambda: self._reset_reader_color("text")))
 
         self._refresh_reader_color_buttons()
+        self._refresh_theme_controls()
 
         layout.addWidget(reader_card)
 
@@ -1024,6 +1066,83 @@ class SettingsPage(QWidget):
         set_locale(locale)
         self.status_label.setText(t("settings.general.language_restart"))
 
+    def apply_theme(self):
+        self.setStyleSheet(PAGE_BG_STYLE)
+        self.tabs.setStyleSheet(TAB_STYLE)
+        for card in self._theme_cards:
+            card.setStyleSheet(SURFACE_PANEL_STYLE)
+
+        for widget in self.findChildren(QLineEdit):
+            widget.setStyleSheet(INPUT_STYLE)
+        for widget in self.findChildren(QComboBox):
+            widget.setStyleSheet(INPUT_STYLE)
+        for widget in self.findChildren(QSpinBox):
+            widget.setStyleSheet(INPUT_STYLE)
+        for widget in self.findChildren(QCheckBox):
+            widget.setStyleSheet(CHECKBOX_STYLE)
+        for widget in self.findChildren(QSlider):
+            widget.setStyleSheet(SLIDER_STYLE)
+        for widget in self.findChildren(QPushButton):
+            if widget in self._theme_color_buttons.values():
+                continue
+            if widget in [entry.get("badge") for entry in self._source_reliability_widgets.values()]:
+                continue
+            widget.setStyleSheet(BUTTON_STYLE)
+
+        for widget in self.findChildren(QPushButton):
+            if widget.icon().isNull():
+                continue
+            tooltip = str(widget.toolTip() or "").casefold()
+            if "default settings for this source" in tooltip or "does not expose custom settings" in tooltip:
+                widget.setIcon(qta.icon("fa5s.cog", color=TEXT))
+
+        if hasattr(self, "zoom_value_label"):
+            self.zoom_value_label.setStyleSheet(PILL_LABEL_STYLE)
+
+        self._refresh_reader_color_buttons()
+        self._refresh_theme_controls()
+
+    def _refresh_theme_controls(self):
+        preset = app_styles.current_theme_preset()
+        colors = app_styles.current_theme_colors()
+        if hasattr(self, "theme_preset_combo"):
+            index = self.theme_preset_combo.findData(preset)
+            if index >= 0 and self.theme_preset_combo.currentIndex() != index:
+                self.theme_preset_combo.blockSignals(True)
+                self.theme_preset_combo.setCurrentIndex(index)
+                self.theme_preset_combo.blockSignals(False)
+        for key, button in self._theme_color_buttons.items():
+            self._set_reader_color_button(button, colors.get(key, app_styles.THEME_PRESETS[app_styles.DEFAULT_THEME_PRESET][key]))
+
+    def _apply_selected_theme(self, preset: str, custom_colors: dict | None = None):
+        app_styles.set_theme(preset, custom_colors or app_styles.current_theme_colors(), persist=True, propagate=True)
+        self.main_window.apply_theme()
+        self._refresh_theme_controls()
+        self._set_settings_status("Theme updated.")
+
+    def _on_theme_preset_changed(self, _index: int):
+        preset = str(self.theme_preset_combo.currentData() or app_styles.DEFAULT_THEME_PRESET)
+        custom_colors = app_styles.current_theme_colors()
+        if preset == app_styles.CUSTOM_THEME_PRESET:
+            self._apply_selected_theme(preset, custom_colors)
+            return
+        self._apply_selected_theme(preset, dict(app_styles.THEME_PRESETS[preset]))
+
+    def _pick_theme_color(self, theme_key: str):
+        colors = app_styles.current_theme_colors()
+        current = QColor(str(colors.get(theme_key, app_styles.THEME_PRESETS[app_styles.DEFAULT_THEME_PRESET][theme_key]) or ""))
+        color = QColorDialog.getColor(current, self, f"Choose {theme_key} color")
+        if not color.isValid():
+            return
+        custom_colors = app_styles.current_theme_colors()
+        custom_colors[theme_key] = color.name()
+        self._apply_selected_theme(app_styles.CUSTOM_THEME_PRESET, custom_colors)
+
+    def _reset_theme_color(self, theme_key: str):
+        custom_colors = app_styles.current_theme_colors()
+        custom_colors[theme_key] = app_styles.THEME_PRESETS[app_styles.DEFAULT_THEME_PRESET][theme_key]
+        self._apply_selected_theme(app_styles.CUSTOM_THEME_PRESET, custom_colors)
+
     def _build_color_setting_row(self, label_text: str, button: QPushButton, reset_callback) -> QHBoxLayout:
         row = QHBoxLayout()
         row.setSpacing(10)
@@ -1037,6 +1156,7 @@ class SettingsPage(QWidget):
         reset_btn.setStyleSheet(BUTTON_STYLE)
         reset_btn.setMinimumWidth(92)
         reset_btn.clicked.connect(reset_callback)
+        self._theme_buttons.append(reset_btn)
         row.addWidget(reset_btn)
         row.addStretch()
         return row
@@ -1215,6 +1335,7 @@ class SettingsPage(QWidget):
     def _build_card(self, expand: bool = False):
         card = QWidget()
         card.setStyleSheet(SURFACE_PANEL_STYLE)
+        self._theme_cards.append(card)
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
@@ -1451,6 +1572,7 @@ class SettingsPage(QWidget):
         save_setting(LIBRARY_UPDATE_INTERVAL_MINUTES_KEY, 60)
         save_default_discovery_provider("")
         save_site_availability({})
+        app_styles.set_theme(app_styles.DEFAULT_THEME_PRESET, dict(app_styles.THEME_PRESETS[app_styles.DEFAULT_THEME_PRESET]), persist=True, propagate=True)
 
         self.auto_skip_checkbox.blockSignals(True)
         self.auto_skip_checkbox.setChecked(True)
@@ -1575,6 +1697,7 @@ class SettingsPage(QWidget):
                 viewer.rescale_images()
 
         self._save(DEFAULT_LIBRARY_PATH)
+        self.main_window.apply_theme()
         self.main_window.reload_scraper_availability()
         self._set_settings_status(t("settings.status.reset_defaults"))
 
@@ -1870,7 +1993,7 @@ class SettingsPage(QWidget):
                 self._default_discovery_provider_checkboxes[site_name] = default_checkbox
 
             gear_btn = QPushButton()
-            gear_btn.setIcon(qta.icon("fa5s.cog", color="#d8d8d8"))
+            gear_btn.setIcon(qta.icon("fa5s.cog", color=TEXT))
             gear_btn.setFixedSize(36, 36)
             gear_btn.setStyleSheet(BUTTON_STYLE)
             gear_btn.setEnabled(has_config_fields)

@@ -28,6 +28,8 @@ from gui.common.styles import (
     action_button_checked_style,
     ACCENT,
     BATCH_BAR_STYLE,
+    BORDER,
+    TEXT_MUTED,
     BATCH_LABEL_STYLE,
     BUTTON_STYLE,
     CARD_ACTION_BUTTON_STYLE,
@@ -333,6 +335,7 @@ class UpdateCard(QFrame):
         self.card_height = int(self.card_width * (LIBRARY_CARD_HEIGHT / LIBRARY_CARD_WIDTH))
         self._selected = False
         self._show_selection_controls = False
+        self._current_status = "Ready"
 
         self.setFixedWidth(self.card_width + 16)
         self.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
@@ -356,7 +359,7 @@ class UpdateCard(QFrame):
         self.update_btn.setFixedSize(28, 28)
         self.update_btn.move(6, 6)
         self.update_btn.clicked.connect(lambda: self.on_update(self))
-        self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ff8a7a"))
+        self.update_btn.setIcon(qta.icon("fa5s.sync", color=ACCENT))
         self.update_btn.setIconSize(self._button_icon_size())
 
         self.select_btn = QPushButton(self.image_container)
@@ -433,6 +436,24 @@ class UpdateCard(QFrame):
             self.set_thumbnail(webtoon.thumbnail)
 
         self.set_status("Ready")
+        self.apply_theme()
+
+    def apply_theme(self):
+        UPDATE_STATUS_COLORS["Downloading"] = ACCENT
+        self.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        self.image_container.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        self._apply_border_style(hovered=self.underMouse())
+        self.update_btn.setStyleSheet(CARD_ACTION_BUTTON_DISABLED_STYLE if not self.update_btn.isEnabled() else CARD_ACTION_BUTTON_STYLE)
+        self.update_btn.setIcon(qta.icon("fa5s.sync", color=ACCENT))
+        self._apply_select_button_style()
+        self._refresh_select_button()
+        self.progress_overlay.setStyleSheet(CARD_PROGRESS_OVERLAY_STYLE)
+        self.name_label.setStyleSheet(CARD_TITLE_LABEL_STYLE)
+        self.info_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
+        self.meta_btn.setStyleSheet(card_badge_button_style(False))
+        self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
+        self.set_status(self._current_status)
+        self.detail_label.setStyleSheet(CARD_INFO_LABEL_STYLE)
 
     def cooldown_remaining(self) -> int:
         return cooldown_remaining(self.last_update_at)
@@ -452,19 +473,20 @@ class UpdateCard(QFrame):
         self.detail_label.setText(t("updates.page.card.progress", current=current, total=total))
 
     def set_status(self, status: str):
-        color = UPDATE_STATUS_COLORS.get(status, "#d7b1aa")
-        self.status_label.setText(t(f"download.status.{status.casefold()}"))
+        self._current_status = str(status or "Ready")
+        color = UPDATE_STATUS_COLORS.get(self._current_status, "#d7b1aa")
+        self.status_label.setText(t(f"download.status.{self._current_status.casefold()}"))
         self.status_label.setStyleSheet(status_text_style(color))
 
         if status == "Completed":
             self.progress_overlay.hide()
             self.spinner.set_complete(100)
             self.detail_label.setText(t("updates.page.card.finished"))
-        elif status in ("Failed", "Cancelled"):
+        elif self._current_status in ("Failed", "Cancelled"):
             self.progress_overlay.hide()
             self.spinner.set_failed()
             self.detail_label.setText(t("updates.page.card.incomplete"))
-        elif status == "Downloading":
+        elif self._current_status == "Downloading":
             self.progress_overlay.show()
             self.spinner.set_spinning()
             self.detail_label.setText(t("updates.page.card.downloading_detail"))
@@ -510,9 +532,9 @@ class UpdateCard(QFrame):
 
     def _apply_border_style(self, hovered: bool):
         if self._selected:
-            color = "#ff8a7a"
+            color = ACCENT
         else:
-            color = "#666666" if hovered else "#2a2a2a"
+            color = BORDER if hovered else TEXT_MUTED
         self.thumb_label.setStyleSheet(card_image_border_style(color, LIBRARY_CARD_RADIUS))
 
     def _apply_elided_title(self):
@@ -537,7 +559,7 @@ class UpdateCard(QFrame):
         return t("updates.page.card.updated_on", date=datetime.fromtimestamp(int(self.last_update_at)).strftime("%Y-%m-%d"))
 
     def _apply_select_button_style(self):
-        self.select_btn.setStyleSheet(action_button_checked_style("rgba(255,138,122,0.95)"))
+        self.select_btn.setStyleSheet(action_button_checked_style(ACCENT))
 
     def _refresh_select_button(self):
         card_toggle_icon(self.select_btn, self._selected, size=12)
@@ -659,6 +681,20 @@ class UpdatePage(DownloadHistoryPageBase):
         self._checker = UpdateAvailabilityLoader(self)
         self._checker.checked.connect(self._on_candidate_checked)
         self.service.restore_pending_jobs()
+
+    def apply_theme(self):
+        UPDATE_STATUS_COLORS["Downloading"] = ACCENT
+        self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
+        self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
+        self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
+        self.update_selected_btn.setStyleSheet(BUTTON_STYLE)
+        self.clear_selection_btn.setStyleSheet(BUTTON_STYLE)
+        if self._cards_container is not None:
+            self._cards_container.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        for card in self._entry_widgets:
+            if hasattr(card, "apply_theme"):
+                card.apply_theme()
 
     def _rebuild_page_shell(self):
         root_layout = self.layout()

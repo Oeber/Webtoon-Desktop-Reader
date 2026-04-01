@@ -49,6 +49,8 @@ from gui.common.styles import (
     WARNING_META_LABEL_STYLE,
     chapter_name_style,
     detail_thumb_style,
+    TEXT_SOFT,
+    TEXT_MUTED,
 )
 from gui.common.detail_shared import ACTION_BTN_H, ACTION_BTN_W, BATCH_ACTION_BTN_H, RADIUS, THUMB_H, THUMB_W
 from gui.discovery.cover_loader import DiscoveryCoverLoader
@@ -134,9 +136,10 @@ class DiscoveryDetailPage(QWidget):
         tb_layout.setContentsMargins(16, 0, 16, 0)
 
         self.back_btn = QPushButton(t("discovery.detail.back"))
-        self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color="#d8b7b0"))
+        self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color=TEXT_MUTED))
         self.back_btn.setIconSize(QSize(14, 14))
         self.back_btn.setCursor(Qt.PointingHandCursor)
+        self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color=TEXT_MUTED))
         self.back_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.back_btn.clicked.connect(self.main_window.open_discovery)
         tb_layout.addWidget(self.back_btn)
@@ -256,6 +259,25 @@ class DiscoveryDetailPage(QWidget):
         self.chapter_scroll.setWidget(self.chapter_list_widget)
         root.addWidget(self.chapter_scroll, 1)
         root.addWidget(self.batch_bar)
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(PAGE_BG_STYLE)
+        self.back_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
+        self.thumb_label.setStyleSheet(detail_thumb_style(RADIUS))
+        self.title_label.setStyleSheet(DETAIL_TITLE_STYLE)
+        self.author_label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
+        self.chapter_count_label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
+        self.description_label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
+        self.status_label.setStyleSheet(WARNING_META_LABEL_STYLE)
+        self.download_all_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
+        self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
+        self.selection_label.setStyleSheet(BATCH_LABEL_STYLE)
+        self.chapter_scroll.setStyleSheet(CHAPTER_SCROLL_AREA_STYLE)
+        self.chapter_list_widget.setStyleSheet(CHAPTER_LIST_WIDGET_STYLE)
+        if getattr(self, "series", None) is not None or getattr(self, "entry", None) is not None:
+            self._rebuild_chapter_list()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -566,7 +588,7 @@ class DiscoveryDetailPage(QWidget):
         layout.addWidget(select_slot)
 
         title = QLabel(chapter.title or chapter.url)
-        title.setStyleSheet(chapter_name_style("#ffd7cf"))
+        title.setStyleSheet(chapter_name_style(TEXT_SOFT))
         layout.addWidget(title, 1)
 
         single_btn = QToolButton()

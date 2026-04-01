@@ -30,6 +30,9 @@ from gui.common.strings import t
 from gui.common.styles import (
     BG,
     BORDER,
+    ACCENT,
+    TEXT_SOFT,
+    TEXT_MUTED,
     sized_button_style,
     BATCH_BAR_STYLE,
     BATCH_LABEL_STYLE,
@@ -103,12 +106,12 @@ class ProgressCircle(QWidget):
         rect = self.rect().adjusted(2, 2, -2, -2)
 
         # Background ring
-        painter.setPen(QPen(QColor("#4b302c"), 3))
+        painter.setPen(QPen(QColor(BORDER), 3))
         painter.drawEllipse(rect)
 
         # Progress arc (green)
         if self._percent > 0:
-            pen = QPen(QColor("#ff8a7a"), 3)
+            pen = QPen(QColor(ACCENT), 3)
             pen.setCapStyle(Qt.RoundCap)
             painter.setPen(pen)
             start_angle = -90 * 16
@@ -120,7 +123,7 @@ class ProgressCircle(QWidget):
         font.setPixelSize(9)
         font.setBold(True)
         painter.setFont(font)
-        painter.setPen(QColor("#fff0ec"))
+        painter.setPen(QColor(TEXT))
         painter.drawText(rect, Qt.AlignCenter, f"{self._percent}%")
 
 
@@ -224,9 +227,9 @@ def _scaled_preview_image(path: str, width: int, height: int, radius: int = 12) 
         image = QImage(path)
     if image.isNull():
         placeholder = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
-        placeholder.fill(QColor("#171111"))
+        placeholder.fill(QColor(SURFACE))
         painter = QPainter(placeholder)
-        painter.setPen(QColor("#9b7670"))
+        painter.setPen(QColor(TEXT_MUTED))
         painter.drawText(placeholder.rect(), Qt.AlignCenter, t("library.detail.preview_unavailable"))
         painter.end()
         return placeholder
@@ -259,8 +262,8 @@ def _preview_placeholder_pixmap(width: int, height: int, radius: int = 12) -> QP
     painter.setRenderHint(QPainter.Antialiasing)
     path_shape = QPainterPath()
     path_shape.addRoundedRect(0, 0, width, height, radius, radius)
-    painter.fillPath(path_shape, QColor("#1d1514"))
-    painter.setPen(QPen(QColor("#3c2522"), 1))
+    painter.fillPath(path_shape, QColor(SURFACE))
+    painter.setPen(QPen(QColor(BORDER), 1))
     painter.drawPath(path_shape)
     painter.end()
     return pixmap
@@ -310,7 +313,7 @@ class MangaPageTile(QFrame):
         self._apply_preview_frame()
 
     def _apply_preview_frame(self) -> None:
-        border = "2px solid #c5352f" if self._scene_count > 0 else "none"
+        border = f"2px solid {ACCENT}" if self._scene_count > 0 else "none"
         self.preview_label.setStyleSheet(
             f"""
             QLabel {{
@@ -407,14 +410,14 @@ class DetailPage(QWidget):
         tb_layout.setContentsMargins(16, 0, 16, 0)
 
         self.back_btn = QPushButton(t("library.detail.back"))
-        self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color="#d8b7b0"))
+        self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color=TEXT_MUTED))
         self.back_btn.setIconSize(QSize(14, 14))
         self.back_btn.setCursor(Qt.PointingHandCursor)
         self.back_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
         self.back_btn.clicked.connect(self._go_back)
 
         self.edit_btn = QPushButton(t("library.detail.edit"))
-        self.edit_btn.setIcon(qta.icon("fa5s.edit", color="#d8b7b0"))
+        self.edit_btn.setIcon(qta.icon("fa5s.edit", color=TEXT_MUTED))
         self.edit_btn.setIconSize(QSize(14, 14))
         self.edit_btn.setCursor(Qt.PointingHandCursor)
         self.edit_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
@@ -427,7 +430,7 @@ class DetailPage(QWidget):
         self.bookmark_btn.clicked.connect(self._toggle_webtoon_bookmark)
 
         self.saved_marks_btn = QPushButton(t("library.detail.saved"))
-        self.saved_marks_btn.setIcon(qta.icon("fa5s.bookmark", color="#d8b7b0"))
+        self.saved_marks_btn.setIcon(qta.icon("fa5s.bookmark", color=TEXT_MUTED))
         self.saved_marks_btn.setIconSize(QSize(14, 14))
         self.saved_marks_btn.setCursor(Qt.PointingHandCursor)
         self.saved_marks_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
@@ -482,7 +485,7 @@ class DetailPage(QWidget):
         self.update_progress_circle.hide()
 
         self.continue_btn = QPushButton(t("library.detail.continue"))
-        self.continue_btn.setIcon(qta.icon("fa5s.play", color="#ffffff"))
+        self.continue_btn.setIcon(qta.icon("fa5s.play", color=BG))
         self.continue_btn.setIconSize(QSize(12, 12))
         self.continue_btn.setCursor(Qt.PointingHandCursor)
         self.continue_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
@@ -491,7 +494,7 @@ class DetailPage(QWidget):
         self.continue_btn.hide()
 
         self.start_btn = QPushButton(t("library.detail.start"))
-        self.start_btn.setIcon(qta.icon("fa5s.step-backward", color="#ffffff"))
+        self.start_btn.setIcon(qta.icon("fa5s.step-backward", color=BG))
         self.start_btn.setIconSize(QSize(12, 12))
         self.start_btn.setCursor(Qt.PointingHandCursor)
         self.start_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
@@ -499,7 +502,7 @@ class DetailPage(QWidget):
         self.start_btn.clicked.connect(self._start_from_beginning)
 
         self.update_btn = QPushButton(t("library.detail.update"))
-        self.update_btn.setIcon(qta.icon("fa5s.sync", color="#ffffff"))
+        self.update_btn.setIcon(qta.icon("fa5s.sync", color=TEXT))
         self.update_btn.setIconSize(QSize(12, 12))
         self.update_btn.setCursor(Qt.PointingHandCursor)
         self.update_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
@@ -508,7 +511,7 @@ class DetailPage(QWidget):
         self.update_btn.hide()
 
         self.download_new_btn = QPushButton(t("library.detail.download_new"))
-        self.download_new_btn.setIcon(qta.icon("fa5s.download", color="#ffffff"))
+        self.download_new_btn.setIcon(qta.icon("fa5s.download", color=TEXT))
         self.download_new_btn.setIconSize(QSize(12, 12))
         self.download_new_btn.setCursor(Qt.PointingHandCursor)
         self.download_new_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
@@ -552,7 +555,7 @@ class DetailPage(QWidget):
         self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
 
         self.sort_btn = QPushButton(t("library.detail.sort_latest"))
-        self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#d8b7b0"))
+        self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color=TEXT_MUTED))
         self.sort_btn.setIconSize(QSize(12, 12))
         self.sort_btn.setCursor(Qt.PointingHandCursor)
         self.sort_btn.setFixedHeight(24)
@@ -561,7 +564,7 @@ class DetailPage(QWidget):
         self.sort_btn.clicked.connect(self._toggle_sort)
 
         self.hide_specials_btn = QPushButton(t("library.detail.hide_filler"))
-        self.hide_specials_btn.setIcon(qta.icon("fa5s.eye-slash", color="#d8b7b0"))
+        self.hide_specials_btn.setIcon(qta.icon("fa5s.eye-slash", color=TEXT_MUTED))
         self.hide_specials_btn.setIconSize(QSize(12, 12))
         self.hide_specials_btn.setCursor(Qt.PointingHandCursor)
         self.hide_specials_btn.setCheckable(True)
@@ -570,7 +573,7 @@ class DetailPage(QWidget):
         self.hide_specials_btn.clicked.connect(self._toggle_hide_specials)
 
         self.bookmarks_filter_btn = QPushButton(t("library.detail.bookmarked"))
-        self.bookmarks_filter_btn.setIcon(qta.icon("fa5s.star", color="#d8b7b0"))
+        self.bookmarks_filter_btn.setIcon(qta.icon("fa5s.star", color=TEXT_MUTED))
         self.bookmarks_filter_btn.setIconSize(QSize(12, 12))
         self.bookmarks_filter_btn.setCursor(Qt.PointingHandCursor)
         self.bookmarks_filter_btn.setCheckable(True)
@@ -579,7 +582,7 @@ class DetailPage(QWidget):
         self.bookmarks_filter_btn.clicked.connect(self._toggle_bookmarks_filter)
 
         self.scene_marks_filter_btn = QPushButton(t("library.detail.scenes"))
-        self.scene_marks_filter_btn.setIcon(qta.icon("fa5s.map-marker-alt", color="#d8b7b0"))
+        self.scene_marks_filter_btn.setIcon(qta.icon("fa5s.map-marker-alt", color=TEXT_MUTED))
         self.scene_marks_filter_btn.setIconSize(QSize(12, 12))
         self.scene_marks_filter_btn.setCursor(Qt.PointingHandCursor)
         self.scene_marks_filter_btn.setCheckable(True)
@@ -720,7 +723,7 @@ class DetailPage(QWidget):
         self.hide_specials = self.settings_store.get_hide_filler(webtoon.name)
         self.hide_specials_btn.setChecked(self.hide_specials)
         icon_name = "fa5s.eye-slash" if self.hide_specials else "fa5s.eye"
-        self.hide_specials_btn.setIcon(qta.icon(icon_name, color="#d8b7b0"))
+        self.hide_specials_btn.setIcon(qta.icon(icon_name, color=TEXT_MUTED))
         self.hide_specials_btn.setIconSize(QSize(12, 12))
 
         self.title_label.setText(webtoon.name)
@@ -868,7 +871,7 @@ class DetailPage(QWidget):
         set_selector_visibility(row, select_btn, force=self._chapter_selection_visible())
         layout.addWidget(select_slot)
 
-        color = "#ff8a7a" if is_last_read else "#ffd7cf"
+        color = ACCENT if is_last_read else TEXT_SOFT
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
@@ -891,7 +894,7 @@ class DetailPage(QWidget):
             edit_pages_btn = QToolButton(row)
             edit_pages_btn.setCursor(Qt.PointingHandCursor)
             edit_pages_btn.setAutoRaise(True)
-            edit_pages_btn.setIcon(qta.icon("fa5s.th-large", color="#d8b7b0"))
+            edit_pages_btn.setIcon(qta.icon("fa5s.th-large", color=TEXT_MUTED))
             edit_pages_btn.setIconSize(QSize(14, 14))
             edit_pages_btn.setToolTip(t("library.detail.edit_chapter"))
             edit_pages_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
@@ -930,7 +933,7 @@ class DetailPage(QWidget):
 
         if is_last_read:
             last_read_icon = QLabel()
-            last_read_icon.setPixmap(qta.icon("fa5s.bookmark", color="#ff8a7a").pixmap(QSize(14, 14)))
+            last_read_icon.setPixmap(qta.icon("fa5s.bookmark", color=ACCENT).pixmap(QSize(14, 14)))
             last_read_icon.setStyleSheet(LAST_READ_ICON_STYLE)
             layout.addWidget(last_read_icon)
 
@@ -981,7 +984,7 @@ class DetailPage(QWidget):
 
         display_name = entry.get("display_name") or entry.get("local_name") or t("library.detail.new_chapter")
         name_lbl = QLabel(display_name)
-        name_lbl.setStyleSheet(chapter_name_style("#ffd7cf"))
+        name_lbl.setStyleSheet(chapter_name_style(TEXT_SOFT))
         title_row.addWidget(name_lbl)
 
         new_chip = QLabel(t("library.detail.new_chip"))
@@ -1253,7 +1256,7 @@ class DetailPage(QWidget):
             self.bookmark_btn.setText(t("library.detail.bookmarked_active"))
         else:
             self.bookmark_btn.setText(t("library.detail.bookmark"))
-        color = "#f5c451" if self.webtoon_bookmarked else "#d8b7b0"
+        color = ACCENT if self.webtoon_bookmarked else TEXT_MUTED
         self.bookmark_btn.setIcon(qta.icon("fa5s.star", color=color))
 
     def _toggle_webtoon_bookmark(self):
@@ -1266,7 +1269,7 @@ class DetailPage(QWidget):
         self.main_window.library.refresh_dynamic_state()
 
     def _apply_bookmark_icon(self, button: QToolButton, is_bookmarked: bool):
-        color = "#f5c451" if is_bookmarked else "#9b7670"
+        color = ACCENT if is_bookmarked else TEXT_MUTED
         button.setIcon(qta.icon("fa5s.star", color=color))
 
     def _on_chapter_row_hover(self, row: QWidget, button: QToolButton, hovered: bool, event):
@@ -1576,7 +1579,7 @@ class DetailPage(QWidget):
         self.hide_specials = self.hide_specials_btn.isChecked()
         logger.info("Hide filler toggled for %s: %s", self.webtoon.name if self.webtoon else "<none>", self.hide_specials)
         icon_name = "fa5s.eye-slash" if self.hide_specials else "fa5s.eye"
-        self.hide_specials_btn.setIcon(qta.icon(icon_name, color="#d8b7b0"))
+        self.hide_specials_btn.setIcon(qta.icon(icon_name, color=TEXT_MUTED))
         self.hide_specials_btn.setIconSize(QSize(12, 12))
 
         if self.webtoon:
@@ -2150,6 +2153,55 @@ class DetailPage(QWidget):
         logger.info("Returning from detail page to library")
         self.main_window.open_library()
 
+    def apply_theme(self):
+        self.setStyleSheet(PAGE_BG_STYLE)
+        if hasattr(self, "back_btn"):
+            self.back_btn.setIcon(qta.icon("fa5s.arrow-left", color=TEXT_MUTED))
+            self.back_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
+        if hasattr(self, "edit_btn"):
+            self.edit_btn.setIcon(qta.icon("fa5s.edit", color=TEXT_MUTED))
+            self.edit_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
+        if hasattr(self, "saved_marks_btn"):
+            self.saved_marks_btn.setIcon(qta.icon("fa5s.bookmark", color=TEXT_MUTED))
+            self.saved_marks_btn.setStyleSheet(TOOLBAR_TEXT_BUTTON_STYLE)
+        if hasattr(self, "sort_btn"):
+            icon_name = "fa5s.sort-amount-down" if getattr(self, "sort_latest_first", True) else "fa5s.sort-amount-up"
+            self.sort_btn.setIcon(qta.icon(icon_name, color=TEXT_MUTED))
+            self.sort_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_STYLE)
+        if hasattr(self, "hide_specials_btn"):
+            icon_name = "fa5s.eye-slash" if getattr(self, "hide_specials", False) else "fa5s.eye"
+            self.hide_specials_btn.setIcon(qta.icon(icon_name, color=TEXT_MUTED))
+            self.hide_specials_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE)
+        if hasattr(self, "bookmarks_filter_btn"):
+            self.bookmarks_filter_btn.setIcon(qta.icon("fa5s.star", color=TEXT_MUTED))
+            self.bookmarks_filter_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_GOLD_CHECKED_STYLE)
+        if hasattr(self, "scene_marks_filter_btn"):
+            self.scene_marks_filter_btn.setIcon(qta.icon("fa5s.map-marker-alt", color=TEXT_MUTED))
+            self.scene_marks_filter_btn.setStyleSheet(MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE)
+        if hasattr(self, "continue_btn"):
+            self.continue_btn.setIcon(qta.icon("fa5s.play", color=BG))
+            self.continue_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
+        if hasattr(self, "start_btn"):
+            self.start_btn.setIcon(qta.icon("fa5s.step-backward", color=BG))
+            self.start_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
+        if hasattr(self, "update_btn"):
+            self.update_btn.setIcon(qta.icon("fa5s.sync", color=TEXT))
+            self.update_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        if hasattr(self, "download_new_btn"):
+            self.download_new_btn.setIcon(qta.icon("fa5s.download", color=TEXT))
+            self.download_new_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
+        if hasattr(self, "batch_bar"):
+            self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
+        if hasattr(self, "selection_label"):
+            self.selection_label.setStyleSheet(BATCH_LABEL_STYLE)
+        if hasattr(self, "chapter_scroll"):
+            self.chapter_scroll.setStyleSheet(CHAPTER_SCROLL_AREA_STYLE)
+        if hasattr(self, "chapter_list_widget"):
+            self.chapter_list_widget.setStyleSheet(CHAPTER_LIST_WIDGET_STYLE)
+        if getattr(self, "webtoon", None) is not None and getattr(self, "progress_store", None) is not None:
+            self._sync_webtoon_bookmark_button()
+            self._build_chapter_list(self.progress_store.get(self.webtoon.name))
+
     def attach_update_service(self, service):
         if self._update_service is service:
             return
@@ -2341,10 +2393,10 @@ class DetailPage(QWidget):
         )
         if self.sort_latest_first:
             self.sort_btn.setText(t("library.detail.sort_latest"))
-            self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color="#d8b7b0"))
+            self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-down", color=TEXT_MUTED))
         else:
             self.sort_btn.setText(t("library.detail.sort_oldest"))
-            self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-up", color="#d8b7b0"))
+            self.sort_btn.setIcon(qta.icon("fa5s.sort-amount-up", color=TEXT_MUTED))
         self.sort_btn.setIconSize(QSize(12, 12))
         if self.webtoon is not None:
             self._chapter_display_order = self._ordered_chapters_for_display(self.webtoon.chapters)

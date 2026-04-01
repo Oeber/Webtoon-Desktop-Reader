@@ -38,6 +38,7 @@ from gui.common.styles import (
     STATUS_LABEL_STYLE,
     TRANSPARENT_BG_STYLE,
     card_image_border_style,
+    TEXT_MUTED,
 )
 from gui.discovery.cover_loader import DiscoveryCoverLoader
 from gui.downloader.download_widgets import SpinnerCircle
@@ -139,7 +140,7 @@ class DiscoveryEntryWidget(QFrame):
         self.thumb_label = QLabel(t("discovery.card.no_cover"), self)
         self.thumb_label.setAlignment(Qt.AlignCenter)
         self.thumb_label.setFixedSize(self._card_width, self._card_height)
-        self.thumb_label.setStyleSheet(card_image_border_style("#2a2a2a", CARD_RADIUS))
+        self._apply_card_border(hovered=False)
         layout.addWidget(self.thumb_label)
 
         self.title_label = DiscoveryTitleLabel(entry.title or t("discovery.card.untitled"), self)
@@ -172,6 +173,18 @@ class DiscoveryEntryWidget(QFrame):
         self._cover_failed = False
         if not self.entry.cover_url:
             self._apply_local_cover_fallback()
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(TRANSPARENT_BG_STYLE)
+        self.title_label.setStyleSheet(DISCOVERY_CARD_TITLE_STYLE)
+        self.count_label.setStyleSheet(DISCOVERY_CARD_COUNT_STYLE)
+        self.new_chip.setStyleSheet(NEW_CHIP_STYLE)
+        self._apply_card_border(hovered=self.underMouse())
+
+    def _apply_card_border(self, hovered: bool):
+        color = "#666666" if hovered else "#2a2a2a"
+        self.thumb_label.setStyleSheet(card_image_border_style(color, CARD_RADIUS))
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -181,11 +194,11 @@ class DiscoveryEntryWidget(QFrame):
         super().mouseReleaseEvent(event)
 
     def enterEvent(self, event):
-        self.thumb_label.setStyleSheet(card_image_border_style("#666666", CARD_RADIUS))
+        self._apply_card_border(hovered=True)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.thumb_label.setStyleSheet(card_image_border_style("#2a2a2a", CARD_RADIUS))
+        self._apply_card_border(hovered=False)
         super().leaveEvent(event)
 
     def ensure_cover_requested(self):
@@ -508,6 +521,29 @@ class SiteBrowserPage(QWidget):
         root.addWidget(self.scroll)
 
         self._reload_scrapers(load_catalog=False)
+
+    def apply_theme(self):
+        global DISCOVERY_LOADING_TITLE_STYLE, DISCOVERY_LOADING_DETAIL_STYLE
+        DISCOVERY_LOADING_TITLE_STYLE = f"color: {TEXT_MUTED}; font-size: 13px; font-weight: 600;"
+        DISCOVERY_LOADING_DETAIL_STYLE = f"color: {TEXT_MUTED}; font-size: 11px;"
+        self.setStyleSheet(PAGE_BG_STYLE)
+        self.site_combo.setStyleSheet(DISCOVERY_COMBO_STYLE)
+        self.page_label.setStyleSheet(SECTION_LABEL_STYLE)
+        self.search_input.setStyleSheet(SEARCH_INPUT_STYLE)
+        self.downloaded_only_btn.setStyleSheet(DISCOVERY_FILTER_BUTTON_STYLE)
+        self.load_more_btn.setStyleSheet(BUTTON_STYLE)
+        self.refresh_btn.setStyleSheet(BUTTON_STYLE)
+        self.error_label.setStyleSheet(ERROR_LABEL_STYLE)
+        self.loading_frame.setStyleSheet(DISCOVERY_LOADING_FRAME_STYLE)
+        self.loading_title_label.setStyleSheet(DISCOVERY_LOADING_TITLE_STYLE)
+        self.loading_detail_label.setStyleSheet(DISCOVERY_LOADING_DETAIL_STYLE)
+        self.status_label.setStyleSheet(STATUS_LABEL_STYLE)
+        self.section_label.setStyleSheet(SECTION_LABEL_STYLE)
+        self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
+        self.content.setStyleSheet(PAGE_BG_STYLE)
+        for widget in self._entry_widgets:
+            if hasattr(widget, "apply_theme"):
+                widget.apply_theme()
 
     def showEvent(self, event):
         super().showEvent(event)

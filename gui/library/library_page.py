@@ -181,6 +181,16 @@ class CategorySection(QFrame):
 
         self._apply_drop_style()
         self.set_title(title, 0)
+        self.apply_theme()
+
+    def apply_theme(self):
+        self.setStyleSheet(TRANSPARENT_BG_STYLE)
+        self.drag_handle_btn.setStyleSheet(SECTION_MENU_BUTTON_STYLE)
+        self.header_btn.setStyleSheet(SECTION_HEADER_BUTTON_STYLE)
+        self.menu_btn.setStyleSheet(SECTION_MENU_BUTTON_STYLE)
+        self.grid_host.setStyleSheet(TRANSPARENT_BG_STYLE)
+        self.drop_indicator.setStyleSheet(DROP_INDICATOR_STYLE)
+        self._apply_drop_style()
 
     def set_title(self, title: str, count: int):
         self._title = title
@@ -684,6 +694,33 @@ class LibraryPage(QWidget):
         card_width = self._card_width()
         available = max(width - PAGE_PADDING * 2, card_width + 16)
         return max(1, available // (card_width + 16 + CARD_SPACING))
+
+    def apply_theme(self):
+        self.setStyleSheet(PAGE_BG_STYLE)
+        self.controls_bar.setStyleSheet(LIBRARY_CONTROLS_BAR_STYLE)
+        self.search.setStyleSheet(SEARCH_INPUT_STYLE)
+        self.size_label.setStyleSheet(TEXT_MUTED_LABEL_STYLE)
+        self.size_slider.setStyleSheet(library_scale_slider_style())
+        self.size_value_label.setStyleSheet(LIBRARY_SCALE_VALUE_LABEL_STYLE)
+        self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
+        self.batch_label.setStyleSheet(BATCH_LABEL_STYLE)
+        self.mark_completed_btn.setStyleSheet(BUTTON_STYLE)
+        self.bookmark_selected_btn.setStyleSheet(BUTTON_STYLE)
+        self.update_selected_btn.setStyleSheet(BUTTON_STYLE)
+        self.move_selected_btn.setStyleSheet(BUTTON_STYLE)
+        self.delete_selected_btn.setStyleSheet(DELETE_BUTTON_STYLE)
+        self.clear_selection_btn.setStyleSheet(BUTTON_STYLE)
+        self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
+        self.container.setStyleSheet(PAGE_BG_STYLE)
+        self._input_blocker.setStyleSheet(TRANSPARENT_BG_STYLE)
+        for section in self._section_widgets.values():
+            if hasattr(section, "apply_theme"):
+                section.apply_theme()
+            for index in range(section.grid.count()):
+                item = section.grid.itemAt(index)
+                widget = item.widget() if item is not None else None
+                if widget is not None and hasattr(widget, "apply_theme"):
+                    widget.apply_theme()
 
     def _clear_sections(self):
         while self.sections_layout.count():
