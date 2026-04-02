@@ -164,6 +164,8 @@ class WindowNavigator:
 
 
 class SiteAuthorizationController:
+    AUTO_AUTH_GRACE_MS = 3500
+
     def __init__(self, window: "MainWindow"):
         self.window = window
         self._dialog_open = False
@@ -181,10 +183,9 @@ class SiteAuthorizationController:
 
             dialog = SiteAuthDialog(site_name, url=url, parent=None)
             dialog.setAttribute(Qt.WA_DeleteOnClose, True)
-            dialog.setModal(True)
             self._dialog_open = True
             self._launch_pending = False
-            return bool(dialog.exec())
+            return bool(dialog.exec_with_background_grace(self.AUTO_AUTH_GRACE_MS))
         except Exception as exc:
             self._launch_pending = False
             logger.exception("Failed to open site authorization dialog for %s", site_name)
@@ -603,6 +604,3 @@ class SidebarController:
         else:
             self.btn_downloader.setText("")
         self.refresh_nav_state()
-
-
-

@@ -1,7 +1,7 @@
 from urllib.parse import urlparse
 
 import requests
-from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtCore import QEventLoop, QTimer, QUrl
 from PySide6.QtNetwork import QNetworkCookie
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -153,6 +153,40 @@ class SiteAuthDialog(QDialog):
 
         start_url = str(url or "").strip() or self.site_home_url
         self.view.load(QUrl(start_url))
+
+    def exec_with_background_grace(self, grace_ms: int = 3500) -> int:
+        if self._has_reusable_session():
+            self._save_and_accept(auto=True)
+            return self.result()
+
+        wait_loop = QEventLoop(self)
+        grace_timer = QTimer(self)
+        grace_timer.setSingleShot(True)
+        grace_timer.timeout.connect(wait_loop.quit)
+        self.finished.connect(wait_loop.quit)
+        try:
+            grace_timer.start(max(0, int(grace_ms)))
+            wait_loop.exec()
+        finally:
+            try:
+                grace_timer.stop()
+            except Exception:
+                pass
+            try:
+                self.finished.disconnect(wait_loop.quit)
+            except Exception:
+                pass
+
+        if self.result() != 0:
+            return self.result()
+
+        if self._has_reusable_session():
+            self._save_and_accept(auto=True)
+            if self.result() != 0:
+                return self.result()
+
+        self.setModal(True)
+        return self.exec()
 
     def _open_home(self):
         self._auto_return_pending = False
@@ -532,5 +566,3 @@ class SiteAuthDialog(QDialog):
             profile.deleteLater()
         except Exception:
             pass
-
-
