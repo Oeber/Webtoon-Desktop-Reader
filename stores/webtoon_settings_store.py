@@ -14,6 +14,11 @@ THUMBNAILS_DIR = data_path("thumbnails")
 logger = get_logger(__name__)
 
 _instance = None
+_DEFAULT_BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/122.0.0.0 Safari/537.36"
+)
 
 
 def get_instance() -> "WebtoonSettingsStore":
@@ -62,7 +67,9 @@ def _download_url_image(
     try:
         from PIL import Image
 
-        request_headers = dict(headers or _thumbnail_request_headers(url))
+        request_headers = _thumbnail_request_headers(url)
+        if headers:
+            request_headers.update({str(key): str(value) for key, value in headers.items()})
         data = None
         if callable(fetcher):
             data = fetcher(url, request_headers)
@@ -82,7 +89,11 @@ def _download_url_image(
 
 
 def _thumbnail_request_headers(url: str) -> dict[str, str]:
-    headers = {"User-Agent": "Mozilla/5.0 (WebtoonReader/1.0)"}
+    headers = {
+        "User-Agent": _DEFAULT_BROWSER_USER_AGENT,
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
     site_name = site_name_for_url(url)
     if not site_name:
         return headers
