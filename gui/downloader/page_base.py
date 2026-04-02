@@ -2,13 +2,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from core.app_logging import get_logger
-from gui.common.styles import (
-    ERROR_LABEL_STYLE,
-    PAGE_BG_STYLE,
-    PAGE_TITLE_STYLE,
-    SCROLL_AREA_STYLE,
-    SECTION_LABEL_STYLE,
-)
+from gui.common import styles as app_styles
 from gui.downloader.download_service import DownloadService
 
 logger = get_logger(__name__)
@@ -37,31 +31,31 @@ class DownloadHistoryPageBase(QWidget):
 
     def _build_page_shell(self, title_text: str, section_text: str):
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet(PAGE_BG_STYLE)
+        self.setStyleSheet(app_styles.PAGE_BG_STYLE)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(32, 32, 32, 0)
         layout.setSpacing(20)
 
-        title = QLabel(title_text)
-        title.setStyleSheet(PAGE_TITLE_STYLE)
-        layout.addWidget(title)
+        self.title_label = QLabel(title_text)
+        self.title_label.setStyleSheet(app_styles.PAGE_TITLE_STYLE)
+        layout.addWidget(self.title_label)
 
         self.error_label = QLabel("")
-        self.error_label.setStyleSheet(ERROR_LABEL_STYLE)
+        self.error_label.setStyleSheet(app_styles.ERROR_LABEL_STYLE)
         self.error_label.hide()
         layout.addWidget(self.error_label)
 
-        section_label = QLabel(section_text)
-        section_label.setStyleSheet(SECTION_LABEL_STYLE)
-        layout.addWidget(section_label)
+        self.section_label = QLabel(section_text)
+        self.section_label.setStyleSheet(app_styles.SECTION_LABEL_STYLE)
+        layout.addWidget(self.section_label)
 
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
-        self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
+        self.scroll.setStyleSheet(app_styles.SCROLL_AREA_STYLE)
 
         self.history_container = QWidget()
-        self.history_container.setStyleSheet(PAGE_BG_STYLE)
+        self.history_container.setStyleSheet(app_styles.PAGE_BG_STYLE)
         self.history_layout = QVBoxLayout(self.history_container)
         self.history_layout.setContentsMargins(0, 0, 0, 0)
         self.history_layout.setSpacing(8)
@@ -69,6 +63,14 @@ class DownloadHistoryPageBase(QWidget):
 
         self.scroll.setWidget(self.history_container)
         layout.addWidget(self.scroll, 1)
+
+    def apply_theme(self):
+        self.setStyleSheet(app_styles.PAGE_BG_STYLE)
+        self.title_label.setStyleSheet(app_styles.PAGE_TITLE_STYLE)
+        self.error_label.setStyleSheet(app_styles.ERROR_LABEL_STYLE)
+        self.section_label.setStyleSheet(app_styles.SECTION_LABEL_STYLE)
+        self.scroll.setStyleSheet(app_styles.SCROLL_AREA_STYLE)
+        self.history_container.setStyleSheet(app_styles.PAGE_BG_STYLE)
 
     def set_error_text(self, text: str):
         self.error_label.setText(text)

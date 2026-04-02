@@ -5,25 +5,13 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from gui.common.styles import (
-    ACCENT,
-    ACCENT_MUTED,
-    BUTTON_STYLE_DISABLED,
-    DOWNLOAD_ENTRY_FRAME_STYLE,
-    DOWNLOAD_ENTRY_NAME_STYLE,
-    DOWNLOAD_ENTRY_SUB_LABEL_STYLE,
-    DOWNLOAD_ENTRY_THUMB_STYLE,
-    INPUT_STYLE,
-    TRANSPARENT_BORDERLESS_STYLE,
-    status_text_style,
-)
+from gui.common import styles as app_styles
 from gui.common.strings import t
-BTN_STYLE = BUTTON_STYLE_DISABLED
 
 STATUS_COLORS = {
     "Ready": "#b18b84",
     "Queued": "#d7b1aa",
-    "Downloading": ACCENT,
+    "Downloading": app_styles.ACCENT,
     "Completed": "#4caf50",
     "Failed": "#f44336",
     "Cancelled": "#b18b84",
@@ -103,7 +91,7 @@ class SpinnerCircle(QWidget):
         if self._spinning:
             painter.setPen(QPen(QColor("#4b302c"), 3))
             painter.drawEllipse(rect)
-            pen = QPen(QColor(ACCENT), 3)
+            pen = QPen(QColor(app_styles.ACCENT), 3)
             pen.setCapStyle(Qt.RoundCap)
             painter.setPen(pen)
             painter.drawArc(rect, -self._angle * 16, 270 * 16)
@@ -133,7 +121,7 @@ class SpinnerCircle(QWidget):
             font.setPixelSize(9)
             font.setBold(True)
             painter.setFont(font)
-            painter.setPen(QColor(ACCENT_MUTED))
+            painter.setPen(QColor(app_styles.ACCENT_MUTED))
             painter.drawText(self.rect(), Qt.AlignCenter, f"{self._percent}%")
 
 
@@ -146,7 +134,7 @@ class DownloadEntry(QFrame):
         self.thumbnail_path = ""
         self._status = "Downloading"
         self.setCursor(Qt.ArrowCursor)
-        self.setStyleSheet(DOWNLOAD_ENTRY_FRAME_STYLE)
+        self.setStyleSheet(app_styles.DOWNLOAD_ENTRY_FRAME_STYLE)
         self.setProperty("clickable", False)
 
         layout = QHBoxLayout(self)
@@ -156,18 +144,18 @@ class DownloadEntry(QFrame):
         self.thumb_label = QLabel()
         self.thumb_label.setFixedSize(52, 78)
         self.thumb_label.setAlignment(Qt.AlignCenter)
-        self.thumb_label.setStyleSheet(DOWNLOAD_ENTRY_THUMB_STYLE)
+        self.thumb_label.setStyleSheet(app_styles.DOWNLOAD_ENTRY_THUMB_STYLE)
 
         text_col = QVBoxLayout()
         text_col.setContentsMargins(0, 0, 0, 0)
         text_col.setSpacing(4)
 
         self.name_label = QLabel(name)
-        self.name_label.setStyleSheet(DOWNLOAD_ENTRY_NAME_STYLE)
+        self.name_label.setStyleSheet(app_styles.DOWNLOAD_ENTRY_NAME_STYLE)
         self.name_label.setWordWrap(True)
 
         self.sub_label = QLabel("")
-        self.sub_label.setStyleSheet(DOWNLOAD_ENTRY_SUB_LABEL_STYLE)
+        self.sub_label.setStyleSheet(app_styles.DOWNLOAD_ENTRY_SUB_LABEL_STYLE)
         self.sub_label.setOpenExternalLinks(True)
         self.sub_label.setTextFormat(Qt.RichText)
         self.sub_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
@@ -181,7 +169,7 @@ class DownloadEntry(QFrame):
         self.status_label = QLabel(status_text("Downloading"))
         self.status_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.status_label.setFixedWidth(110)
-        self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
+        self.status_label.setStyleSheet(app_styles.status_text_style(STATUS_COLORS["Downloading"]))
 
         layout.addWidget(self.thumb_label)
         layout.addLayout(text_col, stretch=1)
@@ -195,13 +183,14 @@ class DownloadEntry(QFrame):
 
         self.spinner.set_progress(percent)
         self.status_label.setText(f"{current} / {total}")
-        self.status_label.setStyleSheet(status_text_style(STATUS_COLORS["Downloading"]))
+        self.status_label.setStyleSheet(app_styles.status_text_style(STATUS_COLORS["Downloading"]))
 
     def set_status(self, status: str):
         self._status = status
-        color = STATUS_COLORS.get(status, ACCENT_MUTED)
+        STATUS_COLORS["Downloading"] = app_styles.ACCENT
+        color = STATUS_COLORS.get(status, app_styles.ACCENT_MUTED)
         self.status_label.setText(status_text(status))
-        self.status_label.setStyleSheet(status_text_style(color))
+        self.status_label.setStyleSheet(app_styles.status_text_style(color))
 
         clickable = status == "Completed"
         self.setProperty("clickable", clickable)
@@ -260,13 +249,13 @@ class CancellableDownloadEntry(DownloadEntry):
         self.on_cancel = on_cancel
 
         self.cancel_btn = QPushButton(t("download.action.cancel"))
-        self.cancel_btn.setStyleSheet(BTN_STYLE)
+        self.cancel_btn.setStyleSheet(app_styles.BUTTON_STYLE_DISABLED)
         self.cancel_btn.setFixedWidth(100)
         self.cancel_btn.clicked.connect(self._cancel_requested)
         self.cancel_btn.hide()
 
         controls = QWidget()
-        controls.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        controls.setStyleSheet(app_styles.TRANSPARENT_BORDERLESS_STYLE)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
@@ -302,12 +291,12 @@ class UpdateEntry(DownloadEntry):
         self.sub_label.show()
 
         self.update_btn = QPushButton(t("download.action.update"))
-        self.update_btn.setStyleSheet(BTN_STYLE)
+        self.update_btn.setStyleSheet(app_styles.BUTTON_STYLE_DISABLED)
         self.update_btn.setFixedWidth(100)
         self.update_btn.clicked.connect(lambda: self.on_update(self))
 
         controls = QWidget()
-        controls.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        controls.setStyleSheet(app_styles.TRANSPARENT_BORDERLESS_STYLE)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
@@ -366,17 +355,17 @@ class HistoryDownloadEntry(DownloadEntry):
         self.sub_label.setWordWrap(True)
 
         self.retry_btn = QPushButton(t("download.action.retry"))
-        self.retry_btn.setStyleSheet(BTN_STYLE)
+        self.retry_btn.setStyleSheet(app_styles.BUTTON_STYLE_DISABLED)
         self.retry_btn.setFixedWidth(90)
         self.retry_btn.clicked.connect(self._retry)
 
         self.authorize_btn = QPushButton(t("download.action.authorize"))
-        self.authorize_btn.setStyleSheet(BTN_STYLE)
+        self.authorize_btn.setStyleSheet(app_styles.BUTTON_STYLE_DISABLED)
         self.authorize_btn.setFixedWidth(90)
         self.authorize_btn.clicked.connect(self._authorize)
 
         self.controls = QWidget()
-        self.controls.setStyleSheet(TRANSPARENT_BORDERLESS_STYLE)
+        self.controls.setStyleSheet(app_styles.TRANSPARENT_BORDERLESS_STYLE)
         controls_layout = QVBoxLayout(self.controls)
         controls_layout.setContentsMargins(0, 0, 0, 0)
         controls_layout.setSpacing(8)
