@@ -3,6 +3,12 @@ import threading
 from pathlib import Path
 
 from core.app_logging import get_logger
+from core.chapter_storage import (
+    SUPPORTED_ARCHIVE_EXTENSIONS,
+    chapter_has_text_payload,
+    count_chapter_images,
+    list_series_chapters,
+)
 from stores.settings_store import (
     DEFAULT_LIBRARY_FOLDER_NAMES,
     load_library_content_paths,
@@ -11,7 +17,6 @@ from stores.settings_store import (
 
 
 logger = get_logger(__name__)
-SUPPORTED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
 _LIBRARY_LAYOUT_LOCK = threading.Lock()
 
 
@@ -64,19 +69,11 @@ def infer_content_type_from_folder(webtoon_path: str, stored_content_type: str |
     saw_text = False
     saw_images = False
     try:
-        for chapter_dir in path.iterdir():
-            if not chapter_dir.is_dir():
-                continue
-            if chapter_dir.joinpath("chapter.json").is_file():
+        for chapter_name in list_series_chapters(str(path)):
+            if chapter_has_text_payload(str(path), chapter_name):
                 saw_text = True
-            try:
-                if any(
-                    entry.is_file() and entry.suffix.lower() in SUPPORTED_IMAGE_EXTENSIONS
-                    for entry in chapter_dir.iterdir()
-                ):
-                    saw_images = True
-            except OSError:
-                continue
+            if count_chapter_images(str(path), chapter_name) > 0:
+                saw_images = True
             if saw_text and saw_images:
                 return "webtoon"
     except OSError:
@@ -116,6 +113,73 @@ def content_type_root(
     if create:
         root.mkdir(parents=True, exist_ok=True)
     return str(root)
+
+
+def _matching_archive_file(root: Path, title_name: str) -> Path | None:
+    normalized = str(title_name or "").strip().casefold()
+    if not normalized or not root.exists() or not root.is_dir():
+        return None
+    try:
+        for entry in root.iterdir():
+            if not entry.is_file() or entry.suffix.lower() not in SUPPORTED_ARCHIVE_EXTENSIONS:
+                continue
+            if entry.stem.casefold() == normalized:
+                return entry
+    except OSError:
+        return None
+    return None
+
+
+def _append_library_entry(names: list[str], seen: set[str], entry: Path) -> None:
+    title_name = entry.name if entry.is_dir() else entry.stem
+    if title_name in seen:
+        logger.warning("Duplicate library title detected across content folders: %s", title_name)
+        return
+    seen.add(title_name)
+    names.append(title_name)
+
+
+def resolve_existing_webtoon_storage_path(
+    library_path: str,
+    webtoon_name: str,
+    *,
+    settings_store=None,
+    settings_row: dict | None = None,
+    content_type: str | None = None,
+) -> str | None:
+    normalized_name = str(webtoon_name or "").strip()
+    if not normalized_name:
+        return None
+
+    ensure_library_content_layout(library_path, settings_store)
+
+    preferred_type = normalize_content_type(content_type or (settings_row or {}).get("content_type"), default="webtoon")
+    candidate_roots: list[Path] = [Path(content_type_root(library_path, preferred_type, create=False))]
+
+    if settings_store is not None and (not settings_row or "content_type" not in settings_row):
+        stored_type = normalize_content_type(settings_store.get_content_type(normalized_name), default="webtoon")
+        stored_root = Path(content_type_root(library_path, stored_type, create=False))
+        if all(str(existing) != str(stored_root) for existing in candidate_roots):
+            candidate_roots.append(stored_root)
+
+    for type_name in DEFAULT_LIBRARY_FOLDER_NAMES:
+        root = Path(content_type_root(library_path, type_name, create=False))
+        if all(str(existing) != str(root) for existing in candidate_roots):
+            candidate_roots.append(root)
+
+    legacy_root = Path(library_path)
+    if all(str(existing) != str(legacy_root) for existing in candidate_roots):
+        candidate_roots.append(legacy_root)
+
+    for root in candidate_roots:
+        candidate = root / normalized_name
+        if candidate.is_dir():
+            return str(candidate)
+        archive = _matching_archive_file(root, normalized_name)
+        if archive is not None:
+            return str(archive)
+
+    return None
 
 
 def ensure_library_content_layout(library_path: str, settings_store=None) -> None:
@@ -177,24 +241,6 @@ def resolve_webtoon_path(
 
     preferred_type = normalize_content_type(content_type or (settings_row or {}).get("content_type"), default="webtoon")
     preferred_path = Path(content_type_root(library_path, preferred_type, create=create_parent)) / normalized_name
-    if preferred_path.is_dir():
-        return str(preferred_path)
-
-    if settings_store is not None and (not settings_row or "content_type" not in settings_row):
-        stored_type = normalize_content_type(settings_store.get_content_type(normalized_name), default="webtoon")
-        candidate = Path(content_type_root(library_path, stored_type, create=create_parent)) / normalized_name
-        if candidate.is_dir():
-            return str(candidate)
-
-    for content_type in DEFAULT_LIBRARY_FOLDER_NAMES:
-        candidate = Path(content_type_root(library_path, content_type, create=False)) / normalized_name
-        if candidate.is_dir():
-            return str(candidate)
-
-    legacy_path = Path(library_path) / normalized_name
-    if legacy_path.is_dir():
-        return str(legacy_path)
-
     return str(preferred_path)
 
 
@@ -209,22 +255,19 @@ def list_library_entries(library_path: str) -> list[str]:
         if not content_root.exists() or not content_root.is_dir():
             continue
         for entry in sorted(content_root.iterdir(), key=lambda item: item.name.casefold()):
-            if not entry.is_dir():
+            if not entry.is_dir() and (not entry.is_file() or entry.suffix.lower() not in SUPPORTED_ARCHIVE_EXTENSIONS):
                 continue
-            if entry.name in seen:
-                logger.warning("Duplicate library title detected across content folders: %s", entry.name)
-                continue
-            seen.add(entry.name)
-            names.append(entry.name)
+            _append_library_entry(names, seen, entry)
 
     if root.exists() and root.is_dir():
         reserved_names = reserved_library_folder_names(library_path)
         for entry in sorted(root.iterdir(), key=lambda item: item.name.casefold()):
-            if not entry.is_dir() or entry.name in reserved_names:
+            if entry.is_dir():
+                if entry.name in reserved_names:
+                    continue
+            elif not entry.is_file() or entry.suffix.lower() not in SUPPORTED_ARCHIVE_EXTENSIONS:
                 continue
-            if entry.name in seen:
-                continue
-            names.append(entry.name)
+            _append_library_entry(names, seen, entry)
     return names
 
 

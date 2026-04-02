@@ -6,6 +6,14 @@ from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from core.app_logging import get_logger
+from core.chapter_storage import (
+    chapter_is_editable,
+    chapter_storage_path,
+    chapter_has_text_payload,
+    count_chapter_images,
+    list_chapter_image_paths,
+    list_series_chapters,
+)
 from requests.exceptions import RequestException
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -82,7 +90,6 @@ from stores.settings_store import load_library_path
 logger = get_logger(__name__)
 
 
-SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 MANGA_PREVIEW_PIXMAP_CACHE_LIMIT = 192
 MANGA_PREVIEW_TILE_BATCH_SIZE = 24
 MANGA_PREVIEW_INFLIGHT_LIMIT = 4
@@ -1478,19 +1485,9 @@ class DetailPage(QWidget):
             return total
         if self.webtoon is None:
             return 0
-        chapter_path = os.path.join(self.webtoon.path, chapter)
-        if not os.path.isdir(chapter_path):
-            return 0
-        if any(
-            os.path.isfile(os.path.join(chapter_path, filename))
-            for filename in ("chapter.json", "chapter.html", "chapter.txt")
-        ):
+        if chapter_has_text_payload(self.webtoon.path, chapter):
             return 1
-        return sum(
-            1 for filename in os.listdir(chapter_path)
-            if os.path.isfile(os.path.join(chapter_path, filename))
-            and filename.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
-        )
+        return count_chapter_images(self.webtoon.path, chapter)
 
     def _mark_selected_chapters_read(self):
         if self.webtoon is None or self.progress_store is None or not self.selected_chapters:
@@ -1540,12 +1537,16 @@ class DetailPage(QWidget):
         bookmarks_changed = False
 
         for chapter in selected:
-            chapter_path = os.path.join(self.webtoon.path, chapter)
+            chapter_path = chapter_storage_path(self.webtoon.path, chapter)
             try:
-                if os.path.isdir(chapter_path):
+                if chapter_path.is_dir():
                     shutil.rmtree(chapter_path)
-                    if os.path.exists(chapter_path):
+                    if chapter_path.exists():
                         raise OSError(f"Chapter folder still exists after deletion: {chapter_path}")
+                elif chapter_path.is_file():
+                    chapter_path.unlink()
+                else:
+                    raise OSError(f"Chapter path is missing: {chapter_path}")
             except OSError:
                 logger.exception("Failed to delete chapter folder %s", chapter_path)
                 failed.append(chapter)
@@ -1628,8 +1629,7 @@ class DetailPage(QWidget):
     def _can_edit_chapter_pages(self, chapter: str) -> bool:
         if not self._is_image_webtoon() or self.webtoon is None:
             return False
-        chapter_path = os.path.join(self.webtoon.path, chapter)
-        return os.path.isdir(chapter_path)
+        return chapter_is_editable(self.webtoon.path, chapter)
 
     def _sync_detail_filter_visibility(self) -> None:
         manga = self._is_manga_webtoon()
@@ -1945,25 +1945,22 @@ class DetailPage(QWidget):
         if self.webtoon is None:
             return []
 
-        path = self.webtoon.path
+        storage_path = str(getattr(self.webtoon, "storage_path", self.webtoon.path) or self.webtoon.path)
+        cache_path = storage_path
         try:
-            mtime_ns = os.stat(path).st_mtime_ns
+            mtime_ns = os.stat(storage_path).st_mtime_ns
         except OSError:
             return []
 
         cached = self._chapter_dir_cache
-        if cached is not None and cached[0] == path and cached[1] == mtime_ns:
+        if cached is not None and cached[0] == cache_path and cached[1] == mtime_ns:
             return list(cached[2])
 
-        chapter_dirs = sorted(
-            (
-                entry.name
-                for entry in os.scandir(path)
-                if entry.is_dir()
-            ),
-            key=chapter_sort_key,
-        )
-        self._chapter_dir_cache = (path, mtime_ns, chapter_dirs)
+        if os.path.isfile(storage_path):
+            chapter_dirs = [os.path.basename(storage_path)]
+        else:
+            chapter_dirs = sorted(list_series_chapters(self.webtoon.path), key=chapter_sort_key)
+        self._chapter_dir_cache = (cache_path, mtime_ns, chapter_dirs)
         return list(chapter_dirs)
 
     def _refresh_webtoon_from_disk(self, preserve_display_order: bool = False) -> bool:
@@ -2063,15 +2060,8 @@ class DetailPage(QWidget):
     def _chapter_image_paths(self, chapter: str) -> list[str]:
         if self.webtoon is None or chapter not in self.webtoon.chapters:
             return []
-        chapter_path = os.path.join(self.webtoon.path, chapter)
-        if not os.path.isdir(chapter_path):
-            return []
         return sorted(
-            [
-                os.path.join(chapter_path, entry.name)
-                for entry in os.scandir(chapter_path)
-                if entry.is_file() and entry.name.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
-            ],
+            list_chapter_image_paths(self.webtoon.path, chapter),
             key=lambda path: _page_sort_key(os.path.basename(path)),
         )
 

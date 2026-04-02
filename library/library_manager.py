@@ -5,17 +5,17 @@ from PIL import Image
 
 from core.app_logging import get_logger
 from core.app_paths import data_path
+from core.chapter_storage import list_chapter_image_paths, list_series_chapters
 from core.library_layout import (
     infer_content_type_from_path,
     list_library_entries,
     normalize_content_type,
-    resolve_webtoon_path,
+    resolve_existing_webtoon_storage_path,
     ensure_library_content_layout,
 )
 
 
 logger = get_logger(__name__)
-SUPPORTED_IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 
 
 class Webtoon:
@@ -29,6 +29,7 @@ class Webtoon:
         is_bookmarked=False,
         has_new_chapter=False,
         content_type="webtoon",
+        storage_path=None,
     ):
         self.name = name
         self.path = path
@@ -38,6 +39,7 @@ class Webtoon:
         self.is_bookmarked = bool(is_bookmarked)
         self.has_new_chapter = bool(has_new_chapter)
         self.content_type = content_type
+        self.storage_path = storage_path or path
 
 
 def scan_library(library_path: str, settings_store) -> list[Webtoon]:
@@ -104,20 +106,23 @@ def build_webtoon_from_folder(
     settings_store,
     settings_row: dict | None = None,
 ) -> Webtoon | None:
-    webtoon_path = resolve_webtoon_path(
+    storage_path = resolve_existing_webtoon_storage_path(
         library_path,
         webtoon_name,
         settings_store=settings_store,
         settings_row=settings_row,
     )
-    if not os.path.isdir(webtoon_path):
+    if not storage_path:
         return None
 
-    chapters = sorted([
-        chapter
-        for chapter in os.listdir(webtoon_path)
-        if os.path.isdir(os.path.join(webtoon_path, chapter))
-    ], key=natural_sort_key)
+    if os.path.isdir(storage_path):
+        webtoon_path = storage_path
+        chapters = sorted(list_series_chapters(webtoon_path), key=natural_sort_key)
+    elif os.path.isfile(storage_path):
+        webtoon_path = os.path.dirname(storage_path)
+        chapters = [os.path.basename(storage_path)]
+    else:
+        return None
     if not chapters:
         return None
 
@@ -130,7 +135,7 @@ def build_webtoon_from_folder(
             ).get(webtoon_name, {})
         )
     stored_content_type = normalize_content_type(settings_row.get("content_type"), default="")
-    inferred_content_type = infer_content_type_from_path(webtoon_path)
+    inferred_content_type = infer_content_type_from_path(storage_path)
     if not stored_content_type:
         stored_content_type = inferred_content_type
     first_image = _first_chapter_image_path(webtoon_path, chapters)
@@ -161,6 +166,7 @@ def build_webtoon_from_folder(
         is_bookmarked=bool(settings_row.get("bookmarked", 0)),
         has_new_chapter=bool(settings_row.get("latest_new_chapter")),
         content_type=content_type,
+        storage_path=storage_path,
     )
 
 
@@ -197,18 +203,9 @@ def _generate_auto_thumbnail(image_path: str, thumb_path: str) -> str:
 
 def _first_chapter_image_path(webtoon_path: str, chapters: list[str]) -> str | None:
     for chapter in chapters:
-        chapter_path = os.path.join(webtoon_path, chapter)
-        try:
-            images = sorted([
-                filename
-                for filename in os.listdir(chapter_path)
-                if filename.lower().endswith(SUPPORTED_IMAGE_EXTENSIONS)
-                and os.path.isfile(os.path.join(chapter_path, filename))
-            ])
-        except OSError:
-            continue
+        images = list_chapter_image_paths(webtoon_path, chapter)
         if images:
-            return os.path.join(chapter_path, images[0])
+            return images[0]
     return None
 
 

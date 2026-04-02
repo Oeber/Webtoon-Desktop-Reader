@@ -9,6 +9,7 @@ from functools import wraps
 import qtawesome as qta
 from bs4 import BeautifulSoup
 from core.app_logging import get_logger
+from core.chapter_storage import chapter_cache_token, chapter_content_path, chapter_has_text_payload, list_chapter_image_paths
 from core.app_paths import data_path
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QScrollArea,
@@ -83,7 +84,6 @@ BATCH_MS      = 16
 PREVIEW_EAGER_COUNT = 4
 PREVIEW_BATCH_SIZE = 16
 PREVIEW_BATCH_MS = 24
-SUPPORTED_VIEWER_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
 VIEWER_TOOLBAR_ICON_SIZE = QSize(16, 16)
 VIEWER_TOOLBAR_BUTTON_SIZE = 30
 VIEWER_TOOLBAR_TRIGGER_HEIGHT = 96
@@ -2192,8 +2192,12 @@ class ViewerPage(QWidget):
             self.chapter_selector.setCurrentIndex(index)
         self.chapter_selector.blockSignals(False)
 
-        chapter_path = os.path.join(self.webtoon.path, chapter)
-        if self._has_text_chapter_content(chapter_path):
+        chapter_path = chapter_content_path(self.webtoon.path, chapter) if self.webtoon is not None else None
+        if chapter_path is None:
+            logger.warning("Viewer chapter path missing: %s / %s", self.webtoon.path if self.webtoon else "", chapter)
+            QMessageBox.information(self, "Chapter missing", f"'{chapter}' no longer exists on disk.")
+            return
+        if self._has_text_chapter_content(chapter):
             self._load_text_chapter(chapter, chapter_path)
         else:
             self._load_chapter_images(chapter)
@@ -2281,11 +2285,10 @@ class ViewerPage(QWidget):
             self.scroll.setWidget(target)
         self._apply_reader_session_state(persist=False)
 
-    def _has_text_chapter_content(self, chapter_path: str) -> bool:
-        for filename in ("chapter.json", "chapter.html", "chapter.txt"):
-            if os.path.isfile(os.path.join(chapter_path, filename)):
-                return True
-        return False
+    def _has_text_chapter_content(self, chapter: str) -> bool:
+        if self.webtoon is None:
+            return False
+        return chapter_has_text_payload(self.webtoon.path, chapter)
 
     def _load_text_chapter(self, chapter: str, chapter_path: str):
         self.clear_images()
@@ -2314,7 +2317,9 @@ class ViewerPage(QWidget):
         if not self.webtoon or chapter_index < 0 or chapter_index >= len(self.webtoon.chapters):
             return None
         chapter = self.webtoon.chapters[chapter_index]
-        chapter_path = os.path.join(self.webtoon.path, chapter)
+        chapter_path = chapter_content_path(self.webtoon.path, chapter)
+        if chapter_path is None:
+            return None
         payload = self._read_text_chapter_payload(chapter_path)
         title = str(chapter or "").strip() or chapter
         html_body = str(payload.get("html") or "").strip()
@@ -2731,9 +2736,9 @@ class ViewerPage(QWidget):
         self._manual_navigation_since_chapter_open = False
         self._show_loading_overlay(chapter)
 
-        chapter_path = os.path.join(self.webtoon.path, chapter)
-        if not os.path.isdir(chapter_path):
-            logger.warning("Viewer chapter path missing: %s", chapter_path)
+        chapter_path = chapter_content_path(self.webtoon.path, chapter) if self.webtoon is not None else None
+        if chapter_path is None:
+            logger.warning("Viewer chapter path missing: %s / %s", self.webtoon.path if self.webtoon else "", chapter)
             self._hide_loading_overlay()
             QMessageBox.information(
                 self,
@@ -2795,12 +2800,7 @@ class ViewerPage(QWidget):
         self.setFocus()
 
     def _chapter_cache_entry(self, chapter: str) -> tuple[str, int]:
-        chapter_path = os.path.join(self.webtoon.path, chapter)
-        try:
-            mtime_ns = os.stat(chapter_path).st_mtime_ns
-        except OSError:
-            mtime_ns = -1
-        return chapter_path, mtime_ns
+        return chapter_cache_token(self.webtoon.path, chapter)
 
     def _get_chapter_image_paths(self, chapter: str) -> list[str]:
         chapter_path, mtime_ns = self._chapter_cache_entry(chapter)
@@ -2808,11 +2808,7 @@ class ViewerPage(QWidget):
         if cached is not None and cached[0] == mtime_ns:
             return list(cached[1])
 
-        image_paths = sorted(
-            entry.path
-            for entry in os.scandir(chapter_path)
-            if entry.is_file() and entry.name.lower().endswith(SUPPORTED_VIEWER_EXTENSIONS)
-        )
+        image_paths = sorted(list_chapter_image_paths(self.webtoon.path, chapter))
         self._chapter_image_cache[chapter_path] = (mtime_ns, image_paths)
         return list(image_paths)
 

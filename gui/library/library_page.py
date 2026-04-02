@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QColor, QDrag, QFont, QFontMetrics, QPainter, QPen, QPixmap
 
 from core.app_logging import get_logger
-from core.library_layout import resolve_webtoon_path
+from core.library_layout import resolve_existing_webtoon_storage_path, resolve_webtoon_path
 from gui.common.strings import t
 from gui.common.styles import (
     ACCENT_MUTED,
@@ -1532,13 +1532,19 @@ class LibraryPage(QWidget):
         failed_names = []
         for name in names:
             try:
-                webtoon_path = resolve_webtoon_path(
+                webtoon_path = resolve_existing_webtoon_storage_path(
                     library_path,
                     name,
                     settings_store=self.settings_store,
                 )
+                if not webtoon_path:
+                    raise FileNotFoundError(name)
                 if os.path.isdir(webtoon_path):
                     shutil.rmtree(webtoon_path)
+                elif os.path.isfile(webtoon_path):
+                    os.remove(webtoon_path)
+                else:
+                    raise FileNotFoundError(webtoon_path)
                 deleted_names.append(name)
             except Exception as e:
                 logger.error("Failed to delete webtoon %s", name, exc_info=e)
@@ -1745,13 +1751,12 @@ class LibraryPage(QWidget):
             return True
         if not webtoon_name:
             return False
-        return os.path.isdir(
-            resolve_webtoon_path(
-                load_library_path(),
-                webtoon_name,
-                settings_store=self.settings_store,
-            )
+        existing_path = resolve_existing_webtoon_storage_path(
+            load_library_path(),
+            webtoon_name,
+            settings_store=self.settings_store,
         )
+        return bool(existing_path and os.path.exists(existing_path))
 
     def _download_placeholders(self) -> list[SimpleNamespace]:
         if not self._show_downloads_section():

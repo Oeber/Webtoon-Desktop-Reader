@@ -5,7 +5,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from core.app_logging import get_logger
-from core.library_layout import list_library_entries, resolve_webtoon_path
+from core.chapter_storage import chapter_has_text_payload, count_chapter_images, chapter_storage_path
+from core.library_layout import list_library_entries, resolve_existing_webtoon_storage_path, resolve_webtoon_path
 from library.library_manager import THUMB_FOLDER, build_webtoon_from_folder, preferred_thumbnail_path
 from stores.db import get_connection
 
@@ -132,11 +133,17 @@ def cleanup_orphaned_metadata(report: LibraryHealthReport, settings_store, progr
 def delete_invalid_series_folders(report: LibraryHealthReport) -> int:
     removed = 0
     for name in report.invalid_series_folders:
-        path = Path(resolve_webtoon_path(report.library_path, name))
-        if not path.exists() or not path.is_dir():
+        path_str = resolve_existing_webtoon_storage_path(report.library_path, name)
+        if not path_str:
             continue
+        path = Path(path_str)
         try:
-            shutil.rmtree(path)
+            if path.is_dir():
+                shutil.rmtree(path)
+            elif path.is_file():
+                path.unlink()
+            else:
+                continue
             removed += 1
         except OSError as exc:
             logger.warning("Could not delete invalid library folder %s", path, exc_info=exc)
@@ -190,15 +197,12 @@ def _duplicate_titles(names: list[str]) -> list[str]:
 def _empty_chapter_folders(webtoon_path: Path, chapters: list[str]) -> list[str]:
     empty: list[str] = []
     for chapter in chapters:
-        chapter_path = webtoon_path / chapter
+        chapter_path = chapter_storage_path(str(webtoon_path), chapter)
         try:
-            has_image = any(
-                entry.is_file() and entry.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".avif"}
-                for entry in chapter_path.iterdir()
-            ) or chapter_path.joinpath("chapter.json").is_file()
+            has_image = count_chapter_images(str(webtoon_path), chapter) > 0 or chapter_has_text_payload(str(webtoon_path), chapter)
         except OSError:
             has_image = False
-        if not has_image:
+        if not has_image and chapter_path.exists():
             empty.append(f"{webtoon_path.name} / {chapter}")
     return empty
 
