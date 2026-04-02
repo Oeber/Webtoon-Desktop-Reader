@@ -15,6 +15,23 @@ def get_instance() -> "AppSettingsStore":
 
 class AppSettingsStore:
 
+    def has(self, key: str) -> bool:
+        key = self._normalize_key(key)
+        conn = get_connection()
+        row = conn.execute(
+            "SELECT 1 FROM app_settings WHERE key = ? LIMIT 1",
+            (key,),
+        ).fetchone()
+        return row is not None
+
+    def count(self) -> int:
+        conn = get_connection()
+        row = conn.execute("SELECT COUNT(*) FROM app_settings").fetchone()
+        try:
+            return int(row[0]) if row else 0
+        except (TypeError, ValueError, IndexError):
+            return 0
+
     def get(self, key: str, default=None):
         key = self._normalize_key(key)
         conn = get_connection()

@@ -1,6 +1,6 @@
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QStackedWidget, QWidget
+from PySide6.QtWidgets import QDialog, QHBoxLayout, QMainWindow, QMessageBox, QStackedWidget, QWidget
 
 from core.app_logging import get_logger
 from gui.common.styles import STACK_BG_STYLE
@@ -20,8 +20,13 @@ from gui.main_window_controllers import (
     WindowNavigator,
 )
 from gui.search.global_search import GlobalSearchDialog
+from gui.settings.first_run_dialog import FirstRunSetupDialog
 from gui.settings.settings_page import SettingsPage
 from gui.viewer.viewer_page import ViewerPage
+from stores.settings_store import (
+    is_first_run_setup_needed,
+    mark_first_run_setup_completed,
+)
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 
 logger = get_logger(__name__)
@@ -93,6 +98,7 @@ class MainWindow(QMainWindow):
         self.sidebar_controller.refresh_download_indicator()
         self.library_update_scheduler.refresh_schedule()
         self.apply_theme()
+        QTimer.singleShot(250, self._maybe_open_first_run_setup)
 
     def _attach_shared_services(self):
         self.downloader.service.set_browser_fetcher(self.browser_fetcher)
@@ -265,6 +271,25 @@ class MainWindow(QMainWindow):
             return
         self.shutdown_background_tasks()
         super().closeEvent(event)
+
+    def _maybe_open_first_run_setup(self):
+        if not is_first_run_setup_needed():
+            return
+
+        dialog = FirstRunSetupDialog(self)
+        accepted = dialog.exec() == QDialog.Accepted
+        mark_first_run_setup_completed(True)
+        if not accepted:
+            return
+
+        logger.info("First-run setup completed; refreshing library and source state")
+        self.library.load_library()
+        self.reload_scraper_availability()
+        self.refresh_library_update_schedule()
+        if dialog.open_target() == "discover":
+            self.open_discovery()
+        else:
+            self.open_library()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from core.app_paths import default_library_path
+from core.app_paths import data_path, default_library_path
 from stores.app_settings_store import get_instance as get_app_settings_store
 
 
@@ -69,6 +69,8 @@ LIBRARY_PATH_KEY = "library_path"
 APP_LOCALE_KEY = "app_locale"
 APP_THEME_PRESET_KEY = "app_theme_preset"
 APP_THEME_CUSTOM_COLORS_KEY = "app_theme_custom_colors"
+APP_FIRST_RUN_COMPLETED_KEY = "app_first_run_completed"
+FIRST_RUN_FORCE_MARKER = data_path("force_first_run.flag")
 
 _app_settings = get_app_settings_store()
 
@@ -170,4 +172,21 @@ def save_setting(key: str, value):
 
 def save_settings(values: dict):
     _app_settings.set_many(values)
+
+
+def is_first_run_setup_needed() -> bool:
+    if FIRST_RUN_FORCE_MARKER.exists():
+        return True
+    if _app_settings.has(APP_FIRST_RUN_COMPLETED_KEY):
+        return not bool(_app_settings.get(APP_FIRST_RUN_COMPLETED_KEY, False))
+    return _app_settings.count() == 0
+
+
+def mark_first_run_setup_completed(completed: bool = True) -> None:
+    if completed:
+        try:
+            FIRST_RUN_FORCE_MARKER.unlink(missing_ok=True)
+        except OSError:
+            pass
+    _app_settings.set(APP_FIRST_RUN_COMPLETED_KEY, bool(completed))
 

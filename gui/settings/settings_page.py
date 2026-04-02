@@ -113,6 +113,7 @@ from stores.settings_store import (
     save_library_path,
     save_setting,
     save_settings,
+    is_first_run_setup_needed,
 )
 from gui.settings.library_health_dialog import LibraryHealthDialog
 from gui.common.strings import available_locales, get_locale, set_locale, t
@@ -2374,6 +2375,8 @@ class SettingsPage(QWidget):
         }.get(level, "#d0d0d0")
 
     def schedule_startup_update_check(self):
+        if is_first_run_setup_needed():
+            return
         if not load_setting(APP_UPDATE_CHECK_ON_STARTUP_KEY, True):
             return
         self._start_update_check(mode="startup")
