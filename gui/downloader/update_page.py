@@ -12,6 +12,7 @@ from gui.common import styles as app_styles
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -33,6 +34,7 @@ from gui.search.global_search import rank_webtoons
 from gui.common.strings import t
 from stores.scraper_settings_store import load_scraper_default_config
 from stores.settings_store import load_library_path
+from stores.progress_store import get_instance as get_progress_store
 from library.library_manager import scan_library
 from scrapers.base import ScraperDisabledError, ScraperError
 from scrapers.registry import get_scraper, get_scraper_site_name, is_scraper_enabled_for_url
@@ -52,6 +54,7 @@ UPDATE_CARD_SPACING = 16
 UPDATE_RESULT_CACHE_TTL_SECONDS = 45
 UPDATE_ERROR_CACHE_TTL_SECONDS = 30
 SHORTCUT_FALLBACK = object()
+TRIAGE_FILTERS = ("all", "continue", "auto_download", "never_updated", "needs_attention")
 UPDATE_STATUS_COLORS = {
     "Ready": "#b18b84",
     "Queued": "#d7b1aa",
@@ -297,6 +300,10 @@ class UpdateCard(QFrame):
         new_chapters: int,
         remote_chapters: int,
         on_update,
+        has_progress: bool = False,
+        update_mode: str = "notify",
+        attention_kind: str = "",
+        attention_error: str = "",
     ):
         super().__init__()
         self.webtoon = webtoon
@@ -308,6 +315,10 @@ class UpdateCard(QFrame):
         self.remote_chapters = max(0, int(remote_chapters))
         self.local_chapters = len(getattr(webtoon, "chapters", []) or [])
         self.on_update = on_update
+        self.has_progress = bool(has_progress)
+        self.update_mode = str(update_mode or "notify").strip().lower() or "notify"
+        self.attention_kind = str(attention_kind or "").strip().lower()
+        self.attention_error = str(attention_error or "").strip()
         self.on_select = None
         self.thumbnail_path = ""
         self.card_width = UPDATE_CARD_WIDTH
@@ -315,6 +326,7 @@ class UpdateCard(QFrame):
         self._selected = False
         self._show_selection_controls = False
         self._current_status = "Ready"
+        self._is_attention = bool(self.attention_kind)
 
         self.setFixedWidth(self.card_width + 16)
         self.setStyleSheet(app_styles.TRANSPARENT_BORDERLESS_STYLE)
@@ -384,13 +396,13 @@ class UpdateCard(QFrame):
         self.meta_btn.setEnabled(False)
         self.meta_btn.setStyleSheet(app_styles.card_badge_button_style(False))
         self.meta_btn.setText(self._meta_text())
-        self.meta_btn.setToolTip(format_last_updated(self.last_update_at))
+        self.meta_btn.setToolTip(self._meta_tooltip())
 
         self.new_chip = QLabel(self._count_label(), self)
         self.new_chip.setAlignment(Qt.AlignCenter)
         self.new_chip.setFixedHeight(14)
-        self.new_chip.setStyleSheet(app_styles.NEW_CHIP_STYLE)
-        self.new_chip.show()
+        self.new_chip.setStyleSheet(self._chip_style())
+        self.new_chip.setVisible(bool(self.new_chip.text().strip()))
 
         latest_row = QHBoxLayout()
         latest_row.setContentsMargins(0, 0, 0, 0)
@@ -430,9 +442,10 @@ class UpdateCard(QFrame):
         self.name_label.setStyleSheet(app_styles.CARD_TITLE_LABEL_STYLE)
         self.info_label.setStyleSheet(app_styles.CARD_INFO_LABEL_STYLE)
         self.meta_btn.setStyleSheet(app_styles.card_badge_button_style(False))
-        self.new_chip.setStyleSheet(app_styles.NEW_CHIP_STYLE)
+        self.new_chip.setStyleSheet(self._chip_style())
         self.set_status(self._current_status)
         self.detail_label.setStyleSheet(app_styles.CARD_INFO_LABEL_STYLE)
+        self._apply_action_button_state()
 
     def cooldown_remaining(self) -> int:
         return cooldown_remaining(self.last_update_at)
@@ -475,11 +488,12 @@ class UpdateCard(QFrame):
             self.detail_label.clear()
             self.status_label.hide()
             self.detail_label.hide()
+        self._apply_action_button_state()
 
     def set_last_update_at(self, timestamp: int):
         self.last_update_at = int(timestamp)
         self.meta_btn.setText(self._meta_text())
-        self.meta_btn.setToolTip(format_last_updated(self.last_update_at))
+        self.meta_btn.setToolTip(self._meta_tooltip())
 
     def set_selected(self, selected: bool):
         self._selected = bool(selected)
@@ -491,6 +505,9 @@ class UpdateCard(QFrame):
         self._apply_border_style(hovered=self.underMouse())
 
     def set_selection_controls_visible(self, visible: bool):
+        if self._is_attention:
+            self.select_btn.hide()
+            return
         self._show_selection_controls = bool(visible)
         self._refresh_select_visibility()
 
@@ -525,17 +542,56 @@ class UpdateCard(QFrame):
         self.name_label.setText(metrics.elidedText(self.name, Qt.ElideRight, width))
 
     def _count_label(self) -> str:
+        if self._is_attention:
+            if self.attention_kind == "auth":
+                return t("updates.page.card.attention_auth")
+            return t("updates.page.card.attention_failed")
         if self.new_chapters == 1:
             return t("updates.page.card.new_one")
         return t("updates.page.card.new_many", count=self.new_chapters)
 
     def _summary_text(self) -> str:
-        return site_display_name(self.site_name)
+        parts = [site_display_name(self.site_name)]
+        if self.has_progress:
+            parts.append(t("updates.page.card.tag_continue"))
+        if self.update_mode == "auto_download":
+            parts.append(t("updates.page.card.tag_auto"))
+        elif self.update_mode == "ignore":
+            parts.append(t("updates.page.card.tag_ignore"))
+        return " | ".join(part for part in parts if part)
 
     def _meta_text(self) -> str:
+        if self._is_attention:
+            if self.attention_kind == "auth":
+                return t("updates.page.card.auth_required")
+            return t("updates.page.card.check_failed")
         if self.last_update_at is None:
             return t("updates.page.card.never_updated")
         return t("updates.page.card.updated_on", date=datetime.fromtimestamp(int(self.last_update_at)).strftime("%Y-%m-%d"))
+
+    def _meta_tooltip(self) -> str:
+        if self._is_attention and self.attention_error:
+            return self.attention_error
+        return format_last_updated(self.last_update_at)
+
+    def _chip_style(self) -> str:
+        if self._is_attention:
+            return app_styles.PILL_LABEL_STYLE
+        return app_styles.NEW_CHIP_STYLE
+
+    def _apply_action_button_state(self):
+        if self._current_status in {"Queued", "Downloading"}:
+            self.update_btn.setStyleSheet(app_styles.CARD_ACTION_BUTTON_DISABLED_STYLE)
+            self.update_btn.setIcon(qta.icon("fa5s.sync", color=app_styles.ACCENT))
+            return
+
+        style = app_styles.CARD_ACTION_BUTTON_STYLE if self.update_btn.isEnabled() else app_styles.CARD_ACTION_BUTTON_DISABLED_STYLE
+        self.update_btn.setStyleSheet(style)
+        if self._is_attention:
+            icon_name = "fa5s.user-lock" if self.attention_kind == "auth" else "fa5s.redo-alt"
+        else:
+            icon_name = "fa5s.sync"
+        self.update_btn.setIcon(qta.icon(icon_name, color=app_styles.ACCENT))
 
     def _apply_select_button_style(self):
         self.select_btn.setStyleSheet(app_styles.action_button_checked_style(app_styles.ACCENT))
@@ -548,6 +604,9 @@ class UpdateCard(QFrame):
         return QSize(12, 12)
 
     def _refresh_select_visibility(self):
+        if self._is_attention:
+            self.select_btn.hide()
+            return
         visible = self._selected or self._show_selection_controls or self.underMouse()
         self.select_btn.setVisible(visible)
 
@@ -577,9 +636,13 @@ class UpdatePage(DownloadHistoryPageBase):
     def __init__(self, main_window):
         super().__init__(main_window, t("updates.page.title"), t("updates.page.section"), history_kind="update")
         self.settings_store = get_webtoon_settings()
+        self.progress_store = get_progress_store()
         self._candidates = []
         self._available_updates = []
+        self._attention_items = []
         self._pending_search = ""
+        self._active_triage_filter = "all"
+        self._sort_mode = "priority"
         self._empty_message = t("updates.page.empty.checking")
         self._check_request_id = 0
         self._pending_checks = 0
@@ -608,6 +671,44 @@ class UpdatePage(DownloadHistoryPageBase):
         self.status_label.setStyleSheet(app_styles.STATUS_LABEL_STYLE)
         self.status_label.setText(t("updates.page.status.checking"))
         self.layout().insertWidget(4, self.status_label)
+
+        self.triage_bar = QWidget(self)
+        self.triage_bar.setStyleSheet(app_styles.TRANSPARENT_BORDERLESS_STYLE)
+        triage_layout = QHBoxLayout(self.triage_bar)
+        triage_layout.setContentsMargins(0, 0, 0, 0)
+        triage_layout.setSpacing(6)
+
+        self.triage_label = QLabel(t("updates.page.triage.label"))
+        self.triage_label.setStyleSheet(app_styles.SECTION_LABEL_STYLE)
+        triage_layout.addWidget(self.triage_label)
+
+        self.filter_buttons = {}
+        for key in TRIAGE_FILTERS:
+            button = QPushButton(t(f"updates.page.filter.{key}"))
+            button.setCheckable(True)
+            button.setFixedHeight(24)
+            button.setCursor(Qt.PointingHandCursor)
+            button.setStyleSheet(app_styles.MINIMAL_FILTER_BUTTON_STYLE)
+            button.clicked.connect(lambda checked, filter_key=key: self._set_triage_filter(filter_key))
+            triage_layout.addWidget(button)
+            self.filter_buttons[key] = button
+
+        triage_layout.addStretch()
+
+        self.sort_label = QLabel(t("updates.page.sort.label"))
+        self.sort_label.setStyleSheet(app_styles.SECTION_LABEL_STYLE)
+        triage_layout.addWidget(self.sort_label)
+
+        self.sort_combo = QComboBox()
+        self.sort_combo.setFixedHeight(30)
+        self.sort_combo.setMinimumWidth(180)
+        self.sort_combo.addItem(t("updates.page.sort.priority"), "priority")
+        self.sort_combo.addItem(t("updates.page.sort.newest"), "newest")
+        self.sort_combo.addItem(t("updates.page.sort.title"), "title")
+        self.sort_combo.addItem(t("updates.page.sort.oldest_checked"), "oldest_checked")
+        self.sort_combo.currentIndexChanged.connect(self._on_sort_changed)
+        triage_layout.addWidget(self.sort_combo)
+        self.layout().insertWidget(5, self.triage_bar)
 
         self.batch_bar = QWidget(self)
         self.batch_bar.setStyleSheet(app_styles.BATCH_BAR_STYLE)
@@ -666,10 +767,14 @@ class UpdatePage(DownloadHistoryPageBase):
         UPDATE_STATUS_COLORS["Downloading"] = app_styles.ACCENT
         self.search_input.setStyleSheet(app_styles.SEARCH_INPUT_STYLE)
         self.status_label.setStyleSheet(app_styles.STATUS_LABEL_STYLE)
+        self.triage_label.setStyleSheet(app_styles.SECTION_LABEL_STYLE)
+        self.sort_label.setStyleSheet(app_styles.SECTION_LABEL_STYLE)
+        self.sort_combo.setStyleSheet(app_styles.INPUT_STYLE)
         self.batch_bar.setStyleSheet(app_styles.BATCH_BAR_STYLE)
         self.batch_label.setStyleSheet(app_styles.BATCH_LABEL_STYLE)
         self.update_selected_btn.setStyleSheet(app_styles.BUTTON_STYLE)
         self.clear_selection_btn.setStyleSheet(app_styles.BUTTON_STYLE)
+        self._refresh_filter_buttons()
         if self._cards_container is not None:
             self._cards_container.setStyleSheet(app_styles.TRANSPARENT_BORDERLESS_STYLE)
         for card in self._entry_widgets:
@@ -743,7 +848,7 @@ class UpdatePage(DownloadHistoryPageBase):
         webtoons = scan_library(load_library_path(), self.settings_store)
         settings_rows = self.settings_store.get_rows(
             [webtoon.name for webtoon in webtoons],
-            columns=("completed", "source_url", "last_update_at", "source_config"),
+            columns=("completed", "source_url", "last_update_at", "source_config", "update_mode"),
         )
         candidates = []
         for webtoon in webtoons:
@@ -753,6 +858,7 @@ class UpdatePage(DownloadHistoryPageBase):
             source_url = row.get("source_url")
             if not source_url or not is_scraper_enabled_for_url(source_url):
                 continue
+            progress = self.progress_store.get(webtoon.name)
             candidates.append(
                 {
                     "site_name": get_scraper_site_name(source_url),
@@ -763,11 +869,14 @@ class UpdatePage(DownloadHistoryPageBase):
                     "source_config": (self.settings_store.get_source_config(webtoon.name) or load_scraper_default_config(get_scraper_site_name(source_url))),
                     "local_chapters": len(getattr(webtoon, "chapters", []) or []),
                     "chapter_names": list(getattr(webtoon, "chapters", []) or []),
+                    "update_mode": str(row.get("update_mode") or "notify"),
+                    "has_progress": self._candidate_has_progress(progress),
                 }
             )
 
         self._candidates = candidates
         self._available_updates = []
+        self._attention_items = []
         self._last_check_counts_by_name = {}
         self._check_request_id += 1
         self._pending_checks = len(candidates)
@@ -845,15 +954,25 @@ class UpdatePage(DownloadHistoryPageBase):
                 source_url=update["source_url"],
                 site_name=update.get("site_name", ""),
                 last_update_at=update["last_update_at"],
-                new_chapters=update["new_chapters"],
-                remote_chapters=update["remote_chapters"],
-                on_update=self._start_update,
+                new_chapters=update.get("new_chapters", 0),
+                remote_chapters=update.get("remote_chapters", 0),
+                on_update=self._start_attention_action if update.get("needs_attention") else self._start_update,
+                has_progress=bool(update.get("has_progress")),
+                update_mode=str(update.get("update_mode") or "notify"),
+                attention_kind=str(update.get("attention_kind") or ""),
+                attention_error=str(update.get("attention_error") or ""),
             )
             card.on_select = self._on_card_selected
             card.set_selected(card.name in self._selected_titles)
             card.set_selection_controls_visible(bool(self._selected_titles))
             self._register_entry(card)
-            if self.service.has_active_download(card.name):
+            if update.get("needs_attention"):
+                card.update_btn.setEnabled(True)
+                if update.get("attention_kind") == "auth":
+                    card.update_btn.setToolTip(t("updates.page.button.authorize"))
+                else:
+                    card.update_btn.setToolTip(t("updates.page.button.retry"))
+            elif self.service.has_active_download(card.name):
                 card.set_status("Downloading")
             self._entry_widgets.append(card)
 
@@ -862,14 +981,16 @@ class UpdatePage(DownloadHistoryPageBase):
         self._sync_batch_actions()
 
     def _filtered_candidates(self, text: str):
+        items = self._all_triage_items()
+        items = [item for item in items if self._matches_triage_filter(item)]
         query = text.strip()
         if not query:
-            return list(self._available_updates)
+            return self._sort_candidates(items)
 
-        ranked = rank_webtoons([item["webtoon"] for item in self._available_updates], query)
+        ranked = rank_webtoons([item["webtoon"] for item in items], query)
         updates_by_name = {
             item["webtoon"].name: item
-            for item in self._available_updates
+            for item in items
         }
         return [
             updates_by_name[webtoon.name]
@@ -877,10 +998,86 @@ class UpdatePage(DownloadHistoryPageBase):
             if webtoon.name in updates_by_name
         ]
 
+    def _all_triage_items(self):
+        return list(self._available_updates) + list(self._attention_items)
+
+    def _candidate_has_progress(self, progress: dict | None) -> bool:
+        if not progress:
+            return False
+        chapter = str(progress.get("chapter") or "").strip()
+        scroll = float(progress.get("scroll", 0.0) or 0.0)
+        total_images = int(progress.get("total_images", 0) or 0)
+        return bool(chapter) or scroll > 0.0 or total_images > 0
+
+    def _matches_triage_filter(self, item: dict) -> bool:
+        filter_key = self._active_triage_filter
+        if filter_key == "continue":
+            return bool(item.get("has_progress"))
+        if filter_key == "auto_download":
+            return str(item.get("update_mode") or "") == "auto_download"
+        if filter_key == "never_updated":
+            return item.get("last_update_at") is None
+        if filter_key == "needs_attention":
+            return bool(item.get("needs_attention"))
+        return True
+
+    def _sort_candidates(self, items: list[dict]):
+        sort_mode = self._sort_mode
+        if sort_mode == "newest":
+            return sorted(
+                items,
+                key=lambda item: (-int(item.get("new_chapters", 0) or 0), item["webtoon"].name.lower()),
+            )
+        if sort_mode == "title":
+            return sorted(items, key=lambda item: item["webtoon"].name.lower())
+        if sort_mode == "oldest_checked":
+            return sorted(
+                items,
+                key=lambda item: (
+                    item.get("last_update_at") is not None,
+                    int(item.get("last_update_at") or 0),
+                    item["webtoon"].name.lower(),
+                ),
+            )
+        return sorted(items, key=self._priority_sort_key)
+
+    def _priority_sort_key(self, item: dict):
+        return (
+            0 if item.get("needs_attention") else 1,
+            0 if item.get("has_progress") else 1,
+            0 if str(item.get("update_mode") or "") == "auto_download" else 1,
+            0 if item.get("last_update_at") is None else 1,
+            -int(item.get("new_chapters", 0) or 0),
+            int(item.get("last_update_at") or 0),
+            item["webtoon"].name.lower(),
+        )
+
     def _schedule_filter(self, text: str):
         logger.info("Scheduling update-page filter for query='%s'", text.strip())
         self._pending_search = text
         self._search_timer.start(150)
+
+    def _set_triage_filter(self, filter_key: str):
+        normalized = str(filter_key or "all")
+        if normalized not in TRIAGE_FILTERS:
+            normalized = "all"
+        if self._active_triage_filter == normalized:
+            return
+        self._active_triage_filter = normalized
+        self._refresh_filter_buttons()
+        self._apply_filter()
+
+    def _refresh_filter_buttons(self):
+        for key, button in self.filter_buttons.items():
+            checked = key == self._active_triage_filter
+            button.blockSignals(True)
+            button.setChecked(checked)
+            button.blockSignals(False)
+            button.setStyleSheet(app_styles.MINIMAL_FILTER_BUTTON_BLUE_CHECKED_STYLE if checked else app_styles.MINIMAL_FILTER_BUTTON_STYLE)
+
+    def _on_sort_changed(self):
+        self._sort_mode = str(self.sort_combo.currentData() or "priority")
+        self._apply_filter()
 
     def _schedule_results_refresh(self, delay_ms: int = 100):
         self._results_refresh_pending = True
@@ -992,6 +1189,14 @@ class UpdatePage(DownloadHistoryPageBase):
         self.set_error_text("")
         self._sync_update_buttons()
 
+    def _start_attention_action(self, entry: UpdateCard):
+        if entry.attention_kind == "auth":
+            opened = self.main_window.open_site_authorization(entry.site_name or site_display_name(entry.site_name), url=entry.source_url)
+            if opened:
+                self.status_label.setText(t("updates.page.status.auth_opened"))
+            return
+        self.refresh_entries(reason="retry")
+
     def start_update_for_webtoon(self, webtoon_name: str, chapter_urls: list[str] | None = None) -> str | None:
         if not webtoon_name:
             return t("updates.page.start.choose_title")
@@ -1058,6 +1263,14 @@ class UpdatePage(DownloadHistoryPageBase):
         for widget in self._entries_by_name.values():
             if not isinstance(widget, UpdateCard):
                 continue
+            if widget.attention_kind:
+                widget.update_btn.setEnabled(True)
+                widget.set_status("Ready")
+                if widget.attention_kind == "auth":
+                    widget.update_btn.setToolTip(t("updates.page.button.authorize"))
+                else:
+                    widget.update_btn.setToolTip(t("updates.page.button.retry"))
+                continue
             if self.service.has_active_download(widget.name):
                 widget.update_btn.setEnabled(False)
                 job_status = self.service.get_status(widget.name) or "Downloading"
@@ -1110,11 +1323,32 @@ class UpdatePage(DownloadHistoryPageBase):
         elif error:
             self._check_errors += 1
             logger.warning("Update check failed for %s: %s", candidate.get("name"), error)
+            self._attention_items.append(
+                {
+                    "site_name": candidate.get("site_name") or "",
+                    "name": candidate.get("name") or "",
+                    "webtoon": candidate.get("webtoon"),
+                    "source_url": candidate.get("source_url") or "",
+                    "last_update_at": candidate.get("last_update_at"),
+                    "update_mode": candidate.get("update_mode") or "notify",
+                    "has_progress": bool(candidate.get("has_progress")),
+                    "new_chapters": 0,
+                    "remote_chapters": int(candidate.get("local_chapters", 0) or 0),
+                    "needs_attention": True,
+                    "attention_kind": "auth" if self._looks_like_access_block(error) else "error",
+                    "attention_error": str(error or ""),
+                }
+            )
+            self._attention_items.sort(key=self._priority_sort_key)
+            self._schedule_results_refresh()
         else:
             if result is not None:
+                result["update_mode"] = candidate.get("update_mode") or "notify"
+                result["has_progress"] = bool(candidate.get("has_progress"))
+                result["needs_attention"] = False
                 self._available_updates.append(result)
                 self._last_check_counts_by_name[str(candidate.get("name") or "")] = int(result.get("new_chapters", 0) or 0)
-                self._available_updates.sort(key=lambda item: item["webtoon"].name.lower())
+                self._available_updates.sort(key=self._priority_sort_key)
             self._schedule_results_refresh()
 
         if self._pending_checks > 0:
@@ -1127,18 +1361,19 @@ class UpdatePage(DownloadHistoryPageBase):
 
     def _finish_check_cycle(self):
         count = len(self._available_updates)
-        if count == 0:
+        attention_count = len(self._attention_items)
+        if count == 0 and attention_count > 0:
+            self.status_label.setText(t("updates.page.status.attention_only", count=attention_count))
+        elif count > 0 and attention_count > 0:
+            self.status_label.setText(t("updates.page.status.updates_and_attention", updates=count, attention=attention_count))
+        elif count == 0:
             self.status_label.setText(t("updates.page.status.none_found"))
         elif count == 1:
             self.status_label.setText(t("updates.page.status.one_found"))
         else:
             self.status_label.setText(t("updates.page.status.many_found", count=count))
 
-        if self._check_errors:
-            error_key = "updates.page.error.check_saved_one" if self._check_errors == 1 else "updates.page.error.check_saved_many"
-            self.set_error_text(t(error_key, count=self._check_errors))
-        else:
-            self.set_error_text("")
+        self.set_error_text("")
 
         self.settings_store.save_remote_update_counts(
             self._last_check_counts_by_name,
@@ -1159,9 +1394,31 @@ class UpdatePage(DownloadHistoryPageBase):
     def _current_empty_message(self) -> str:
         if self._pending_search.strip():
             return t("updates.page.empty.no_match")
+        if self._active_triage_filter == "needs_attention" and not self._attention_items:
+            return t("updates.page.empty.no_attention")
         if self._completed_checks < self._pending_checks:
             return self._empty_message
         return t("updates.page.empty.none_now")
+
+    def _looks_like_access_block(self, error: str) -> bool:
+        text = " ".join(str(error or "").casefold().split())
+        if not text:
+            return False
+        return any(
+            marker in text
+            for marker in (
+                "cloudflare",
+                "challenge",
+                "captcha",
+                "forbidden",
+                "403",
+                "blocked",
+                "authorization",
+                "authorize",
+                "login",
+                "session",
+            )
+        )
 
     def _relayout_cards(self):
         if self._cards_layout is None or not self._entry_widgets:
