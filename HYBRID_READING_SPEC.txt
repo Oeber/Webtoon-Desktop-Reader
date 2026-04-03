@@ -1,0 +1,521 @@
+Hybrid Online/Offline Reading Spec
+
+Goal
+
+Let the user open a supported title immediately from Discover or a tracked remote entry, read it in the existing viewer without a full library download first, keep progress/bookmarks stable across remote, cached, and downloaded chapters, and later promote that title into a normal offline library entry without losing state.
+
+Current Constraints In This Repo
+
+1. Viewer entry points are local-library-oriented.
+   - WindowNavigator.open_chapter() in gui/main_window_controllers.py opens the viewer with a Webtoon object and a local chapter index.
+   - ViewerPage.load_webtoon() in gui/viewer/viewer_page.py expects chapter names backed by local chapter storage.
+
+2. Progress and chapter bookmarks are keyed by display name + chapter name.
+   - ProgressStore stores rows by (webtoon_name, chapter) in stores/progress_store.py.
+   - WebtoonSettingsStore bookmarked_chapters are also keyed by local chapter names in stores/webtoon_settings_store.py.
+   - This is the biggest architectural blocker for hybrid reading.
+
+3. Chapter storage already has a clean local abstraction for files and extracted archives.
+   - core/chapter_storage.py already normalizes directories and .cbz/.cbt extraction.
+   - This is the right place to extend for cached remote chapters.
+
+4. Scrapers already expose stable remote metadata.
+   - SeriesInfo/ChapterInfo in scrapers/models.py include site, series_id, chapter id, title, url, pages.
+   - That gives us enough identity to build hybrid records without guessing.
+
+5. Download/update flows already persist source metadata.
+   - download_tracking.save_series_source_metadata() in gui/downloader/download_tracking.py writes source_url/source_series_id/source_site/content_type.
+   - That can be reused when tracked remote titles are later promoted into local titles.
+
+Feature Definition
+
+This should be built as one feature with two user-facing pillars:
+
+1. Instant remote reading
+   - From Discover and tracked remote titles, the user can press Read Now and open the viewer immediately.
+
+2. Hybrid library state
+   - A title can exist as:
+     - tracked: remote metadata only
+     - cached: remote title with one or more cached chapters
+     - downloaded: normal local title
+     - mixed: downloaded title with additional remote-only chapters or cache state
+
+Product Rules
+
+1. Progress should survive state changes.
+   - Reading a remote chapter and later downloading it should preserve resume position.
+
+2. The user should not need to care whether a chapter is remote, cached, or local unless they open a details view or manage storage.
+
+3. Local downloaded files remain the permanent ownership model.
+   - Cache is disposable.
+   - Download is explicit permanence.
+
+4. Existing local-library behavior should keep working unchanged for users who never use hybrid reading.
+
+MVP Scope
+
+Phase 1 should not try to redesign the whole library. The MVP should deliver:
+
+1. Read Now from Discover detail for supported image chapters.
+2. Remote chapter caching into app data.
+3. Progress persistence for remote chapters using a stable source identity.
+4. Reopen last-read cached chapter without re-fetching pages when cache exists.
+5. Promote tracked/cached title to downloaded local title later without losing progress.
+
+Not in MVP:
+
+1. Full remote browsing from the main library grid.
+2. Smart eviction policies.
+3. Multi-source title abstraction.
+4. Text/webnovel hybrid reading unless the image flow is stable first.
+5. Background sync automation.
+
+Data Model Changes
+
+Add a new remote title table and a new chapter identity table version rather than overloading webtoon_settings too early.
+
+1. tracked_titles
+   Purpose:
+   - remote-first title records that are not yet full local library entries
+
+   Columns:
+   - track_id TEXT PRIMARY KEY
+   - site_name TEXT NOT NULL
+   - series_id TEXT NOT NULL
+   - title TEXT NOT NULL
+   - source_url TEXT NOT NULL
+   - source_config TEXT NOT NULL DEFAULT '{}'
+   - content_type TEXT NOT NULL DEFAULT 'webtoon'
+   - cover_url TEXT NOT NULL DEFAULT ''
+   - cover_headers TEXT NOT NULL DEFAULT '{}'
+   - status TEXT NOT NULL DEFAULT 'tracked'
+   - cache_status TEXT NOT NULL DEFAULT 'none'
+   - local_webtoon_name TEXT NOT NULL DEFAULT ''
+   - last_read_chapter_key TEXT NOT NULL DEFAULT ''
+   - last_checked_at INTEGER
+   - updated_at INTEGER NOT NULL
+   - created_at INTEGER NOT NULL
+
+   Indexes:
+   - UNIQUE(site_name, series_id)
+   - INDEX(updated_at DESC)
+
+2. chapter_refs
+   Purpose:
+   - stable identity mapping shared across remote, cached, and downloaded chapter representations
+
+   Columns:
+   - chapter_key TEXT PRIMARY KEY
+   - owner_kind TEXT NOT NULL
+     values: tracked, local
+   - owner_id TEXT NOT NULL
+     tracked_titles.track_id or local webtoon name
+   - site_name TEXT NOT NULL DEFAULT ''
+   - series_id TEXT NOT NULL DEFAULT ''
+   - remote_chapter_id TEXT NOT NULL DEFAULT ''
+   - remote_url TEXT NOT NULL DEFAULT ''
+   - local_chapter_name TEXT NOT NULL DEFAULT ''
+   - chapter_title TEXT NOT NULL DEFAULT ''
+   - chapter_number REAL
+   - cache_path TEXT NOT NULL DEFAULT ''
+   - cache_state TEXT NOT NULL DEFAULT 'none'
+   - updated_at INTEGER NOT NULL
+   - created_at INTEGER NOT NULL
+
+   Indexes:
+   - UNIQUE(site_name, series_id, remote_chapter_id) where remote fields are present
+   - INDEX(owner_kind, owner_id)
+
+3. progress table extension
+   Add nullable chapter_key TEXT.
+
+   Migration rule:
+   - existing rows keep working
+   - local rows backfill chapter_key as local::<webtoon_name>::<chapter_name>
+
+4. scene_bookmarks table extension
+   Add nullable chapter_key TEXT.
+
+5. Optional later:
+   - cached_assets table if cache accounting grows more complex
+   - read_history table if activity feed is added later
+
+Identity Rules
+
+All hybrid reading must be built on one stable chapter key format.
+
+Recommended formats:
+
+1. Local chapter:
+   local::<normalized_webtoon_name>::<normalized_chapter_name>
+
+2. Remote tracked chapter:
+   remote::<site_name>::<series_id>::<remote_chapter_id>
+
+3. Fallback if a scraper lacks chapter id:
+   remote::<site_name>::<series_id>::url::<sha1(remote_url)>
+
+Rules:
+
+1. Viewer save/load paths should prefer chapter_key.
+2. Existing name-based calls should be supported during migration.
+3. When a remote title is later downloaded, the importer should remap matching remote chapter_keys to the new local chapter_keys while preserving progress.
+
+Storage Layout
+
+Add a dedicated cache root under data.
+
+1. data/remote_cache/
+   - titles/<track_id>/meta.json
+   - titles/<track_id>/chapters/<chapter_key_hash>/
+   - titles/<track_id>/chapters/<chapter_key_hash>/001.jpg
+   - titles/<track_id>/chapters/<chapter_key_hash>/002.jpg
+   - titles/<track_id>/chapters/<chapter_key_hash>/chapter.json
+
+2. chapter.json should include:
+   - chapter_key
+   - site_name
+   - series_id
+   - remote_chapter_id
+   - remote_url
+   - chapter_title
+   - chapter_number
+   - fetched_at
+   - content_type
+   - page_count
+
+3. Cache writes must be atomic.
+   - download to temp folder
+   - write metadata
+   - rename into final path
+
+Core New Types
+
+Add lightweight adapter models rather than forcing remote chapters into the current Webtoon model too early.
+
+1. core/hybrid_models.py
+   - TrackedTitle
+   - HybridChapterRef
+   - ViewerChapterSource
+
+2. ViewerChapterSource should describe one chapter regardless of origin:
+   - chapter_key
+   - title
+   - number
+   - content_type
+   - source_kind: local, cached_remote, live_remote
+   - storage_path
+   - remote_url
+   - page_urls
+   - local_chapter_name
+
+Repository / Store Changes
+
+1. New store: stores/tracked_titles_store.py
+   Responsibilities:
+   - upsert tracked titles from discovery entries and remote series info
+   - list tracked titles
+   - promote tracked title to local binding
+   - update cache/last-read state
+
+2. New store: stores/chapter_ref_store.py
+   Responsibilities:
+   - create/get chapter_key mappings
+   - resolve remote chapter to cache path
+   - remap remote chapter keys to local chapter keys on promotion/download
+
+3. ProgressStore changes in stores/progress_store.py
+   - add chapter_key-aware save/get methods
+   - keep old methods for local callers
+   - latest progress lookups should prefer chapter_key ordering when available
+
+4. Scene bookmark store changes
+   - save scene marks by chapter_key
+   - keep chapter name as fallback for old rows during migration
+
+5. WebtoonSettingsStore changes
+   - do not force tracked remote titles into webtoon_settings yet
+   - only bind to local webtoon name once a real local title exists
+
+Viewer Changes
+
+Primary goal: let the viewer load a chapter list that is not strictly tied to local folder chapter names.
+
+1. Add a new viewer entry path:
+   - ViewerPage.load_hybrid_title(...)
+   Inputs:
+   - display title
+   - owner descriptor
+   - list[ViewerChapterSource]
+   - start_chapter_key
+   - start_scroll
+
+2. Keep existing local entry path:
+   - load_webtoon(webtoon, ...)
+   This should internally adapt local chapters into ViewerChapterSource objects over time.
+
+3. Introduce a resolver layer in the viewer:
+   - local source -> use existing chapter_storage helpers
+   - cached_remote -> use cache folder like a normal local chapter folder
+   - live_remote -> trigger fetch/cache, then hand off to cached path
+
+4. Save progress by chapter_key first.
+   - local source also writes legacy (webtoon_name, chapter) during migration
+   - remote source only writes chapter_key-based progress
+
+5. Scene bookmark support:
+   - remote/cached chapters should allow scene marks once cache is ready
+   - for MVP, only enable scene bookmarks after a remote chapter has been cached locally
+
+6. Error handling:
+   - if live remote fetch fails mid-open, show retry, authorize site, and open source page actions
+   - do not dump the user back into a broken viewer state
+
+Remote Read Service
+
+Add a focused service instead of overloading DownloadService.
+
+1. New module: gui/viewer/remote_read_service.py
+   Responsibilities:
+   - fetch chapter page URLs through the scraper
+   - download chapter images into remote cache
+   - expose progress callbacks for chapter-open overlay
+   - reuse existing site auth patterns and requests helpers
+
+2. This service should not register work in the normal download/update history by default.
+   Reason:
+   - reading cache activity is not the same as download ownership
+
+3. It may later emit lightweight recent activity entries if a reading history feature is added.
+
+Discovery Changes
+
+1. gui/discovery/detail_page.py
+   Add:
+   - Read Now button
+   - Track Title button
+   - Read Latest button after series metadata is loaded
+
+2. Read Now flow:
+   - load series with scraper.get_series_info()
+   - choose first unread or first chapter
+   - create/update tracked title
+   - build chapter_refs
+   - open viewer through hybrid entry path
+
+3. Track Title flow:
+   - save tracked title without downloading
+   - make it appear in a tracked area of the app
+
+Library / Navigation Changes
+
+Do not force tracked titles into the existing library grid in MVP if that causes too much coupling.
+
+Recommended rollout:
+
+1. Add a separate page first:
+   - gui/tracked/tracked_page.py
+
+2. This page shows:
+   - tracked title cards
+   - latest available chapter count if known
+   - Read Latest
+   - Continue
+   - Download
+   - Remove
+
+3. Later, tracked titles can be merged into the main library UI as another built-in section.
+
+4. MainWindow / navigation changes:
+   - add open_tracked()
+   - add sidebar button only after MVP backend is stable
+
+Why separate page first:
+   - current library page is optimized around scanned local titles and category sections
+   - tracked remote titles have different loading and status behavior
+   - a separate page lowers migration risk
+
+Promotion Flow
+
+When a tracked/cached title is downloaded into the real library:
+
+1. Downloader resolves final saved local title name as it does today.
+2. tracked_titles_store binds track_id.local_webtoon_name to that saved title.
+3. chapter_ref_store attempts to map remote chapter refs to local chapter names using:
+   - exact remote chapter id match if scraper supplies ids in saved metadata
+   - exact URL match
+   - normalized chapter title/number match
+4. Progress rows for remote chapter_keys are copied or remapped onto local chapter_keys.
+5. Old remote progress can be retained for audit/debug until cleanup is safe.
+
+Matching Heuristics For Promotion
+
+Priority order:
+
+1. remote_chapter_id exact match
+2. remote_url exact match
+3. same chapter number and normalized title
+4. same ordered index when the chapter count is unchanged
+
+Do not delete remote mappings immediately after promotion.
+Mark them remapped and keep them until cache cleanup runs.
+
+Cache Policy
+
+MVP:
+
+1. Cache on chapter open.
+2. Keep cached chapters until manual cleanup or future limit policy.
+3. Show cache presence on tracked title detail/page.
+
+Phase 2:
+
+1. per-title cache size limit
+2. global cache budget
+3. pin chapter cache
+4. evict oldest unread-safe cache first
+
+Database Migration Plan
+
+1. Add schema version bump in stores/db.py
+2. Create tracked_titles and chapter_refs
+3. Add chapter_key to progress and scene bookmark tables
+4. Backfill existing local progress rows with deterministic local chapter keys
+5. Leave old code paths functional
+
+Backfill format:
+   chapter_key = local::<webtoon_name>::<chapter>
+
+UI Sequence
+
+Phase 1:
+
+1. Discover detail:
+   - Read Now
+   - Track
+
+2. Viewer:
+   - loading overlay text for remote fetch/cache
+   - remote failure actions
+
+3. New Tracked page:
+   - Continue
+   - Read Latest
+   - Download
+   - Remove
+
+Phase 2:
+
+1. tracked title detail
+2. cache badges
+3. open next unread remotely
+4. promote to library messaging
+
+Implementation Order
+
+1. Schema and stores
+   - tracked_titles_store
+   - chapter_ref_store
+   - progress chapter_key support
+   - scene bookmark chapter_key support
+
+2. Cache storage helpers
+   - core/remote_cache.py
+   - atomic cache writes
+   - cache metadata helpers
+
+3. Viewer adapter layer
+   - ViewerChapterSource
+   - load_hybrid_title()
+   - chapter_key progress path
+
+4. Remote read service
+   - fetch remote chapter
+   - store in cache
+   - return cached chapter source
+
+5. Discover integration
+   - Track
+   - Read Now
+
+6. Tracked page
+   - list tracked titles
+   - continue/read latest/download/remove
+
+7. Download promotion bridge
+   - tracked title binding
+   - progress remap
+
+Technical Risks
+
+1. Scraper variance
+   - some scrapers may provide stable chapter ids, some may not
+   Mitigation:
+   - support URL-hash fallback
+
+2. Viewer assumptions about local chapter names
+   - several code paths likely assume chapter names map to disk folders
+   Mitigation:
+   - isolate through ViewerChapterSource adapter
+
+3. Bookmark/progress duplication during migration
+   Mitigation:
+   - dual-write local rows temporarily
+   - do one-direction reads with chapter_key priority
+
+4. Auth expiry during remote read
+   Mitigation:
+   - reuse site auth dialog flow and show targeted retry controls
+
+5. Promotion mismatch between remote and downloaded chapter naming
+   Mitigation:
+   - keep explicit chapter_refs and remap heuristics instead of assuming folder names
+
+Acceptance Criteria For MVP
+
+1. User can open a supported title from Discover and read a chapter without first downloading the series.
+2. The opened chapter is cached under data/remote_cache.
+3. Closing and reopening resumes from saved progress for the same remote chapter.
+4. A tracked title can appear in a dedicated tracked page even with zero local library files.
+5. Downloading that title later preserves progress for already read chapters whenever a chapter match is found.
+6. Existing fully local library reading behavior remains unchanged.
+
+Suggested File Touch Set
+
+Primary files likely involved:
+
+- stores/db.py
+- stores/progress_store.py
+- stores/scene_bookmark_store.py
+- stores/webtoon_settings_store.py
+- gui/main_window.py
+- gui/main_window_controllers.py
+- gui/viewer/viewer_page.py
+- gui/discovery/detail_page.py
+- gui/downloader/download_tracking.py
+- core/chapter_storage.py
+
+New files:
+
+- core/hybrid_models.py
+- core/remote_cache.py
+- stores/tracked_titles_store.py
+- stores/chapter_ref_store.py
+- gui/viewer/remote_read_service.py
+- gui/tracked/tracked_page.py
+
+Recommended First Milestone
+
+Do not start with the tracked page.
+
+The first milestone should be:
+
+1. Add chapter_key support.
+2. Add remote cache helpers.
+3. Add a hidden dev-only or temporary Discover Read Now path.
+4. Open one cached remote chapter in the existing viewer.
+5. Save and restore progress for that chapter.
+
+If that milestone feels solid, the rest of the feature becomes product work instead of risky architecture work.

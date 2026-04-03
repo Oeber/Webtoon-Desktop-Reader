@@ -64,6 +64,7 @@ class SiteAuthDialog(QDialog):
         self._last_validation_error = ""
         self._auto_accept_pending = False
         self._validation_inflight = False
+        self._finished_result = 0
 
         self.setWindowTitle(t("site_auth.title", site_label=self.site_label))
         self.resize(1180, 820)
@@ -157,7 +158,7 @@ class SiteAuthDialog(QDialog):
     def exec_with_background_grace(self, grace_ms: int = 3500) -> int:
         if self._has_reusable_session():
             self._save_and_accept(auto=True)
-            return self.result()
+            return self._finished_result or self.result()
 
         wait_loop = QEventLoop(self)
         grace_timer = QTimer(self)
@@ -177,13 +178,13 @@ class SiteAuthDialog(QDialog):
             except Exception:
                 pass
 
-        if self.result() != 0:
-            return self.result()
+        if self._finished_result != 0:
+            return self._finished_result
 
         if self._has_reusable_session():
             self._save_and_accept(auto=True)
-            if self.result() != 0:
-                return self.result()
+            if self._finished_result != 0:
+                return self._finished_result
 
         self.setModal(True)
         return self.exec()
@@ -469,6 +470,7 @@ class SiteAuthDialog(QDialog):
         self.accept()
 
     def done(self, result: int):
+        self._finished_result = int(result)
         self._cleanup_webengine()
         super().done(result)
 

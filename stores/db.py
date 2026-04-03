@@ -1,4 +1,4 @@
-import sqlite3
+﻿import sqlite3
 import threading
 import time
 from contextlib import suppress
@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -281,6 +281,8 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         12: _migration_12_create_notifications,
         13: _migration_13_add_source_config_to_webtoon_settings,
         14: _migration_14_remove_notifications,
+        15: _migration_15_add_chapter_keys,
+        16: _migration_16_create_tracked_titles,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -295,6 +297,7 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS progress (
             webtoon_name   TEXT NOT NULL,
             chapter        TEXT NOT NULL,
+            chapter_key    TEXT,
             scroll         REAL NOT NULL DEFAULT 0.0,
             total_images   INTEGER NOT NULL DEFAULT 0,
             updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
@@ -349,10 +352,14 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_download_history_updated_at
             ON download_history(updated_at DESC);
 
+        CREATE INDEX IF NOT EXISTS idx_progress_chapter_key
+            ON progress(chapter_key);
+
         CREATE TABLE IF NOT EXISTS scene_bookmarks (
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             webtoon_name   TEXT NOT NULL,
             chapter        TEXT NOT NULL,
+            chapter_key    TEXT,
             packed         REAL NOT NULL DEFAULT 0.0,
             image_index    INTEGER NOT NULL DEFAULT 0,
             note           TEXT NOT NULL DEFAULT '',
@@ -363,6 +370,31 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_scene_bookmarks_lookup
             ON scene_bookmarks(webtoon_name, chapter, updated_at DESC, id DESC);
+
+        CREATE INDEX IF NOT EXISTS idx_scene_bookmarks_chapter_key
+            ON scene_bookmarks(chapter_key, updated_at DESC, id DESC);
+
+        CREATE TABLE IF NOT EXISTS tracked_titles (
+            track_id               TEXT PRIMARY KEY,
+            site_name              TEXT NOT NULL,
+            series_id              TEXT NOT NULL,
+            title                  TEXT NOT NULL,
+            source_url             TEXT NOT NULL DEFAULT '',
+            content_type           TEXT NOT NULL DEFAULT 'webtoon',
+            cover_url              TEXT NOT NULL DEFAULT '',
+            status                 TEXT NOT NULL DEFAULT 'tracked',
+            cache_status           TEXT NOT NULL DEFAULT 'none',
+            local_webtoon_name     TEXT NOT NULL DEFAULT '',
+            last_read_chapter_key  TEXT NOT NULL DEFAULT '',
+            created_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracked_titles_site_series
+            ON tracked_titles(site_name, series_id);
+
+        CREATE INDEX IF NOT EXISTS idx_tracked_titles_updated_at
+            ON tracked_titles(updated_at DESC);
 
         """
     )
@@ -375,6 +407,7 @@ def _migration_1_create_base_schema(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS progress (
             webtoon_name   TEXT NOT NULL,
             chapter        TEXT NOT NULL,
+            chapter_key    TEXT,
             scroll         REAL NOT NULL DEFAULT 0.0,
             updated_at     INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             PRIMARY KEY (webtoon_name, chapter)
@@ -463,6 +496,7 @@ def _migration_8_create_scene_bookmarks(conn: sqlite3.Connection) -> None:
             id             INTEGER PRIMARY KEY AUTOINCREMENT,
             webtoon_name   TEXT NOT NULL,
             chapter        TEXT NOT NULL,
+            chapter_key    TEXT,
             packed         REAL NOT NULL DEFAULT 0.0,
             image_index    INTEGER NOT NULL DEFAULT 0,
             note           TEXT NOT NULL DEFAULT '',
@@ -515,3 +549,56 @@ def _migration_13_add_source_config_to_webtoon_settings(conn: sqlite3.Connection
 
 def _migration_14_remove_notifications(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS notifications")
+
+
+def _migration_15_add_chapter_keys(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, 'progress', 'chapter_key', 'TEXT')
+    _add_column_if_missing(conn, 'scene_bookmarks', 'chapter_key', 'TEXT')
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_progress_chapter_key
+            ON progress(chapter_key)
+        """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_scene_bookmarks_chapter_key
+            ON scene_bookmarks(chapter_key, updated_at DESC, id DESC)
+        """)
+    conn.execute("""
+        UPDATE progress
+        SET chapter_key = 'local::' || REPLACE(COALESCE(webtoon_name, ''), ':', '%3A') || '::' || REPLACE(COALESCE(chapter, ''), ':', '%3A')
+        WHERE COALESCE(TRIM(chapter_key), '') = ''
+        """)
+    conn.execute("""
+        UPDATE scene_bookmarks
+        SET chapter_key = 'local::' || REPLACE(COALESCE(webtoon_name, ''), ':', '%3A') || '::' || REPLACE(COALESCE(chapter, ''), ':', '%3A')
+        WHERE COALESCE(TRIM(chapter_key), '') = ''
+        """)
+
+
+
+
+def _migration_16_create_tracked_titles(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS tracked_titles (
+            track_id               TEXT PRIMARY KEY,
+            site_name              TEXT NOT NULL,
+            series_id              TEXT NOT NULL,
+            title                  TEXT NOT NULL,
+            source_url             TEXT NOT NULL DEFAULT '',
+            content_type           TEXT NOT NULL DEFAULT 'webtoon',
+            cover_url              TEXT NOT NULL DEFAULT '',
+            status                 TEXT NOT NULL DEFAULT 'tracked',
+            cache_status           TEXT NOT NULL DEFAULT 'none',
+            local_webtoon_name     TEXT NOT NULL DEFAULT '',
+            last_read_chapter_key  TEXT NOT NULL DEFAULT '',
+            created_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tracked_titles_site_series
+            ON tracked_titles(site_name, series_id);
+
+        CREATE INDEX IF NOT EXISTS idx_tracked_titles_updated_at
+            ON tracked_titles(updated_at DESC);
+        """
+    )

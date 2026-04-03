@@ -3,6 +3,7 @@ import os
 import shutil
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer, Signal
@@ -72,6 +73,7 @@ from stores.progress_store import get_instance as get_progress_store
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from core.update_utils import cooldown_remaining
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
+from stores.tracked_titles_store import get_instance as get_tracked_titles_store
 
 
 CARD_SPACING = 16
@@ -445,6 +447,7 @@ class FlatLibrarySection(QFrame):
 
 class LibraryPage(QWidget):
     delete_paths_finished = Signal(object)
+    merge_finished = Signal(object)
 
     def __init__(self, main_window):
         super().__init__()
@@ -453,6 +456,7 @@ class LibraryPage(QWidget):
         self.progress_store = get_progress_store()
         self.scene_bookmark_store = get_scene_bookmark_store()
         self.settings_store = get_webtoon_settings()
+        self.tracked_titles_store = get_tracked_titles_store()
         self._webtoons = []
         self._cards = []
         self._cards_by_name = {}
@@ -468,6 +472,7 @@ class LibraryPage(QWidget):
         self._pending_incremental_refresh_names = set()
         self._update_controls_refresh_pending = False
         self._delete_in_progress = False
+        self._merge_in_progress = False
         self._pending_deleted_names = set()
         self._card_scale = int(load_setting(CARD_SCALE_KEY, 100))
         self._pending_card_scale = self._card_scale
@@ -560,6 +565,11 @@ class LibraryPage(QWidget):
         self.move_selected_btn.clicked.connect(self._show_move_selected_menu)
         batch_layout.addWidget(self.move_selected_btn)
 
+        self.merge_selected_btn = QPushButton(t("library.batch.merge_selected"), self.batch_bar)
+        self.merge_selected_btn.setStyleSheet(self.mark_completed_btn.styleSheet())
+        self.merge_selected_btn.clicked.connect(self._merge_selected)
+        batch_layout.addWidget(self.merge_selected_btn)
+
         self.delete_selected_btn = QPushButton(t("library.batch.delete_selected"), self.batch_bar)
         self.delete_selected_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.delete_selected_btn.clicked.connect(self._delete_selected)
@@ -621,15 +631,17 @@ class LibraryPage(QWidget):
         self._input_blocker.hide()
         self._input_blocker.setStyleSheet(TRANSPARENT_BG_STYLE)
         self.delete_paths_finished.connect(self._on_delete_paths_finished)
+        self.merge_finished.connect(self._on_merge_finished)
 
         self.load_library()
 
     def load_library(self):
         logger.info("Loading library page contents")
         self._pending_reload = False
-        self._webtoons = self._filter_in_progress_manual_downloads(
+        local_webtoons = self._filter_in_progress_manual_downloads(
             scan_library(load_library_path(), self.settings_store)
         )
+        self._webtoons = [*self._tracked_library_placeholders(local_webtoons), *local_webtoons]
         self._category_names = self._load_custom_categories()
         self._section_order = self._reconcile_section_order(load_section_order())
         self._prune_selection()
@@ -651,6 +663,27 @@ class LibraryPage(QWidget):
         self._refresh_webtoon_flags()
         self._schedule_update_controls_refresh(delay_ms=0)
         self._sync_manual_download_cards()
+
+    def _tracked_library_placeholders(self, local_webtoons) -> list[SimpleNamespace]:
+        local_names = {str(getattr(webtoon, "name", "") or "").strip() for webtoon in (local_webtoons or [])}
+        placeholders = []
+        for row in self.tracked_titles_store.list_library_titles():
+            local_name = str(row.get("local_webtoon_name") or "").strip()
+            title = str(row.get("title") or "").strip()
+            if local_name or not title or title in local_names:
+                continue
+            placeholders.append(SimpleNamespace(
+                name=title,
+                path="",
+                storage_path="",
+                thumbnail=str(self.settings_store.get(title) or row.get("cover_url") or "").strip(),
+                chapters=[],
+                category=None,
+                content_type=str(row.get("content_type") or "webtoon").strip() or "webtoon",
+                _tracked_library_placeholder=True,
+                _tracked_row=dict(row),
+            ))
+        return placeholders
 
     def _refresh_webtoon_flags(self):
         section_changed = False
@@ -708,6 +741,7 @@ class LibraryPage(QWidget):
         self.bookmark_selected_btn.setStyleSheet(BUTTON_STYLE)
         self.update_selected_btn.setStyleSheet(BUTTON_STYLE)
         self.move_selected_btn.setStyleSheet(BUTTON_STYLE)
+        self.merge_selected_btn.setStyleSheet(BUTTON_STYLE)
         self.delete_selected_btn.setStyleSheet(DELETE_BUTTON_STYLE)
         self.clear_selection_btn.setStyleSheet(BUTTON_STYLE)
         self.scroll.setStyleSheet(SCROLL_AREA_STYLE)
@@ -1253,6 +1287,23 @@ class LibraryPage(QWidget):
     def _open_detail(self, webtoon):
         if time.monotonic() < self._ignore_open_until:
             return
+        if getattr(webtoon, "_tracked_library_placeholder", False):
+            row = dict(getattr(webtoon, "_tracked_row", {}) or {})
+            synthetic = SimpleNamespace(
+                name=webtoon.name,
+                path=load_library_path(),
+                storage_path="",
+                chapters=[],
+                thumbnail=str(self.settings_store.get(webtoon.name) or getattr(webtoon, "thumbnail", "") or "").strip(),
+                category=getattr(webtoon, "category", None),
+                is_bookmarked=bool(getattr(webtoon, "is_bookmarked", False)),
+                has_new_chapter=bool(getattr(webtoon, "has_new_chapter", False)),
+                content_type=str(getattr(webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+                _tracked_library_placeholder=True,
+                _tracked_row=row,
+            )
+            self.main_window.open_detail(synthetic, force=True)
+            return
         if getattr(webtoon, "_download_placeholder", False):
             if self._manual_download_service is None:
                 return
@@ -1435,9 +1486,11 @@ class LibraryPage(QWidget):
             self.settings_store.get_source_url(name) and not self.settings_store.get_completed(name)
             for name in self._selected_webtoons
         )
+        mergeable = self._selection_is_mergeable()
         self.update_selected_btn.setEnabled(updatable)
         self.bookmark_selected_btn.setEnabled(True)
         self.move_selected_btn.setEnabled(self._categories_enabled())
+        self.merge_selected_btn.setEnabled(mergeable)
 
     def _clear_selection(self):
         self._selected_webtoons.clear()
@@ -1486,6 +1539,202 @@ class LibraryPage(QWidget):
             self._start_update(name)
         self._clear_selection()
 
+
+    def _selection_is_mergeable(self) -> bool:
+        names = [name for name in self._selected_webtoons if name in {webtoon.name for webtoon in self._webtoons}]
+        if len(names) < 2 or self._delete_in_progress or self._merge_in_progress:
+            return False
+        selected = [webtoon for webtoon in self._webtoons if webtoon.name in names]
+        if any(getattr(webtoon, "_download_placeholder", False) or getattr(webtoon, "_tracked_library_placeholder", False) for webtoon in selected):
+            return False
+        busy_names = set(self._active_updates) | set(self._active_manual_downloads)
+        if any(webtoon.name in busy_names for webtoon in selected):
+            return False
+        content_types = {str(getattr(webtoon, "content_type", "") or "").strip() for webtoon in selected}
+        return len(content_types) <= 1
+
+    def _merge_selected(self):
+        if self._merge_in_progress or self._delete_in_progress:
+            return
+        selected = [webtoon for webtoon in self._webtoons if webtoon.name in self._selected_webtoons]
+        if len(selected) < 2:
+            return
+        if any(getattr(webtoon, "_download_placeholder", False) for webtoon in selected):
+            QMessageBox.warning(self, t("library.merge.invalid_title"), t("library.merge.invalid_downloads"))
+            return
+        busy_names = set(self._active_updates) | set(self._active_manual_downloads)
+        if any(webtoon.name in busy_names for webtoon in selected):
+            QMessageBox.warning(self, t("library.merge.invalid_title"), t("library.merge.invalid_downloads"))
+            return
+        content_types = {str(getattr(webtoon, "content_type", "") or "").strip() for webtoon in selected}
+        if len(content_types) > 1:
+            QMessageBox.warning(self, t("library.merge.invalid_title"), t("library.merge.invalid_types"))
+            return
+
+        names = sorted(webtoon.name for webtoon in selected)
+        target_name, ok = QInputDialog.getItem(
+            self,
+            t("library.merge.choose_title"),
+            t("library.merge.choose_prompt"),
+            names,
+            0,
+            False,
+        )
+        if not ok or not str(target_name or "").strip():
+            return
+        target_name = str(target_name).strip()
+        source_names = [name for name in names if name != target_name]
+        if not source_names:
+            return
+
+        answer = QMessageBox.question(
+            self,
+            t("library.merge.confirm_title"),
+            t("library.merge.confirm_text", target=target_name, count=len(source_names)),
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        self._merge_in_progress = True
+        self._block_interaction_temporarily(1.5)
+        worker = threading.Thread(
+            target=self._merge_webtoons_worker,
+            args=(target_name, source_names, load_library_path()),
+            daemon=True,
+        )
+        worker.start()
+
+    def _merge_webtoons_worker(self, target_name: str, source_names: list[str], library_path: str):
+        payload = {
+            "target_name": target_name,
+            "source_names": list(source_names),
+            "merged_names": [],
+            "failed_names": [],
+            "chapter_name_maps": {},
+            "error": "",
+        }
+        try:
+            target_storage = resolve_existing_webtoon_storage_path(
+                library_path,
+                target_name,
+                settings_store=self.settings_store,
+            )
+            if not target_storage:
+                raise FileNotFoundError(target_name)
+            target_dir = self._ensure_merge_target_directory(target_name, target_storage)
+            for source_name in source_names:
+                try:
+                    source_storage = resolve_existing_webtoon_storage_path(
+                        library_path,
+                        source_name,
+                        settings_store=self.settings_store,
+                    )
+                    if not source_storage:
+                        raise FileNotFoundError(source_name)
+                    chapter_map = self._merge_storage_path_into_target(source_name, source_storage, target_dir)
+                    payload["chapter_name_maps"][source_name] = chapter_map
+                    payload["merged_names"].append(source_name)
+                except Exception as exc:
+                    logger.error("Failed to merge webtoon %s into %s", source_name, target_name, exc_info=exc)
+                    payload["failed_names"].append(source_name)
+        except Exception as exc:
+            logger.error("Failed to prepare merge into %s", target_name, exc_info=exc)
+            payload["error"] = str(exc or "")
+        self.merge_finished.emit(payload)
+
+    def _ensure_merge_target_directory(self, target_name: str, storage_path: str) -> str:
+        path = Path(storage_path)
+        if path.is_dir():
+            return str(path)
+        if not path.is_file():
+            raise FileNotFoundError(storage_path)
+        target_dir = path.parent / target_name
+        target_dir.mkdir(parents=True, exist_ok=True)
+        destination = self._unique_merge_destination(target_dir, path.name, target_name)
+        shutil.move(str(path), str(destination))
+        return str(target_dir)
+
+    def _merge_storage_path_into_target(self, source_name: str, storage_path: str, target_dir: str) -> dict[str, str]:
+        source_path = Path(storage_path)
+        destination_root = Path(target_dir)
+        chapter_map: dict[str, str] = {}
+        if source_path.is_dir():
+            children = sorted(source_path.iterdir(), key=lambda item: item.name.casefold())
+            for child in children:
+                destination = self._unique_merge_destination(destination_root, child.name, source_name)
+                shutil.move(str(child), str(destination))
+                chapter_map[child.name] = destination.name
+            try:
+                source_path.rmdir()
+            except OSError:
+                pass
+            return chapter_map
+        if source_path.is_file():
+            destination = self._unique_merge_destination(destination_root, source_path.name, source_name)
+            shutil.move(str(source_path), str(destination))
+            chapter_map[source_path.name] = destination.name
+            return chapter_map
+        raise FileNotFoundError(storage_path)
+
+    def _unique_merge_destination(self, destination_root: Path, original_name: str, source_name: str) -> Path:
+        destination_root.mkdir(parents=True, exist_ok=True)
+        candidate = destination_root / original_name
+        if not candidate.exists():
+            return candidate
+        source_label = self._sanitize_merge_suffix(source_name)
+        stem = Path(original_name).stem
+        suffix = Path(original_name).suffix
+        attempt = 1
+        while True:
+            infix = f" ({source_label})" if attempt == 1 else f" ({source_label} {attempt})"
+            candidate = destination_root / f"{stem}{infix}{suffix}"
+            if not candidate.exists():
+                return candidate
+            attempt += 1
+
+    @staticmethod
+    def _sanitize_merge_suffix(name: str) -> str:
+        keep = set(" ._-()[]abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+        normalized = "".join(ch if ch in keep else "_" for ch in str(name or "").strip())
+        return normalized or "Merged"
+
+    def _on_merge_finished(self, payload: object):
+        payload = payload if isinstance(payload, dict) else {}
+        target_name = str(payload.get("target_name") or "").strip()
+        merged_names = [str(name or "").strip() for name in (payload.get("merged_names") or []) if str(name or "").strip()]
+        failed_names = [str(name or "").strip() for name in (payload.get("failed_names") or []) if str(name or "").strip()]
+        chapter_name_maps = payload.get("chapter_name_maps") if isinstance(payload.get("chapter_name_maps"), dict) else {}
+        error_text = str(payload.get("error") or "").strip()
+
+        try:
+            if target_name and merged_names:
+                self.progress_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
+                self.scene_bookmark_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
+                self.settings_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
+            self.load_library()
+            self._apply_filter()
+            self._selected_webtoons = {target_name} if target_name else set()
+            self._sync_batch_actions()
+        finally:
+            self._merge_in_progress = False
+
+        if error_text and not merged_names:
+            QMessageBox.warning(self, t("library.merge.failed_title"), t("library.merge.failed_text"))
+            return
+        if failed_names:
+            self.main_window.statusBar().showMessage(
+                t("library.merge.partial", merged=len(merged_names), failed=len(failed_names), target=target_name),
+                6000,
+            )
+            return
+        if merged_names:
+            self.main_window.statusBar().showMessage(
+                t("library.merge.success", merged=len(merged_names), target=target_name),
+                6000,
+            )
+
     def _delete_selected(self):
         selected = sorted(self._selected_webtoons)
         if not selected:
@@ -1501,7 +1750,21 @@ class LibraryPage(QWidget):
     def _delete_webtoons(self, names: list[str]) -> bool:
         if not names or self._delete_in_progress:
             return False
-        if len(names) == 1:
+        tracked_names = {
+            webtoon.name
+            for webtoon in self._webtoons
+            if getattr(webtoon, "_tracked_library_placeholder", False)
+        }
+        tracked_only = [name for name in names if name in tracked_names]
+        local_only = [name for name in names if name not in tracked_names]
+        if tracked_only and not local_only:
+            if len(tracked_only) == 1:
+                message = t("library.remove_remote.single_text", name=tracked_only[0])
+                title = t("library.remove_remote.single_title")
+            else:
+                message = t("library.remove_remote.multi_text", count=len(tracked_only))
+                title = t("library.remove_remote.multi_title")
+        elif len(names) == 1:
             message = t("library.delete.single_text", name=names[0])
             title = t("library.delete.single_title")
         else:
@@ -1510,8 +1773,24 @@ class LibraryPage(QWidget):
         answer = QMessageBox.question(self, title, message, QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
         if answer != QMessageBox.Yes:
             return False
+        if tracked_only:
+            rows_by_name = {
+                str(getattr(webtoon, "name", "") or "").strip(): dict(getattr(webtoon, "_tracked_row", {}) or {})
+                for webtoon in self._webtoons
+                if getattr(webtoon, "_tracked_library_placeholder", False)
+            }
+            for name in tracked_only:
+                row = rows_by_name.get(name, {})
+                track_id = str(row.get("track_id") or "").strip()
+                if track_id:
+                    self.tracked_titles_store.remove_from_library(track_id)
+            self.settings_store.delete_webtoons(tracked_only)
+        if not local_only:
+            self.load_library()
+            self._apply_filter()
+            return True
         library_path = load_library_path()
-        pending_names = {str(name).strip() for name in names if str(name).strip()}
+        pending_names = {str(name).strip() for name in local_only if str(name).strip()}
         self._pending_deleted_names.update(pending_names)
         self._selected_webtoons.difference_update(pending_names)
         self._webtoons = [webtoon for webtoon in self._webtoons if webtoon.name not in self._pending_deleted_names]
@@ -1521,7 +1800,7 @@ class LibraryPage(QWidget):
 
         worker = threading.Thread(
             target=self._delete_webtoon_paths_worker,
-            args=(list(names), library_path),
+            args=(list(local_only), library_path),
             daemon=True,
         )
         worker.start()

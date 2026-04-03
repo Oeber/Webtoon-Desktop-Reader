@@ -530,6 +530,7 @@ class WebtoonSettingsStore:
 
         self._clear_scalar(webtoon_name, "custom_thumbnail")
 
+
     def rename_webtoon(self, old_name: str, new_name: str):
         logger.info("Renaming settings from %s to %s", old_name, new_name)
         old_custom = _custom_thumb_path(old_name)
@@ -593,6 +594,184 @@ class WebtoonSettingsStore:
         conn.execute(
             "DELETE FROM webtoon_settings WHERE webtoon_name = ?",
             (old_name,),
+        )
+        conn.commit()
+
+    def merge_webtoons(
+        self,
+        target_name: str,
+        source_names: list[str],
+        *,
+        chapter_name_maps: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        normalized_target = str(target_name or "").strip()
+        normalized_sources = []
+        seen = {normalized_target}
+        for source_name in source_names or []:
+            normalized = str(source_name or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            normalized_sources.append(normalized)
+        if not normalized_target or not normalized_sources:
+            return
+
+        logger.info("Merging settings into %s from %d webtoons", normalized_target, len(normalized_sources))
+        chapter_maps = {
+            str(name or "").strip(): {str(old or ""): str(new or "") for old, new in (mapping or {}).items()}
+            for name, mapping in (chapter_name_maps or {}).items()
+            if str(name or "").strip()
+        }
+
+        columns = (
+            "hide_filler",
+            "completed",
+            "bookmarked",
+            "zoom_override",
+            "custom_thumbnail",
+            "source_url",
+            "source_site",
+            "source_series_id",
+            "source_title",
+            "source_config",
+            "category",
+            "bookmarked_chapters",
+            "last_update_at",
+            "latest_new_chapter",
+            "remote_update_count",
+            "update_mode",
+            "auto_download_limit",
+            "content_type",
+            "manga_view_mode",
+            "manga_fit_mode",
+            "text_font_size",
+            "text_page_color",
+            "text_color",
+        )
+        rows = self.get_rows([normalized_target, *normalized_sources], columns=columns)
+        target_row = dict(rows.get(normalized_target, {}))
+        target_row.setdefault("hide_filler", 0)
+        target_row.setdefault("completed", 0)
+        target_row.setdefault("bookmarked", 0)
+        target_row.setdefault("remote_update_count", 0)
+        target_row.setdefault("update_mode", "notify")
+        target_row.setdefault("auto_download_limit", 0)
+
+        preferred_custom = self.get(normalized_target)
+        target_bookmarked_chapters = set(self.get_bookmarked_chapters(normalized_target))
+        for source_name in normalized_sources:
+            row = dict(rows.get(source_name, {}))
+            if not row:
+                continue
+            if not preferred_custom:
+                source_custom = self.get(source_name)
+                if source_custom and Path(source_custom).exists():
+                    preferred_custom = self.set(normalized_target, source_custom)
+
+            target_row["hide_filler"] = int(bool(target_row.get("hide_filler", 0)) or bool(row.get("hide_filler", 0)))
+            target_row["completed"] = int(bool(target_row.get("completed", 0)) or bool(row.get("completed", 0)))
+            target_row["bookmarked"] = int(bool(target_row.get("bookmarked", 0)) or bool(row.get("bookmarked", 0)))
+            target_row["zoom_override"] = target_row.get("zoom_override") if target_row.get("zoom_override") is not None else row.get("zoom_override")
+            target_row["source_url"] = target_row.get("source_url") or row.get("source_url")
+            target_row["source_site"] = target_row.get("source_site") or row.get("source_site")
+            target_row["source_series_id"] = target_row.get("source_series_id") or row.get("source_series_id")
+            target_row["source_title"] = target_row.get("source_title") or row.get("source_title")
+            target_row["source_config"] = target_row.get("source_config") or row.get("source_config")
+            target_row["category"] = target_row.get("category") or row.get("category")
+            target_row["last_update_at"] = max(
+                int(target_row.get("last_update_at") or 0),
+                int(row.get("last_update_at") or 0),
+            ) or None
+            target_row["remote_update_count"] = max(
+                int(target_row.get("remote_update_count") or 0),
+                int(row.get("remote_update_count") or 0),
+            )
+            target_row["auto_download_limit"] = max(
+                int(target_row.get("auto_download_limit") or 0),
+                int(row.get("auto_download_limit") or 0),
+            )
+            target_row["content_type"] = target_row.get("content_type") or row.get("content_type")
+            target_row["manga_view_mode"] = target_row.get("manga_view_mode") or row.get("manga_view_mode")
+            target_row["manga_fit_mode"] = target_row.get("manga_fit_mode") or row.get("manga_fit_mode")
+            target_row["text_font_size"] = target_row.get("text_font_size") if target_row.get("text_font_size") is not None else row.get("text_font_size")
+            target_row["text_page_color"] = target_row.get("text_page_color") or row.get("text_page_color")
+            target_row["text_color"] = target_row.get("text_color") or row.get("text_color")
+
+            current_mode = str(target_row.get("update_mode") or "notify").strip().lower()
+            source_mode = str(row.get("update_mode") or "notify").strip().lower()
+            if current_mode == "notify" and source_mode in {"auto_download", "ignore"}:
+                target_row["update_mode"] = source_mode
+
+            chapter_map = chapter_maps.get(source_name, {})
+            target_bookmarked_chapters.update(chapter_map.get(chapter, chapter) for chapter in self.get_bookmarked_chapters(source_name))
+
+            latest_new = str(target_row.get("latest_new_chapter") or "").strip()
+            source_latest = str(row.get("latest_new_chapter") or "").strip()
+            if not latest_new and source_latest:
+                target_row["latest_new_chapter"] = chapter_map.get(source_latest, source_latest)
+
+        target_row["bookmarked_chapters"] = json.dumps(sorted(target_bookmarked_chapters))
+
+        conn = get_connection()
+        self._ensure_row(conn, normalized_target)
+        conn.execute(
+            """
+            UPDATE webtoon_settings
+            SET hide_filler = ?,
+                completed = ?,
+                bookmarked = ?,
+                zoom_override = ?,
+                custom_thumbnail = ?,
+                source_url = ?,
+                source_site = ?,
+                source_series_id = ?,
+                source_title = ?,
+                source_config = ?,
+                category = ?,
+                bookmarked_chapters = ?,
+                last_update_at = ?,
+                latest_new_chapter = ?,
+                remote_update_count = ?,
+                update_mode = ?,
+                auto_download_limit = ?,
+                content_type = ?,
+                manga_view_mode = ?,
+                manga_fit_mode = ?,
+                text_font_size = ?,
+                text_page_color = ?,
+                text_color = ?
+            WHERE webtoon_name = ?
+            """,
+            (
+                int(target_row.get("hide_filler", 0) or 0),
+                int(target_row.get("completed", 0) or 0),
+                int(target_row.get("bookmarked", 0) or 0),
+                target_row.get("zoom_override"),
+                preferred_custom or target_row.get("custom_thumbnail"),
+                target_row.get("source_url"),
+                target_row.get("source_site"),
+                target_row.get("source_series_id"),
+                target_row.get("source_title"),
+                target_row.get("source_config"),
+                target_row.get("category"),
+                target_row.get("bookmarked_chapters"),
+                target_row.get("last_update_at"),
+                target_row.get("latest_new_chapter"),
+                int(target_row.get("remote_update_count", 0) or 0),
+                str(target_row.get("update_mode") or "notify"),
+                int(target_row.get("auto_download_limit", 0) or 0),
+                target_row.get("content_type"),
+                target_row.get("manga_view_mode"),
+                target_row.get("manga_fit_mode"),
+                target_row.get("text_font_size"),
+                target_row.get("text_page_color"),
+                target_row.get("text_color"),
+                normalized_target,
+            ),
+        )
+        conn.executemany(
+            "DELETE FROM webtoon_settings WHERE webtoon_name = ?",
+            [(source_name,) for source_name in normalized_sources],
         )
         conn.commit()
 

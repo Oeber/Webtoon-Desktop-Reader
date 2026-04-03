@@ -21,6 +21,7 @@ from gui.main_window_controllers import (
 )
 from gui.search.global_search import GlobalSearchDialog
 from gui.settings.first_run_dialog import FirstRunSetupDialog
+from gui.tracked.tracked_page import TrackedPage
 from gui.settings.settings_page import SettingsPage
 from gui.viewer.viewer_page import ViewerPage
 from stores.settings_store import (
@@ -50,6 +51,7 @@ class MainWindow(QMainWindow):
         self.viewer = ViewerPage(self)
         self.settings = SettingsPage(self)
         self.discovery = SiteBrowserPage(self)
+        self.tracked = TrackedPage(self)
         self.discovery_detail = DiscoveryDetailPage(self)
         self.downloader = DownloaderPage(self)
         self.updates = UpdatePage(self)
@@ -61,6 +63,7 @@ class MainWindow(QMainWindow):
             self.viewer,
             self.settings,
             self.discovery,
+            self.tracked,
             self.discovery_detail,
             self.downloader,
             self.updates,
@@ -126,6 +129,7 @@ class MainWindow(QMainWindow):
             getattr(self, "viewer", None),
             getattr(self, "settings", None),
             getattr(self, "discovery", None),
+            getattr(self, "tracked", None),
             getattr(self, "discovery_detail", None),
             getattr(self, "downloader", None),
             getattr(self, "updates", None),
@@ -155,6 +159,9 @@ class MainWindow(QMainWindow):
 
     def open_discovery(self):
         self.navigator.open_discovery()
+
+    def open_tracked(self):
+        self.navigator.open_tracked()
 
     def open_discovery_search(self, query: str = "", scraper: str = "") -> bool:
         return self.navigator.open_discovery_search(query=query, scraper=scraper)

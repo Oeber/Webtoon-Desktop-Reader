@@ -60,6 +60,8 @@ from scrapers.discovery_registry import get_all_discovery_providers
 from scrapers.models import CatalogSeries
 from scrapers.registry import get_scraper
 from stores.scraper_settings_store import load_scraper_default_config
+from stores.progress_store import get_instance as get_progress_store
+from gui.viewer.remote_read_service import RemoteReadService
 
 logger = get_logger(__name__)
 
@@ -97,6 +99,34 @@ class DiscoverySeriesLoader(QObject):
         threading.Thread(target=worker, daemon=True).start()
 
 
+class DiscoveryReadNowLoader(QObject):
+    loaded = Signal(int, object, float, str)
+
+    def __init__(self, progress_store, parent=None):
+        super().__init__(parent)
+        self._service = RemoteReadService(progress_store)
+
+    def load(self, request_id: int, series, entry, *, chapter=None):
+        def worker():
+            try:
+                url = getattr(series, "url", "") or getattr(entry, "url", "") or ""
+                if not url:
+                    raise ScraperError("This entry does not expose a readable chapter URL.")
+                scraper = get_scraper(url)
+                scraper.apply_source_config(load_scraper_default_config(getattr(scraper, "site_name", "") or ""))
+                visible_chapters = list(getattr(series, "chapters", []) or [])
+                target_chapter = chapter if chapter is not None else (visible_chapters[0] if visible_chapters else None)
+                if target_chapter is None:
+                    raise ScraperError("No readable chapters were found for this title.")
+                webtoon, chapter_index, start_scroll = self._service.prepare_chapter(scraper, series, target_chapter)
+                self.loaded.emit(request_id, (webtoon, chapter_index), float(start_scroll), "")
+            except ScraperError as e:
+                self.loaded.emit(request_id, None, 0.0, str(e))
+            except Exception as e:
+                logger.exception("Unexpected remote read preparation failure")
+                self.loaded.emit(request_id, None, 0.0, str(e))
+
+        threading.Thread(target=worker, daemon=True).start()
 class DiscoveryDetailPage(QWidget):
     MANGA_PAGE_RENDER_BATCH_SIZE = 24
     MANGA_PAGE_MIN_COLUMNS = 1
@@ -108,6 +138,9 @@ class DiscoveryDetailPage(QWidget):
         self.series = None
         self._selected_urls = set()
         self._request_id = 0
+        self._read_request_id = 0
+        self._read_now_loader = DiscoveryReadNowLoader(get_progress_store(), self)
+        self._read_now_loader.loaded.connect(self._on_read_now_loaded)
         self._series_loader = DiscoverySeriesLoader(self)
         self._series_loader.loaded.connect(self._on_series_loaded)
         self._cover_loader = DiscoveryCoverLoader(self)
@@ -191,6 +224,13 @@ class DiscoveryDetailPage(QWidget):
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
 
+        self.read_now_btn = QPushButton("Read Now")
+        self.read_now_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
+        self.read_now_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
+        self.read_now_btn.clicked.connect(self._read_now)
+        self.read_now_btn.setEnabled(False)
+        action_row.addWidget(self.read_now_btn)
+
         self.download_all_btn = QPushButton(t("discovery.detail.download_all_chapters"))
         self.download_all_btn.setFixedSize(ACTION_BTN_W, ACTION_BTN_H)
         self.download_all_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
@@ -238,6 +278,7 @@ class DiscoveryDetailPage(QWidget):
         self.download_selected_btn.setStyleSheet(batch_primary_btn_style)
         self.download_selected_btn.clicked.connect(self._download_selected)
         self.download_selected_btn.setEnabled(False)
+        self.read_now_btn.setEnabled(False)
         batch_layout.addWidget(self.download_selected_btn)
 
         self.clear_selection_btn = QPushButton(t("discovery.detail.clear"))
@@ -270,6 +311,7 @@ class DiscoveryDetailPage(QWidget):
         self.chapter_count_label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
         self.description_label.setStyleSheet(SUBTLE_META_LABEL_STYLE)
         self.status_label.setStyleSheet(WARNING_META_LABEL_STYLE)
+        self.read_now_btn.setStyleSheet(PRIMARY_ACTION_BUTTON_STYLE)
         self.download_all_btn.setStyleSheet(SECONDARY_ACTION_BUTTON_STYLE)
         self.section_caption_label.setStyleSheet(SECTION_CAPTION_STYLE)
         self.batch_bar.setStyleSheet(BATCH_BAR_STYLE)
@@ -296,6 +338,8 @@ class DiscoveryDetailPage(QWidget):
         self.description_label.setText(getattr(entry, "description", "") or t("discovery.detail.loading_series_details"))
         self.status_label.setText(t("discovery.detail.loading_chapters"))
         self.status_label.show()
+        self.read_now_btn.setEnabled(False)
+        self.read_now_btn.setText("Read Now")
         self.download_selected_btn.setEnabled(False)
         self.download_all_btn.setEnabled(False)
         self.thumb_label.setPixmap(QPixmap())
@@ -374,6 +418,8 @@ class DiscoveryDetailPage(QWidget):
                 self._series_loader.load(self._request_id, self.entry)
                 return
             self.series = None
+            self.read_now_btn.setEnabled(False)
+            self.read_now_btn.setText("Read Now")
             self.status_label.setText(error)
             self.status_label.show()
             self._rebuild_chapter_list()
@@ -385,6 +431,7 @@ class DiscoveryDetailPage(QWidget):
         self.chapter_count_label.setText(self._series_count_text(series))
         self.description_label.setText(self._merged_description(series))
         self.status_label.hide()
+        self.read_now_btn.setEnabled(bool(getattr(series, "chapters", []) or []))
         self.download_all_btn.setEnabled(True)
         self._refresh_mode_state()
         self._rebuild_chapter_list()
@@ -588,7 +635,9 @@ class DiscoveryDetailPage(QWidget):
         layout.addWidget(select_slot)
 
         title = QLabel(chapter.title or chapter.url)
+        title.setCursor(Qt.PointingHandCursor)
         title.setStyleSheet(chapter_name_style(TEXT_SOFT))
+        title.mousePressEvent = lambda _event, chapter=chapter: self._read_chapter_now(chapter)
         layout.addWidget(title, 1)
 
         single_btn = QToolButton()
@@ -600,6 +649,7 @@ class DiscoveryDetailPage(QWidget):
 
         row.enterEvent = lambda event, btn=select_btn, widget=row: self._on_chapter_row_hover(widget, btn, True, event)
         row.leaveEvent = lambda event, btn=select_btn, widget=row: self._on_chapter_row_hover(widget, btn, False, event)
+        row.mousePressEvent = lambda _event, chapter=chapter: self._read_chapter_now(chapter)
         return row
 
     def _on_chapter_row_hover(self, row: QWidget, button: QToolButton, hovered: bool, event):
@@ -738,5 +788,57 @@ class DiscoveryDetailPage(QWidget):
         if count == 1:
             return "1 chapter"
         return f"{count} chapters"
+
+    def _read_now(self):
+        if self.series is None:
+            return
+        chapters = self._visible_chapters()
+        if not chapters:
+            QMessageBox.information(self, t("discovery.detail.warning_title"), "No readable chapters were found for this title.")
+            return
+        self._read_chapter_now(chapters[0])
+
+    def _read_chapter_now(self, chapter):
+        if self.series is None or chapter is None:
+            return
+        self._read_request_id += 1
+        self.read_now_btn.setEnabled(False)
+        self.read_now_btn.setText("Preparing...")
+        chapter_title = str(getattr(chapter, "title", "") or getattr(chapter, "url", "") or "chapter").strip()
+        self.status_label.setText(f"Preparing {chapter_title} for remote reading...")
+        self.status_label.show()
+        self._read_now_loader.load(self._read_request_id, self.series, self.entry, chapter=chapter)
+
+    def _on_read_now_loaded(self, request_id: int, payload, start_scroll: float, error: str):
+        if request_id != self._read_request_id:
+            return
+        self.read_now_btn.setText("Read Now")
+        self.read_now_btn.setEnabled(bool(getattr(self.series, "chapters", []) or []))
+        if error:
+            site_name = str(getattr(self.entry, "site", "") or getattr(self.series, "site", "") or "").strip()
+            auth_url = getattr(self.entry, "url", "") or getattr(self.series, "url", "") or ""
+            if self._looks_like_access_block(error) and site_name and self.main_window.open_site_authorization(site_name, url=auth_url):
+                self._read_now()
+                return
+            self.status_label.setText(error)
+            self.status_label.show()
+            QMessageBox.warning(self, t("discovery.detail.warning_title"), error)
+            return
+        if not payload:
+            return
+        webtoon, chapter_index = payload
+        setattr(webtoon, "_viewer_return", self._return_from_remote_viewer)
+        self.main_window.set_window_context_title(getattr(self.series, "title", None) or getattr(webtoon, "name", None))
+        self.main_window.stack.setCurrentWidget(self.main_window.viewer)
+        self.main_window.sidebar_controller.set_target("discovery")
+        self.main_window.viewer.load_webtoon(webtoon, start_chapter=int(chapter_index), start_scroll=float(start_scroll or 0.0))
+
+    def _return_from_remote_viewer(self):
+        title = getattr(self.series, "title", None) or getattr(self.entry, "title", None) or None
+        self.main_window.set_window_context_title(title)
+        self.main_window.stack.setCurrentWidget(self)
+        self.main_window.sidebar_controller.set_target("discovery")
+
+
 
 

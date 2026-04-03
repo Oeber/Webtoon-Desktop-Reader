@@ -18,11 +18,12 @@ class SceneBookmarksDialog(QDialog):
         super().__init__(parent)
         self.webtoon = webtoon
         self.chapter = chapter
+        self.chapter_label = self._chapter_label(chapter)
         self.bookmark_store = bookmark_store
         self.open_callback = open_callback
         self.mode_label = str(mode_label or "Scene")
 
-        self.setWindowTitle(t("scene.dialog.window", mode_label=self.mode_label, chapter=chapter))
+        self.setWindowTitle(t("scene.dialog.window", mode_label=self.mode_label, chapter=self.chapter_label))
         self.setModal(True)
         self.resize(640, 480)
         self.setStyleSheet(PAGE_BG_STYLE)
@@ -31,7 +32,7 @@ class SceneBookmarksDialog(QDialog):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(12)
 
-        title = QLabel(t("scene.dialog.title", mode_label=self.mode_label, chapter=chapter))
+        title = QLabel(t("scene.dialog.title", mode_label=self.mode_label, chapter=self.chapter_label))
         title.setStyleSheet("font-size: 20px; font-weight: 700; color: #f3ece8;")
         layout.addWidget(title)
 
@@ -92,6 +93,22 @@ class SceneBookmarksDialog(QDialog):
         self.status_label.setText(t("scene.dialog.empty_chapter", mode_label=self.mode_label.lower()) if not has_rows else "")
         if has_rows:
             self.list_widget.setCurrentRow(0)
+
+    def _chapter_label(self, chapter: str) -> str:
+        display_names = getattr(self.webtoon, "chapter_display_names", None)
+        if isinstance(display_names, dict):
+            resolved = str(display_names.get(chapter, "") or "").strip()
+            if resolved:
+                return resolved
+        resolver = getattr(self.webtoon, "_chapter_label_resolver", None)
+        if callable(resolver):
+            try:
+                resolved = str(resolver(chapter) or "").strip()
+            except Exception:
+                resolved = ""
+            if resolved:
+                return resolved
+        return str(chapter or "")
 
     def _current_bookmark(self) -> dict | None:
         item = self.list_widget.currentItem()
@@ -230,9 +247,10 @@ class AllSceneBookmarksDialog(QDialog):
         bookmarks = self.bookmark_store.list_for_webtoon(self.webtoon.name)
         for bookmark in bookmarks:
             chapter = str(bookmark.get("chapter") or "")
-            item = QListWidgetItem(f"{chapter}\n{SceneBookmarksDialog._item_text(bookmark, self.mode_label)}")
+            chapter_label = self._chapter_label(chapter)
+            item = QListWidgetItem(f"{chapter_label}\n{SceneBookmarksDialog._item_text(bookmark, self.mode_label)}")
             item.setData(Qt.UserRole, bookmark)
-            item.setToolTip(f"{chapter}\n{SceneBookmarksDialog._item_tooltip(bookmark, self.mode_label)}")
+            item.setToolTip(f"{chapter_label}\n{SceneBookmarksDialog._item_tooltip(bookmark, self.mode_label)}")
             item.setSizeHint(QSize(0, 116))
             icon = SceneBookmarksDialog._item_icon(bookmark)
             if icon is not None:
@@ -244,6 +262,22 @@ class AllSceneBookmarksDialog(QDialog):
         self.status_label.setText(t("scene.dialog.empty_series", mode_label=self.mode_label.lower()) if not has_rows else "")
         if has_rows:
             self.list_widget.setCurrentRow(0)
+
+    def _chapter_label(self, chapter: str) -> str:
+        display_names = getattr(self.webtoon, "chapter_display_names", None)
+        if isinstance(display_names, dict):
+            resolved = str(display_names.get(chapter, "") or "").strip()
+            if resolved:
+                return resolved
+        resolver = getattr(self.webtoon, "_chapter_label_resolver", None)
+        if callable(resolver):
+            try:
+                resolved = str(resolver(chapter) or "").strip()
+            except Exception:
+                resolved = ""
+            if resolved:
+                return resolved
+        return str(chapter or "")
 
     def _current_bookmark(self) -> dict | None:
         item = self.list_widget.currentItem()

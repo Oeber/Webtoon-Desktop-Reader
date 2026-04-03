@@ -59,6 +59,7 @@ from gui.viewer.viewer_support import (
 )
 from stores.progress_store import get_instance as get_progress_store
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
+from stores.tracked_titles_store import get_instance as get_tracked_titles_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from stores.settings_store import (
     VIEWER_AUTO_SKIP_KEY,
@@ -433,6 +434,7 @@ class ViewerPage(QWidget):
         self.current_chapter_index = 0
         self.progress_store = get_progress_store()
         self.scene_bookmark_store = get_scene_bookmark_store()
+        self.tracked_titles_store = get_tracked_titles_store()
         self.settings_store = get_webtoon_settings()
 
         self._restore_image_index = None
@@ -577,6 +579,13 @@ class ViewerPage(QWidget):
         self._zoom_label.setAlignment(Qt.AlignCenter)
         self._zoom_label.setStyleSheet(VIEWER_ZOOM_LABEL_STYLE)
 
+        self._remote_library_btn = QPushButton("Add to Library")
+        self._remote_library_btn.setFocusPolicy(Qt.NoFocus)
+        self._remote_library_btn.setToolTip("Add this tracked remote title to the library page without downloading it")
+        self._remote_library_btn.setStyleSheet(VIEWER_ZOOM_BUTTON_STYLE)
+        self._remote_library_btn.clicked.connect(self._add_current_remote_title_to_library)
+        self._remote_library_btn.hide()
+
         self._zoom_reset_btn = QPushButton("Reset zoom")
         self._zoom_reset_btn.setFocusPolicy(Qt.NoFocus)
         self._zoom_reset_btn.setToolTip("(0) Remove webtoon zoom override and use global default")
@@ -603,6 +612,7 @@ class ViewerPage(QWidget):
         top_bar.addWidget(self.zoom_in_btn)
         top_bar.addWidget(self._zoom_label)
         top_bar.addSpacing(4)
+        top_bar.addWidget(self._remote_library_btn)
         top_bar.addWidget(self._zoom_reset_btn)
 
         content_row = QHBoxLayout()
@@ -1181,7 +1191,7 @@ class ViewerPage(QWidget):
         chapter = self.webtoon.chapters[self.current_chapter_index]
         if self._chapter_mode == "image":
             marks = sorted(
-                self.scene_bookmark_store.list_for_chapter(self.webtoon.name, chapter),
+                self.scene_bookmark_store.list_for_chapter(self.webtoon.name, chapter, chapter_key=self._chapter_key_for(chapter)),
                 key=lambda item: float(item.get("packed") or 0.0),
             )
             self._chapter_scene_marks = marks
@@ -1221,9 +1231,66 @@ class ViewerPage(QWidget):
         self.webtoon = webtoon
         self._apply_webtoon_settings(webtoon)
         self._repopulate_chapter_selector()
+        self._sync_remote_library_button()
         self._pending_scroll_pct = 0.0
         return self._load_chapter_with_prompt(chapter_index)
 
+    def _chapter_display_name(self, chapter: str) -> str:
+        display_names = getattr(self.webtoon, "chapter_display_names", None)
+        if isinstance(display_names, dict):
+            return str(display_names.get(chapter, chapter) or chapter)
+        return str(chapter or "")
+
+    def _current_chapter_name(self) -> str:
+        if not self.webtoon or not (0 <= self.current_chapter_index < len(self.webtoon.chapters)):
+            return ""
+        chapter = self.webtoon.chapters[self.current_chapter_index]
+        display_names = getattr(self.webtoon, "chapter_display_names", None)
+        if isinstance(display_names, dict):
+            return str(display_names.get(chapter, chapter) or chapter)
+        return str(chapter or "")
+
+    def _remote_track_row(self) -> dict | None:
+        track_id = str(getattr(self.webtoon, "remote_track_id", "") or "").strip() if self.webtoon is not None else ""
+        if not track_id:
+            return None
+        return self.tracked_titles_store.get(track_id)
+
+    def _sync_remote_library_button(self) -> None:
+        row = self._remote_track_row()
+        visible = bool(row)
+        self._remote_library_btn.setVisible(visible)
+        if not visible:
+            return
+        status = str(row.get("status") or "tracked").strip()
+        local_name = str(row.get("local_webtoon_name") or "").strip()
+        already_added = bool(local_name or status in {"library", "mixed"})
+        self._remote_library_btn.setEnabled(not already_added)
+        self._remote_library_btn.setText("In Library" if already_added else "Add to Library")
+
+    def _add_current_remote_title_to_library(self) -> None:
+        row = self._remote_track_row()
+        if not row:
+            return
+        if self.main_window.tracked.add_title_to_library(row):
+            self._sync_remote_library_button()
+
+    def _chapter_key_for(self, chapter: str) -> str:
+        chapter_keys = getattr(self.webtoon, "chapter_keys", None)
+        if isinstance(chapter_keys, dict):
+            value = str(chapter_keys.get(chapter, "") or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _sync_tracked_title_progress(self, chapter_key: str) -> None:
+        track_id = str(getattr(self.webtoon, "remote_track_id", "") or "").strip() if self.webtoon is not None else ""
+        if not track_id or not chapter_key:
+            return
+        try:
+            self.tracked_titles_store.update_last_read(track_id, chapter_key, cache_status="cached")
+        except Exception:
+            logger.warning("Could not update tracked title progress for %s", track_id, exc_info=True)
     def _apply_webtoon_settings(self, webtoon, rescale_existing: bool = True):
         """Apply per-webtoon settings (zoom, hide filler). Called whenever a webtoon is opened."""
         logger.info("Applying viewer settings for %s", webtoon.name)
@@ -1305,17 +1372,61 @@ class ViewerPage(QWidget):
     def _manga_uses_double_page(self) -> bool:
         return self._normalize_manga_layout(self._manga_layout_mode) == "double"
 
+    def _manga_typical_page_width(self) -> int:
+        widths = sorted(
+            int(getattr(label, "_natural_width", 0) or 0)
+            for label in self.image_labels
+            if int(getattr(label, "_natural_width", 0) or 0) > 0
+        )
+        if not widths:
+            return 0
+        return widths[len(widths) // 2]
+
+    def _manga_page_is_standalone_spread(self, index: int) -> bool:
+        if not self.image_labels or index < 0 or index >= len(self.image_labels):
+            return False
+        typical_width = self._manga_typical_page_width()
+        if typical_width <= 0:
+            return False
+        natural_width = int(getattr(self.image_labels[index], "_natural_width", 0) or 0)
+        if natural_width <= 0:
+            return False
+        return natural_width >= int(typical_width * 1.8)
+
+    def _manga_spread_indexes_from_anchor(self, anchor: int) -> list[int]:
+        if not self.image_labels:
+            return []
+        anchor = max(0, min(len(self.image_labels) - 1, int(anchor)))
+        indexes = [anchor]
+        if not self._manga_uses_double_page():
+            return indexes
+        if self._manga_page_is_standalone_spread(anchor):
+            return indexes
+        next_index = anchor + 1
+        if next_index >= len(self.image_labels):
+            return indexes
+        if self._manga_page_is_standalone_spread(next_index):
+            return indexes
+        indexes.append(next_index)
+        return indexes
+
     def _manga_spread_anchor_for_index(self, index: int) -> int:
         if not self.image_labels:
             return 0
         index = max(0, min(len(self.image_labels) - 1, int(index)))
         if not self._manga_uses_double_page():
             return index
-        if self._normalize_manga_spread_parity(self._manga_spread_parity) == "odd":
-            return index - (index % 2)
-        if index <= 0:
-            return 0
-        return index if index % 2 == 1 else index - 1
+        cursor = 0
+        if self._normalize_manga_spread_parity(self._manga_spread_parity) == "even":
+            if index == 0:
+                return 0
+            cursor = 1
+        while cursor < len(self.image_labels):
+            spread_indexes = self._manga_spread_indexes_from_anchor(cursor)
+            if index in spread_indexes:
+                return cursor
+            cursor = spread_indexes[-1] + 1 if spread_indexes else cursor + 1
+        return max(0, min(len(self.image_labels) - 1, cursor - 1))
 
     def _manga_visible_indexes(self, index: int | None = None) -> list[int]:
         if not self.image_labels:
@@ -1325,10 +1436,7 @@ class ViewerPage(QWidget):
             return [anchor]
         if self._normalize_manga_spread_parity(self._manga_spread_parity) == "even" and anchor == 0:
             return [0]
-        indexes = [anchor]
-        if anchor + 1 < len(self.image_labels):
-            indexes.append(anchor + 1)
-        return indexes
+        return self._manga_spread_indexes_from_anchor(anchor)
 
     def _manga_canvas_width(self) -> int:
         return max(1, self.scroll.viewport().width())
@@ -1638,7 +1746,8 @@ class ViewerPage(QWidget):
             total,
             immediate,
         )
-        self.progress_store.save(self.webtoon.name, chapter, packed, total, immediate=immediate)
+        self.progress_store.save(self.webtoon.name, chapter, packed, total, immediate=immediate, chapter_key=self._chapter_key_for(chapter))
+        self._sync_tracked_title_progress(self._chapter_key_for(chapter))
         self._advance_resume_to_next_chapter(chapter, packed, total)
 
     def _save_text_progress(self, *, immediate: bool = True):
@@ -1649,7 +1758,8 @@ class ViewerPage(QWidget):
         if active is None:
             chapter = self.webtoon.chapters[self.current_chapter_index]
             progress = 0.0 if bar.maximum() <= 0 else max(0.0, min(1.0, bar.value() / bar.maximum()))
-            self.progress_store.save(self.webtoon.name, chapter, progress, 1, immediate=immediate)
+            self.progress_store.save(self.webtoon.name, chapter, progress, 1, immediate=immediate, chapter_key=self._chapter_key_for(chapter))
+            self._sync_tracked_title_progress(self._chapter_key_for(chapter))
             return
         entries = []
         for segment in self._text_loaded_segments:
@@ -1683,7 +1793,7 @@ class ViewerPage(QWidget):
         if next_index >= len(self.webtoon.chapters):
             return
         next_chapter = self.webtoon.chapters[next_index]
-        next_progress = float(self.progress_store.get_for_chapter(self.webtoon.name, next_chapter) or 0.0)
+        next_progress = float(self.progress_store.get_for_chapter(self.webtoon.name, next_chapter, chapter_key=self._chapter_key_for(next_chapter)) or 0.0)
         if next_progress > 0.005:
             return
         logger.info(
@@ -1692,7 +1802,7 @@ class ViewerPage(QWidget):
             chapter,
             next_chapter,
         )
-        self.progress_store.save(self.webtoon.name, next_chapter, 0.0, 0)
+        self.progress_store.save(self.webtoon.name, next_chapter, 0.0, 0, chapter_key=self._chapter_key_for(next_chapter))
 
     def _current_scene_bookmark_payload(self) -> tuple[str, float, int, float] | None:
         if not self.webtoon:
@@ -2129,9 +2239,12 @@ class ViewerPage(QWidget):
         if not self.webtoon or index < 0 or index >= len(self.webtoon.chapters):
             return False
         chapter = self.webtoon.chapters[index]
-        progress_map = self.progress_store.get_progress_map(self.webtoon.name)
-        saved_scroll, total_images = progress_map.get(chapter, (0.0, 0))
-        saved_scroll = float(saved_scroll or 0.0)
+        row = self.progress_store.get_by_chapter_key(self._chapter_key_for(chapter))
+        if row is None:
+            progress_map = self.progress_store.get_progress_map(self.webtoon.name)
+            saved_scroll, total_images = progress_map.get(chapter, (0.0, 0))
+        else:
+            saved_scroll, total_images = row.get("scroll", 0.0), row.get("total_images", 0)
         total_images = int(total_images or 0)
         if saved_scroll <= 0.005:
             return False
@@ -2151,7 +2264,7 @@ class ViewerPage(QWidget):
         chapter = self.webtoon.chapters[index]
         logger.info("Viewer loading chapter with prompt: %s / %s", self.webtoon.name, chapter)
 
-        saved_scroll = self.progress_store.get_for_chapter(self.webtoon.name, chapter)
+        saved_scroll = self.progress_store.get_for_chapter(self.webtoon.name, chapter, chapter_key=self._chapter_key_for(chapter))
         packed = 0.0
         if saved_scroll > 0.005:
             dlg = ContinueDialog(chapter, parent=self)
@@ -3046,11 +3159,11 @@ class ViewerPage(QWidget):
                 if not SPECIAL_CHAPTER_RE.search(c)
             ]
             self.chapter_selector.addItems(
-                [self.webtoon.chapters[i] for i in self._chapter_index_map]
+                [self._chapter_display_name(self.webtoon.chapters[i]) for i in self._chapter_index_map]
             )
         else:
             self._chapter_index_map = []
-            self.chapter_selector.addItems(self.webtoon.chapters)
+            self.chapter_selector.addItems([self._chapter_display_name(chapter) for chapter in self.webtoon.chapters])
         self.chapter_selector.blockSignals(False)
         self._sync_chapter_selector_visibility()
 
@@ -3079,7 +3192,10 @@ class ViewerPage(QWidget):
     def go_back(self):
         logger.info("Leaving viewer for detail page: %s", self.webtoon.name if self.webtoon else "<none>")
         self._save_progress()
-        self.main_window.library.refresh_progress()
+        viewer_return = getattr(self.webtoon, "_viewer_return", None) if self.webtoon is not None else None
+        if callable(viewer_return):
+            viewer_return()
+            return
         self.main_window.open_detail(self.webtoon, force=True)
 
     def resizeEvent(self, event):
@@ -3645,6 +3761,12 @@ for _name, _value in list(globals().items()):
                 setattr(_value, _attr_name, _trace_viewer_callable(f"{_value.__name__}.{_attr_name}", _attr_value))
     elif inspect.isfunction(_value) and getattr(_value, "__module__", "") == __name__:
         globals()[_name] = _trace_viewer_callable(_name, _value)
+
+
+
+
+
+
 
 
 

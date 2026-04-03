@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 
 from core.app_logging import get_logger
+from core.chapter_identity import build_local_chapter_key
 from stores.db import get_connection
 
 
@@ -18,16 +19,17 @@ def get_instance() -> "SceneBookmarkStore":
 
 
 class SceneBookmarkStore:
-    def list_for_chapter(self, webtoon_name: str, chapter: str) -> list[dict]:
+    def list_for_chapter(self, webtoon_name: str, chapter: str, *, chapter_key: str | None = None) -> list[dict]:
+        normalized_key = self._chapter_key_for(webtoon_name, chapter, chapter_key=chapter_key)
         conn = get_connection()
         rows = conn.execute(
             """
-            SELECT id, webtoon_name, chapter, packed, image_index, note, thumbnail_path, created_at, updated_at
+            SELECT id, webtoon_name, chapter, chapter_key, packed, image_index, note, thumbnail_path, created_at, updated_at
             FROM scene_bookmarks
-            WHERE webtoon_name = ? AND chapter = ?
-            ORDER BY updated_at DESC, id DESC
+            WHERE chapter_key = ? OR (webtoon_name = ? AND chapter = ?)
+            ORDER BY CASE WHEN chapter_key = ? THEN 0 ELSE 1 END, updated_at DESC, id DESC
             """,
-            (webtoon_name, chapter),
+            (normalized_key, webtoon_name, chapter, normalized_key),
         ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -35,12 +37,28 @@ class SceneBookmarkStore:
         conn = get_connection()
         rows = conn.execute(
             """
-            SELECT id, webtoon_name, chapter, packed, image_index, note, thumbnail_path, created_at, updated_at
+            SELECT id, webtoon_name, chapter, chapter_key, packed, image_index, note, thumbnail_path, created_at, updated_at
             FROM scene_bookmarks
             WHERE webtoon_name = ?
             ORDER BY updated_at DESC, id DESC
             """,
             (webtoon_name,),
+        ).fetchall()
+        return [self._row_to_dict(row) for row in rows]
+
+    def list_for_chapter_key(self, chapter_key: str) -> list[dict]:
+        normalized_key = str(chapter_key or "").strip()
+        if not normalized_key:
+            return []
+        conn = get_connection()
+        rows = conn.execute(
+            """
+            SELECT id, webtoon_name, chapter, chapter_key, packed, image_index, note, thumbnail_path, created_at, updated_at
+            FROM scene_bookmarks
+            WHERE chapter_key = ?
+            ORDER BY updated_at DESC, id DESC
+            """,
+            (normalized_key,),
         ).fetchall()
         return [self._row_to_dict(row) for row in rows]
 
@@ -66,19 +84,21 @@ class SceneBookmarkStore:
         note: str = "",
         *,
         thumbnail_path: str = "",
+        chapter_key: str | None = None,
     ) -> int:
         packed = max(0.0, float(packed))
         image_index = max(0, int(image_index))
         note = str(note or "").strip()
         thumbnail_path = str(thumbnail_path or "").strip()
         now = int(time.time() * 1000)
+        normalized_key = self._chapter_key_for(webtoon_name, chapter, chapter_key=chapter_key)
         conn = get_connection()
         cursor = conn.execute(
             """
-            INSERT INTO scene_bookmarks (webtoon_name, chapter, packed, image_index, note, thumbnail_path, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO scene_bookmarks (webtoon_name, chapter, chapter_key, packed, image_index, note, thumbnail_path, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (webtoon_name, chapter, packed, image_index, note, thumbnail_path, now, now),
+            (webtoon_name, chapter, normalized_key, packed, image_index, note, thumbnail_path, now, now),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -93,17 +113,18 @@ class SceneBookmarkStore:
         conn.execute("DELETE FROM scene_bookmarks WHERE id = ?", (int(bookmark_id),))
         conn.commit()
 
-    def clear_chapter(self, webtoon_name: str, chapter: str):
+    def clear_chapter(self, webtoon_name: str, chapter: str, *, chapter_key: str | None = None):
+        normalized_key = self._chapter_key_for(webtoon_name, chapter, chapter_key=chapter_key)
         conn = get_connection()
         self._delete_thumbnail_rows(
             conn.execute(
-                "SELECT thumbnail_path FROM scene_bookmarks WHERE webtoon_name = ? AND chapter = ?",
-                (webtoon_name, chapter),
+                "SELECT thumbnail_path FROM scene_bookmarks WHERE chapter_key = ? OR (webtoon_name = ? AND chapter = ?)",
+                (normalized_key, webtoon_name, chapter),
             ).fetchall()
         )
         conn.execute(
-            "DELETE FROM scene_bookmarks WHERE webtoon_name = ? AND chapter = ?",
-            (webtoon_name, chapter),
+            "DELETE FROM scene_bookmarks WHERE chapter_key = ? OR (webtoon_name = ? AND chapter = ?)",
+            (normalized_key, webtoon_name, chapter),
         )
         conn.commit()
 
@@ -112,15 +133,16 @@ class SceneBookmarkStore:
             return
         conn = get_connection()
         for chapter in chapters:
+            chapter_key = self._chapter_key_for(webtoon_name, chapter)
             self._delete_thumbnail_rows(
                 conn.execute(
-                    "SELECT thumbnail_path FROM scene_bookmarks WHERE webtoon_name = ? AND chapter = ?",
-                    (webtoon_name, chapter),
+                    "SELECT thumbnail_path FROM scene_bookmarks WHERE chapter_key = ? OR (webtoon_name = ? AND chapter = ?)",
+                    (chapter_key, webtoon_name, chapter),
                 ).fetchall()
             )
         conn.executemany(
-            "DELETE FROM scene_bookmarks WHERE webtoon_name = ? AND chapter = ?",
-            [(webtoon_name, chapter) for chapter in chapters],
+            "DELETE FROM scene_bookmarks WHERE chapter_key = ? OR (webtoon_name = ? AND chapter = ?)",
+            [(self._chapter_key_for(webtoon_name, chapter), webtoon_name, chapter) for chapter in chapters],
         )
         conn.commit()
 
@@ -154,11 +176,65 @@ class SceneBookmarkStore:
 
     def rename_webtoon(self, old_name: str, new_name: str):
         conn = get_connection()
+        rows = conn.execute(
+            "SELECT id, chapter FROM scene_bookmarks WHERE webtoon_name = ?",
+            (old_name,),
+        ).fetchall()
         conn.execute(
             "UPDATE scene_bookmarks SET webtoon_name = ? WHERE webtoon_name = ?",
             (new_name, old_name),
         )
+        if rows:
+            conn.executemany(
+                "UPDATE scene_bookmarks SET chapter_key = ? WHERE id = ?",
+                [(self._chapter_key_for(new_name, str(row["chapter"] or "")), int(row["id"])) for row in rows],
+            )
         conn.commit()
+
+    def merge_webtoons(
+        self,
+        target_name: str,
+        source_names: list[str],
+        *,
+        chapter_name_maps: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        normalized_target = str(target_name or "").strip()
+        normalized_sources = [
+            str(name or "").strip()
+            for name in (source_names or [])
+            if str(name or "").strip() and str(name or "").strip() != normalized_target
+        ]
+        if not normalized_target or not normalized_sources:
+            return
+
+        chapter_maps = {
+            str(name or "").strip(): {str(old or ""): str(new or "") for old, new in (mapping or {}).items()}
+            for name, mapping in (chapter_name_maps or {}).items()
+            if str(name or "").strip()
+        }
+        conn = get_connection()
+        payload = []
+        for source_name in normalized_sources:
+            mapping = chapter_maps.get(source_name, {})
+            rows = conn.execute(
+                "SELECT id, chapter FROM scene_bookmarks WHERE webtoon_name = ?",
+                (source_name,),
+            ).fetchall()
+            payload.extend(
+                (
+                    normalized_target,
+                    mapping.get(str(row["chapter"] or ""), str(row["chapter"] or "")),
+                    self._chapter_key_for(normalized_target, mapping.get(str(row["chapter"] or ""), str(row["chapter"] or ""))),
+                    int(row["id"]),
+                )
+                for row in rows
+            )
+        if payload:
+            conn.executemany(
+                "UPDATE scene_bookmarks SET webtoon_name = ?, chapter = ?, chapter_key = ? WHERE id = ?",
+                payload,
+            )
+            conn.commit()
 
     def apply_chapter_page_changes(
         self,
@@ -179,10 +255,11 @@ class SceneBookmarkStore:
         if (not mapping and not deleted) or page_count <= 0:
             return
 
+        chapter_key = self._chapter_key_for(webtoon_name, chapter)
         conn = get_connection()
         rows = conn.execute(
-            "SELECT id, packed, image_index, thumbnail_path FROM scene_bookmarks WHERE webtoon_name = ? AND chapter = ?",
-            (webtoon_name, chapter),
+            "SELECT id, packed, image_index, thumbnail_path FROM scene_bookmarks WHERE chapter_key = ? OR (webtoon_name = ? AND chapter = ?)",
+            (chapter_key, webtoon_name, chapter),
         ).fetchall()
         if not rows:
             return
@@ -198,13 +275,13 @@ class SceneBookmarkStore:
                 continue
             new_index = self._resolve_target_index(old_index, mapping, deleted, target_total)
             packed = self._remap_packed_position(row["packed"], mapping, page_count, deleted, target_total)
-            payload.append((packed, new_index + 1, int(row["id"])))
+            payload.append((chapter_key, packed, new_index + 1, int(row["id"])))
 
         if delete_ids:
             conn.executemany("DELETE FROM scene_bookmarks WHERE id = ?", delete_ids)
         if payload:
             conn.executemany(
-                "UPDATE scene_bookmarks SET packed = ?, image_index = ? WHERE id = ?",
+                "UPDATE scene_bookmarks SET chapter_key = ?, packed = ?, image_index = ? WHERE id = ?",
                 payload,
             )
         conn.commit()
@@ -266,11 +343,19 @@ class SceneBookmarkStore:
             logger.warning("Could not delete scene bookmark thumbnail %s", path, exc_info=True)
 
     @staticmethod
+    def _chapter_key_for(webtoon_name: str, chapter: str, *, chapter_key: str | None = None) -> str:
+        normalized_key = str(chapter_key or "").strip()
+        if normalized_key:
+            return normalized_key
+        return build_local_chapter_key(webtoon_name, chapter)
+
+    @staticmethod
     def _row_to_dict(row) -> dict:
         return {
             "id": int(row["id"]),
             "webtoon_name": str(row["webtoon_name"]),
             "chapter": str(row["chapter"]),
+            "chapter_key": str(row["chapter_key"] or ""),
             "packed": float(row["packed"] or 0.0),
             "image_index": int(row["image_index"] or 0),
             "note": str(row["note"] or ""),

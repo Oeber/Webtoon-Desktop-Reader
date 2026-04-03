@@ -70,6 +70,13 @@ class WindowNavigator:
         self.window.discovery.ensure_initial_catalog_loaded()
         self.window.sidebar_controller.set_target("discovery")
 
+    def open_tracked(self):
+        self.window.chapter_overlay.hide()
+        self.window.set_window_context_title("Tracked")
+        self.window.stack.setCurrentWidget(self.window.tracked)
+        self.window.tracked.schedule_open_refresh()
+        self.window.sidebar_controller.set_target("tracked")
+
     def open_discovery_search(self, query: str = "", scraper: str = "") -> bool:
         self.open_discovery()
         return self.window.discovery.apply_command_search(query=query, scraper=scraper)
@@ -182,7 +189,6 @@ class SiteAuthorizationController:
             from gui.common.site_auth_dialog import SiteAuthDialog
 
             dialog = SiteAuthDialog(site_name, url=url, parent=None)
-            dialog.setAttribute(Qt.WA_DeleteOnClose, True)
             self._dialog_open = True
             self._launch_pending = False
             return bool(dialog.exec_with_background_grace(self.AUTO_AUTH_GRACE_MS))
@@ -401,6 +407,9 @@ class SidebarController:
         self.btn_discovery = self._make_button("fa5s.compass", window.open_discovery)
         layout.addWidget(self.btn_discovery)
 
+        self.btn_tracked = self._make_button("fa5s.bookmark", window.open_tracked)
+        layout.addWidget(self.btn_tracked)
+
         self.btn_downloader = self._make_button("fa5s.download", window.open_downloader)
         layout.addWidget(self.btn_downloader)
 
@@ -463,6 +472,7 @@ class SidebarController:
             self.widget.setFixedWidth(self.sidebar_collapsed_width)
             self.btn_library.setText("")
             self.btn_discovery.setText("")
+            self.btn_tracked.setText("")
             self.btn_settings.setText("")
             self.btn_updates.setText("")
             self.sidebar_open = False
@@ -470,6 +480,7 @@ class SidebarController:
             self.widget.setFixedWidth(self.sidebar_expanded_width)
             self.btn_library.setText(t("sidebar.library"))
             self.btn_discovery.setText(t("sidebar.discover"))
+            self.btn_tracked.setText("  Tracked")
             self.btn_settings.setText(t("sidebar.settings"))
             self.btn_updates.setText(t("sidebar.updates"))
             self.sidebar_open = True
@@ -484,6 +495,7 @@ class SidebarController:
             self.toggle_btn,
             self.btn_library,
             self.btn_discovery,
+            self.btn_tracked,
             self.btn_downloader,
             self.btn_updates,
             self.btn_settings,
@@ -503,6 +515,7 @@ class SidebarController:
         button_specs = (
             (self.btn_library, "library", "fa5s.book-open"),
             (self.btn_discovery, "discovery", "fa5s.compass"),
+            (self.btn_tracked, "tracked", "fa5s.bookmark"),
             (self.btn_updates, "updates", "fa5s.sync"),
             (self.btn_settings, "settings", "fa5s.cog"),
         )

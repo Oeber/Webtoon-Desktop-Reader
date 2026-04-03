@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import hashlib
 import shutil
 import tarfile
@@ -66,7 +67,18 @@ def chapter_has_text_payload(series_path: str, chapter_name: str) -> bool:
     if not content_path:
         return False
     root = Path(content_path)
-    return any(root.joinpath(filename).is_file() for filename in TEXT_PAYLOAD_FILENAMES)
+    if root.joinpath("chapter.html").is_file() or root.joinpath("chapter.txt").is_file():
+        return True
+    json_path = root / "chapter.json"
+    if not json_path.is_file():
+        return False
+    try:
+        payload = json.loads(json_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    return bool(str(payload.get("html") or "").strip() or str(payload.get("text") or "").strip())
 
 
 def list_chapter_image_paths(series_path: str, chapter_name: str) -> list[str]:
