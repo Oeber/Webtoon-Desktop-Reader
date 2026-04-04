@@ -4,6 +4,12 @@ from urllib.parse import quote_plus, urljoin, urlparse
 import requests
 from bs4 import BeautifulSoup
 
+_LATEST_CHAPTER_RE = re.compile(r"(chapter\s+\d+(?:\.\d+)?)", re.IGNORECASE)
+_TOTAL_CHAPTERS_RE = re.compile(r"(\d+)\s+chapters?\b", re.IGNORECASE)
+_TOTAL_EPISODES_RE = re.compile(r"(\d+)\s+episodes?\b", re.IGNORECASE)
+_PAGE_LINK_RE = re.compile(r"/page/(\d+)/", re.IGNORECASE)
+
+
 from core.app_logging import get_logger
 from core.site_session import apply_site_cookies, load_site_user_agent, site_cookie_header
 from scrapers.base import ScraperError
@@ -127,7 +133,7 @@ class ToonGodDiscoveryProvider(BaseDiscoveryProvider):
         return candidates
 
     def _catalog_page_from_html(self, page: int, html: str, *, source_url: str) -> CatalogPage:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "lxml")
         entries = []
         seen_urls = set()
 
@@ -146,7 +152,7 @@ class ToonGodDiscoveryProvider(BaseDiscoveryProvider):
             site=self.site_name,
             page=page,
             entries=entries,
-            has_next_page=self._soup_has_next_page(soup, page),
+            has_next_page=self._page_has_navigation(html, page) or self._soup_has_next_page(soup, page),
         )
 
     def _catalog_entry_nodes(self, soup: BeautifulSoup) -> list:
@@ -368,9 +374,12 @@ class ToonGodDiscoveryProvider(BaseDiscoveryProvider):
                 return text
 
         text = " ".join(node.get_text(" ", strip=True).split())
-        match = re.search(r"(Chapter|Episode)\s+\d+(?:\.\d+)?", text, re.IGNORECASE)
+        match = _LATEST_CHAPTER_RE.search(text)
         if match:
-            return match.group(0).strip()
+            return match.group(1).strip()
+        match = re.search(r"(Episode\s+\d+(?:\.\d+)?)", text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
 
         return None
 
@@ -379,9 +388,9 @@ class ToonGodDiscoveryProvider(BaseDiscoveryProvider):
             return None
 
         text = " ".join(node.get_text(" ", strip=True).split())
-        match = re.search(r"(\d+)\s+chapters?\b", text, re.IGNORECASE)
+        match = _TOTAL_CHAPTERS_RE.search(text)
         if match is None:
-            match = re.search(r"(\d+)\s+episodes?\b", text, re.IGNORECASE)
+            match = _TOTAL_EPISODES_RE.search(text)
         if match is None:
             return None
 
@@ -439,7 +448,13 @@ class ToonGodDiscoveryProvider(BaseDiscoveryProvider):
         )
 
     def _page_has_navigation(self, html: str, page: int) -> bool:
-        return bool(re.search(rf"/page/{page + 1}/", html))
+        for match in _PAGE_LINK_RE.finditer(html or ""):
+            try:
+                if int(match.group(1)) >= page + 1:
+                    return True
+            except ValueError:
+                continue
+        return False
 
     def _looks_like_cloudflare_block(self, html: str, status_code: int) -> bool:
         if status_code == 403:

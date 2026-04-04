@@ -4,7 +4,18 @@ from html import unescape
 from urllib.parse import urljoin, urlparse, parse_qs, unquote
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
+
+_GENERIC_IMAGE_URL_RE = re.compile(
+    r'https?://[^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?',
+    re.IGNORECASE,
+)
+_QUOTED_IMAGE_URL_RE = re.compile(
+    r'["\']([^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?)["\']',
+    re.IGNORECASE,
+)
+_IMAGE_TAG_STRAINER = SoupStrainer("img")
+
 
 from core.site_session import apply_site_cookies, load_site_user_agent
 from ..base import BaseScraper, ScraperError
@@ -12,6 +23,7 @@ from ..models import SeriesInfo, ChapterInfo, PageInfo
 
 
 class ToonGodScraper(BaseScraper):
+    asset_download_workers = 10
     site_name = "toongod"
     site_display_name = "ToonGod"
     content_type = "webtoon"
@@ -405,7 +417,7 @@ class ToonGodScraper(BaseScraper):
 
     def get_series_info(self, url: str, session=None) -> SeriesInfo:
         r = self._get(url, session=session)
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text, "lxml")
 
         title = self._extract_title(soup)
         slug = self._slug_from_url(url)
@@ -481,13 +493,12 @@ class ToonGodScraper(BaseScraper):
         images = []
 
         # generic URL scraping
-        for match in re.findall(r'https?://[^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?', html, flags=re.I):
+        for match in _GENERIC_IMAGE_URL_RE.findall(html):
             url = self._normalize_url(match, chapter_url)
             if self._is_reader_image(url):
                 images.append(url)
 
-        # escaped or relative asset URLs
-        for match in re.findall(r'["\']([^"\']+\.(?:jpg|jpeg|png|webp|avif)(?:\?[^"\']*)?)["\']', html, flags=re.I):
+        for match in _QUOTED_IMAGE_URL_RE.findall(html):
             url = self._normalize_url(match, chapter_url)
             if self._is_reader_image(url):
                 images.append(url)
@@ -505,13 +516,44 @@ class ToonGodScraper(BaseScraper):
             out.append(key)
         return out
 
+    def _extract_images_from_img_tags(self, html: str, chapter_url: str) -> list[str]:
+        images = []
+        for tag in re.findall(r"<img\b[^>]*>", html or "", flags=re.IGNORECASE):
+            for attr in ("data-src", "data-lazy-src", "data-lazy", "data-original", "src"):
+                match = re.search(rf"\b{attr}=[\"']([^\"']+)[\"']", tag, flags=re.IGNORECASE)
+                if not match:
+                    continue
+                url = self._normalize_url(match.group(1), chapter_url)
+                if self._is_reader_image(url):
+                    images.append(url)
+                    break
+        return images
+
+    def _extract_images_from_img_soup(self, html: str, chapter_url: str) -> list[str]:
+        soup = BeautifulSoup(html, "lxml", parse_only=_IMAGE_TAG_STRAINER)
+        images = []
+        for img in soup.select("img"):
+            for attr in ("data-src", "data-lazy-src", "data-lazy", "data-original", "src"):
+                raw = img.get(attr)
+                if not raw:
+                    continue
+                url = self._normalize_url(str(raw), chapter_url)
+                if self._is_reader_image(url):
+                    images.append(url)
+                    break
+        return images
+
     def get_chapter_pages(self, chapter_url: str, session=None) -> list[PageInfo]:
         r = self._get(chapter_url, session=session)
-        soup = BeautifulSoup(r.text, "html.parser")
 
-        image_urls = self._extract_images_from_dom(soup, chapter_url)
+        image_urls = self._extract_images_from_img_tags(r.text, chapter_url)
+        if len(image_urls) < 2:
+            soup = BeautifulSoup(r.text, "lxml")
+            image_urls = self._extract_images_from_dom(soup, chapter_url)
         if not image_urls:
             image_urls = self._extract_images_from_scripts(r.text, chapter_url)
+        if not image_urls:
+            image_urls = self._extract_images_from_img_soup(r.text, chapter_url)
 
         image_urls = self._dedupe_preserve_order(image_urls)
 

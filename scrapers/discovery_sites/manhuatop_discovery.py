@@ -2,6 +2,9 @@ import re
 from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
+
+_PAGE_LINK_RE = re.compile(r"/page/(\d+)/", re.IGNORECASE)
+
 from curl_cffi import requests as cffi_requests
 
 from scrapers.base import ScraperError
@@ -168,6 +171,15 @@ class ManhuaTopDiscoveryProvider(BaseDiscoveryProvider):
         cards = soup.select(".page-item-detail")
         return len(cards) >= 18
 
+    def _page_has_navigation(self, html: str, page: int) -> bool:
+        for match in _PAGE_LINK_RE.finditer(html or ""):
+            try:
+                if int(match.group(1)) >= page + 1:
+                    return True
+            except ValueError:
+                continue
+        return False
+
     # ------------------------------------------------------------------ #
     # Search
     # ------------------------------------------------------------------ #
@@ -244,7 +256,7 @@ class ManhuaTopDiscoveryProvider(BaseDiscoveryProvider):
             url = f"{self.BASE}/manga/page/{page}/"
 
         r = self._get(url)
-        soup = BeautifulSoup(r.text, "html.parser")
+        soup = BeautifulSoup(r.text, "lxml")
 
         # Search results use a different card structure than the catalog
         if query:
@@ -252,7 +264,7 @@ class ManhuaTopDiscoveryProvider(BaseDiscoveryProvider):
             has_next = len(entries) >= 18
         else:
             entries = self._parse_cards(soup)
-            has_next = self._has_next_page(soup, page)
+            has_next = self._has_next_page(soup, page) or self._page_has_navigation(r.text, page)
 
         return CatalogPage(
             site=self.site_name,
