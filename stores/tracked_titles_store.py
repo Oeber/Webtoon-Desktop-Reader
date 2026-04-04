@@ -1,4 +1,5 @@
-﻿import time
+﻿import json
+import time
 
 from core.app_logging import get_logger
 from stores.db import get_connection
@@ -27,15 +28,18 @@ class TrackedTitlesStore:
         source_url: str = "",
         content_type: str = "webtoon",
         cover_url: str = "",
+        source_config: dict | None = None,
+        cover_headers: dict | None = None,
         status: str = "tracked",
         cache_status: str = "none",
         local_webtoon_name: str = "",
         last_read_chapter_key: str = "",
+        last_checked_at: int | None = None,
     ) -> None:
         now = int(time.time() * 1000)
         conn = get_connection()
         existing = conn.execute(
-            "SELECT created_at, status, cache_status, local_webtoon_name, last_read_chapter_key FROM tracked_titles WHERE track_id = ?",
+            "SELECT created_at, status, cache_status, local_webtoon_name, last_read_chapter_key, last_checked_at, source_config, cover_headers FROM tracked_titles WHERE track_id = ?",
             (str(track_id or "").strip(),),
         ).fetchone()
         created_at = int(existing["created_at"] or now) if existing is not None else now
@@ -43,11 +47,17 @@ class TrackedTitlesStore:
         normalized_cache_status = str(cache_status or "none").strip() or "none"
         normalized_local_name = str(local_webtoon_name or "").strip()
         normalized_last_read = str(last_read_chapter_key or "").strip()
+        normalized_checked = int(last_checked_at) if last_checked_at is not None else None
+        normalized_source_config = json.dumps(source_config or {}, ensure_ascii=True, sort_keys=True)
+        normalized_cover_headers = json.dumps(cover_headers or {}, ensure_ascii=True, sort_keys=True)
         if existing is not None:
             existing_status = str(existing["status"] or "").strip()
             existing_cache_status = str(existing["cache_status"] or "").strip()
             existing_local_name = str(existing["local_webtoon_name"] or "").strip()
             existing_last_read = str(existing["last_read_chapter_key"] or "").strip()
+            existing_checked = existing["last_checked_at"]
+            existing_source_config = str(existing["source_config"] or "{}")
+            existing_cover_headers = str(existing["cover_headers"] or "{}")
             if existing_status in {"library", "mixed"} and normalized_status == "tracked":
                 normalized_status = existing_status
             if existing_local_name and not normalized_local_name:
@@ -56,6 +66,12 @@ class TrackedTitlesStore:
                 normalized_cache_status = existing_cache_status
             if existing_last_read and not normalized_last_read:
                 normalized_last_read = existing_last_read
+            if normalized_checked is None and existing_checked is not None:
+                normalized_checked = int(existing_checked)
+            if source_config is None:
+                normalized_source_config = existing_source_config
+            if cover_headers is None:
+                normalized_cover_headers = existing_cover_headers
         conn.execute(
             """
             INSERT OR REPLACE INTO tracked_titles (
@@ -64,15 +80,18 @@ class TrackedTitlesStore:
                 series_id,
                 title,
                 source_url,
+                source_config,
                 content_type,
                 cover_url,
+                cover_headers,
                 status,
                 cache_status,
                 local_webtoon_name,
                 last_read_chapter_key,
+                last_checked_at,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 str(track_id or "").strip(),
@@ -80,12 +99,15 @@ class TrackedTitlesStore:
                 str(series_id or "").strip(),
                 str(title or "").strip(),
                 str(source_url or "").strip(),
+                normalized_source_config,
                 str(content_type or "webtoon").strip() or "webtoon",
                 str(cover_url or "").strip(),
+                normalized_cover_headers,
                 normalized_status,
                 normalized_cache_status,
                 normalized_local_name,
                 normalized_last_read,
+                normalized_checked,
                 created_at,
                 now,
             ),
@@ -153,6 +175,15 @@ class TrackedTitlesStore:
                 """,
                 (str(chapter_key or "").strip(), str(cache_status or "").strip(), now, str(track_id or "").strip()),
             )
+        conn.commit()
+
+    def touch_checked(self, track_id: str, *, checked_at: int | None = None) -> None:
+        conn = get_connection()
+        now = int(time.time() * 1000)
+        conn.execute(
+            "UPDATE tracked_titles SET last_checked_at = ?, updated_at = ? WHERE track_id = ?",
+            (int(checked_at or now), now, str(track_id or "").strip()),
+        )
         conn.commit()
 
     def bind_local_title(self, track_id: str, local_webtoon_name: str) -> None:

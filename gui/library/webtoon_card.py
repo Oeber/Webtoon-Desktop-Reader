@@ -32,6 +32,7 @@ from gui.common.styles import (
 from gui.common.card_utils import ElidedLabel, card_toggle_icon, load_rounded_cover, retain_hidden_size
 from gui.downloader.download_widgets import SpinnerCircle
 from gui.library.edit_webtoon_dialog import EditWebtoonDialog
+from stores.chapter_ref_store import get_instance as get_chapter_ref_store
 
 
 CARD_WIDTH = 180
@@ -64,6 +65,7 @@ class WebtoonCard(QWidget):
         self.webtoon = webtoon
         self.progress_store = progress_store
         self.settings_store = settings_store
+        self.chapter_ref_store = get_chapter_ref_store()
         self.on_open = on_open
         self.on_changed = on_changed
         self.on_update = on_update
@@ -255,7 +257,7 @@ class WebtoonCard(QWidget):
             return
 
         chapters = self.webtoon.chapters
-        progress = self.progress_store.get(self.webtoon.name)
+        progress = self._card_progress()
         latest_new_chapter = self.settings_store.get_latest_new_chapter(self.webtoon.name)
 
         if chapters:
@@ -274,17 +276,38 @@ class WebtoonCard(QWidget):
             self.new_chip.hide()
 
         if progress:
-            last_ch = progress["chapter"]
+            last_ch = self._progress_label(progress)
             self.lastread_btn.setText(t("library.card.last_read", chapter=last_ch))
             self.lastread_btn.show()
             if self._lastread_connected:
                 self.lastread_btn.clicked.disconnect()
             self.lastread_btn.clicked.connect(
-                lambda checked=False, ch=last_ch: self._open_chapter_direct(ch)
+                lambda checked=False: self.on_open(self.webtoon)
             )
             self._lastread_connected = True
         else:
             self.lastread_btn.hide()
+
+    def _card_progress(self):
+        if getattr(self.webtoon, "_tracked_library_placeholder", False):
+            row = dict(getattr(self.webtoon, "_tracked_row", {}) or {})
+            chapter_key = str(row.get("last_read_chapter_key") or "").strip()
+            if chapter_key:
+                progress = self.progress_store.get_by_chapter_key(chapter_key)
+                if progress:
+                    return progress
+        return self.progress_store.get(self.webtoon.name)
+
+    def _progress_label(self, progress: dict) -> str:
+        if not progress:
+            return ""
+        progress_key = str(progress.get("chapter_key") or "").strip()
+        if progress_key:
+            cached_ref = self.chapter_ref_store.get(progress_key) or {}
+            cached_title = str(cached_ref.get("chapter_title") or cached_ref.get("local_chapter_name") or "").strip()
+            if cached_title:
+                return cached_title
+        return str(progress.get("chapter") or "").strip()
 
     def _open_chapter_direct(self, chapter: str):
         chapters = self.webtoon.chapters

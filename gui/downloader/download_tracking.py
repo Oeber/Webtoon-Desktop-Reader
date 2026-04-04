@@ -1,5 +1,6 @@
-from core.app_logging import get_logger
+﻿from core.app_logging import get_logger
 from core.chapter_identity import build_remote_chapter_key
+from stores.chapter_ref_store import get_instance as get_chapter_ref_store
 from stores.progress_store import get_instance as get_progress_store
 from stores.tracked_titles_store import get_instance as get_tracked_titles_store
 from scrapers.registry import get_scraper
@@ -14,6 +15,7 @@ class DownloadTrackingStore:
     def __init__(self, settings_store, history_store):
         self.settings_store = settings_store
         self.history_store = history_store
+        self.chapter_ref_store = get_chapter_ref_store()
         self.progress_store = get_progress_store()
         self.tracked_titles_store = get_tracked_titles_store()
 
@@ -129,7 +131,12 @@ class DownloadTrackingStore:
         if not track_id:
             return
 
-        chapter_map = {}
+        chapter_map = self.chapter_ref_store.bind_series_to_local(
+            track_id,
+            webtoon_name,
+            series,
+            local_name_builder=self._local_chapter_name,
+        )
         site_name = str(getattr(series, "site", "") or tracked.get("site_name") or "").strip()
         series_id = str(getattr(series, "series_id", "") or tracked.get("series_id") or "").strip()
         for chapter in list(getattr(series, "chapters", []) or []):
@@ -142,7 +149,7 @@ class DownloadTrackingStore:
                 str(getattr(chapter, "id", "") or "").strip(),
                 str(getattr(chapter, "url", "") or "").strip(),
             )
-            chapter_map[remote_key] = local_chapter
+            chapter_map.setdefault(remote_key, local_chapter)
 
         promoted = self.progress_store.promote_remote_progress(webtoon_name, chapter_map)
         self.tracked_titles_store.bind_local_title(track_id, webtoon_name)
@@ -152,7 +159,6 @@ class DownloadTrackingStore:
             webtoon_name,
             promoted,
         )
-
     @staticmethod
     def _local_chapter_name(chapter) -> str:
         chapter_number = getattr(chapter, "number", None)
@@ -201,3 +207,8 @@ class DownloadTrackingStore:
             "chapter_urls": [str(chapter_url) for chapter_url in (job.chapter_urls or []) if chapter_url],
             "job_name": str(job.active_name or job.initial_name or ""),
         }
+
+
+
+
+

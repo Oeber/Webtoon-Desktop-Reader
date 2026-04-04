@@ -3,9 +3,11 @@
 import json
 import os
 import tempfile
+import time
 from html import escape
 from pathlib import Path
 from types import SimpleNamespace
+from core.hybrid_models import ViewerChapterSource
 from urllib.parse import urlparse
 
 from core.app_logging import get_logger
@@ -20,6 +22,7 @@ from core.remote_cache import (
 )
 from bs4 import BeautifulSoup
 from scrapers.base import ScraperError
+from stores.chapter_ref_store import get_instance as get_chapter_ref_store
 from stores.tracked_titles_store import get_instance as get_tracked_titles_store
 
 
@@ -30,6 +33,59 @@ class RemoteReadService:
     def __init__(self, progress_store):
         self.progress_store = progress_store
         self.tracked_titles_store = get_tracked_titles_store()
+        self.chapter_ref_store = get_chapter_ref_store()
+
+    def upsert_tracked_title(
+        self,
+        scraper,
+        series,
+        *,
+        status: str = "tracked",
+        cache_status: str = "none",
+        last_read_chapter_key: str = "",
+    ) -> dict:
+        site_name = str(getattr(scraper, "site_name", "") or getattr(series, "site", "") or "unknown").strip()
+        series_id = str(getattr(series, "series_id", "") or getattr(series, "url", "") or getattr(series, "title", "") or "series").strip()
+        track_id = self._track_id(site_name, series_id)
+        content_type = str(getattr(series, "content_type", "webtoon") or "webtoon").strip() or "webtoon"
+        title = str(getattr(series, "title", "") or "").strip()
+        source_url = str(getattr(series, "url", "") or "").strip()
+        cover_url = str(getattr(series, "cover_url", "") or "").strip()
+        write_json_atomic(
+            tracked_title_metadata_path(track_id),
+            {
+                "track_id": track_id,
+                "site_name": site_name,
+                "series_id": series_id,
+                "title": title,
+                "source_url": source_url,
+                "content_type": content_type,
+                "cover_url": cover_url,
+            },
+        )
+        self.tracked_titles_store.upsert_title(
+            track_id=track_id,
+            site_name=site_name,
+            series_id=series_id,
+            title=title,
+            source_url=source_url,
+            source_config=getattr(scraper, "source_config", None),
+            content_type=content_type,
+            cover_url=cover_url,
+            cover_headers={},
+            status=status,
+            cache_status=cache_status,
+            last_read_chapter_key=last_read_chapter_key,
+        )
+        return {
+            "track_id": track_id,
+            "site_name": site_name,
+            "series_id": series_id,
+            "title": title,
+            "source_url": source_url,
+            "content_type": content_type,
+            "cover_url": cover_url,
+        }
 
     def prepare_chapter(self, scraper, series, chapter):
         site_name = str(getattr(scraper, "site_name", "") or getattr(series, "site", "") or "unknown").strip()
@@ -64,31 +120,6 @@ class RemoteReadService:
             if not image_files:
                 raise ScraperError(f"No cached images were prepared for: {chapter.url}")
 
-        write_json_atomic(
-            tracked_title_metadata_path(track_id),
-            {
-                "track_id": track_id,
-                "site_name": site_name,
-                "series_id": series_id,
-                "title": str(getattr(series, "title", "") or "").strip(),
-                "source_url": str(getattr(series, "url", "") or "").strip(),
-                "content_type": content_type,
-                "cover_url": str(getattr(series, "cover_url", "") or "").strip(),
-            },
-        )
-
-        self.tracked_titles_store.upsert_title(
-            track_id=track_id,
-            site_name=site_name,
-            series_id=series_id,
-            title=str(getattr(series, "title", "") or "").strip(),
-            source_url=str(getattr(series, "url", "") or "").strip(),
-            content_type=content_type,
-            cover_url=str(getattr(series, "cover_url", "") or "").strip(),
-            status="tracked",
-            cache_status="cached",
-            last_read_chapter_key=chapter_key,
-        )
         metadata_payload = {
             "chapter_key": chapter_key,
             "site_name": site_name,
@@ -99,6 +130,7 @@ class RemoteReadService:
             "chapter_number": getattr(chapter, "number", None),
             "content_type": content_type,
             "page_count": len(image_files),
+            "fetched_at": int(time.time() * 1000),
         }
         if content_type == "webnovel" and metadata_path.is_file():
             try:
@@ -109,6 +141,14 @@ class RemoteReadService:
                 existing_payload.update(metadata_payload)
                 metadata_payload = existing_payload
         write_json_atomic(metadata_path, metadata_payload)
+        self.chapter_ref_store.upsert_tracked_remote(
+            track_id=track_id,
+            site_name=site_name,
+            series_id=series_id,
+            chapter=chapter,
+            cache_path=str(chapter_root),
+            cache_state="cached",
+        )
 
         progress = self.progress_store.get_by_chapter_key(chapter_key) or {}
         start_scroll = float(progress.get("scroll") or 0.0)
@@ -125,10 +165,41 @@ class RemoteReadService:
             content_type=content_type,
             is_remote=True,
             remote_track_id=track_id,
+            remote_site_name=site_name,
+            remote_series_id=series_id,
+            remote_title=fake_name,
+            remote_cover_url=str(getattr(series, "cover_url", "") or "").strip(),
             remote_series_url=str(getattr(series, "url", "") or "").strip(),
             remote_chapter_url=str(getattr(chapter, "url", "") or "").strip(),
         )
         return webtoon, 0, start_scroll
+    def prepare_hybrid_title(self, scraper, series, chapter):
+        webtoon, chapter_index, start_scroll = self.prepare_chapter(scraper, series, chapter)
+        chapter_name = str(webtoon.chapters[int(chapter_index)] or "").strip()
+        chapter_key = str(getattr(webtoon, "chapter_keys", {}).get(chapter_name, "") or "").strip()
+        site_name = str(getattr(webtoon, "remote_site_name", "") or getattr(scraper, "site_name", "") or getattr(series, "site", "") or "").strip()
+        series_id = str(getattr(webtoon, "remote_series_id", "") or getattr(series, "series_id", "") or getattr(series, "url", "") or "").strip()
+        storage_path = str((Path(webtoon.path) / chapter_name).resolve())
+        source = ViewerChapterSource(
+            chapter_key=chapter_key,
+            title=str(getattr(webtoon, "chapter_display_names", {}).get(chapter_name, chapter_name) or chapter_name),
+            content_type=str(getattr(webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+            source_kind="cached_remote",
+            storage_path=storage_path,
+            remote_url=str(getattr(webtoon, "remote_chapter_url", "") or "").strip(),
+            local_chapter_name=chapter_name,
+        )
+        owner = SimpleNamespace(
+            title=str(getattr(series, "title", "") or getattr(webtoon, "name", "") or "Hybrid Title").strip() or "Hybrid Title",
+            thumbnail=str(getattr(series, "cover_url", "") or getattr(webtoon, "thumbnail", "") or "").strip(),
+            cover_url=str(getattr(series, "cover_url", "") or "").strip(),
+            content_type=str(getattr(series, "content_type", getattr(webtoon, "content_type", "webtoon")) or "webtoon").strip() or "webtoon",
+            track_id=str(getattr(webtoon, "remote_track_id", "") or "").strip(),
+            site_name=site_name,
+            series_id=series_id,
+            source_url=str(getattr(series, "url", "") or getattr(webtoon, "remote_series_url", "") or "").strip(),
+        )
+        return owner, [source], chapter_key, float(start_scroll or 0.0)
 
     def _cache_pages(self, scraper, track_id: str, chapter_key: str, pages: list) -> None:
         chapter_root = cached_chapter_root(track_id, chapter_key)
@@ -282,3 +353,15 @@ class RemoteReadService:
         if suffix in {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif"}:
             return suffix
         return ".jpg"
+
+
+
+
+
+
+
+
+
+
+
+

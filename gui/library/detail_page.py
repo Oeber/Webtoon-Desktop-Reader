@@ -1,11 +1,14 @@
-import os
+﻿import os
 import re
 import threading
 import time
+from pathlib import Path
+from types import SimpleNamespace
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 from core.app_logging import get_logger
+from core.hybrid_models import ViewerChapterSource
 from core.chapter_identity import build_remote_chapter_key
 from core.chapter_storage import (
     chapter_is_editable,
@@ -81,6 +84,7 @@ from gui.downloader.helpers import sanitize_webtoon_name
 from core.update_utils import cooldown_remaining
 from scrapers.base import ScraperError
 from scrapers.registry import get_scraper, is_scraper_enabled_for_url
+from stores.chapter_ref_store import get_instance as get_chapter_ref_store
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
 from stores.tracked_titles_store import get_instance as get_tracked_titles_store
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
@@ -204,8 +208,17 @@ class RemoteChapterReadLoader(QObject):
                     raise ScraperError("This title does not support remote reading.")
                 source_site = getattr(scraper, "site_name", "") or ""
                 scraper.apply_source_config(load_scraper_default_config(source_site))
-                webtoon, chapter_index, start_scroll = self._service.prepare_chapter(scraper, series, chapter)
-                self.loaded.emit(request_id, (webtoon, chapter_index), float(start_scroll or 0.0), "")
+                owner, chapter_sources, start_chapter_key, start_scroll = self._service.prepare_hybrid_title(
+                    scraper,
+                    series,
+                    chapter,
+                )
+                self.loaded.emit(
+                    request_id,
+                    (owner, chapter_sources, start_chapter_key),
+                    float(start_scroll or 0.0),
+                    "",
+                )
             except ScraperError as e:
                 self.loaded.emit(request_id, None, 0.0, str(e))
             except Exception as e:
@@ -391,6 +404,7 @@ class DetailPage(QWidget):
         self.latest_new_chapter = None
         self.webtoon_bookmarked = False
         self.settings_store = get_webtoon_settings()
+        self.chapter_ref_store = get_chapter_ref_store()
         self.scene_bookmark_store = get_scene_bookmark_store()
         self.tracked_titles_store = get_tracked_titles_store()
         self._update_service = None
@@ -739,6 +753,9 @@ class DetailPage(QWidget):
             return False
         return bool(getattr(self.webtoon, "_tracked_library_placeholder", False))
 
+    def _detail_origin_target(self) -> str:
+        return "library"
+
     def _tracked_library_row(self) -> dict:
         if not self._is_remote_library_title():
             return {}
@@ -751,6 +768,42 @@ class DetailPage(QWidget):
                 setattr(self.webtoon, "_tracked_row", row)
         return row
 
+    def _hybrid_track_row(self) -> dict:
+        if self.webtoon is None:
+            return {}
+        if self._is_remote_library_title():
+            return self._tracked_library_row()
+        return self.tracked_titles_store.find_matching_title(
+            site_name=str(self.settings_store.get_source_site(self.webtoon.name) or "").strip(),
+            series_id=str(self.settings_store.get_source_series_id(self.webtoon.name) or "").strip(),
+            source_url=str(self.settings_store.get_source_url(self.webtoon.name) or "").strip(),
+        ) or {}
+
+    def _remote_source_url(self) -> str:
+        if self.webtoon is None:
+            return ""
+        return str(
+            self.settings_store.get_source_url(self.webtoon.name)
+            or self._hybrid_track_row().get("source_url")
+            or ""
+        ).strip()
+
+    def _remote_source_config(self) -> dict:
+        if self.webtoon is None:
+            return {}
+        if self._is_remote_library_title():
+            raw_config = self._tracked_library_row().get("source_config")
+            if isinstance(raw_config, dict):
+                return dict(raw_config)
+            if isinstance(raw_config, str) and raw_config.strip():
+                try:
+                    import json
+                    parsed = json.loads(raw_config)
+                    if isinstance(parsed, dict):
+                        return dict(parsed)
+                except Exception:
+                    pass
+        return dict(self.settings_store.get_source_config(self.webtoon.name) or {})
     def _detail_progress(self) -> dict | None:
         if self.webtoon is None or self.progress_store is None:
             return None
@@ -787,6 +840,12 @@ class DetailPage(QWidget):
             entry = self._remote_entry_for_progress(progress)
             if entry is not None:
                 return str(entry.get("display_name") or entry.get("local_name") or "").strip()
+            progress_key = str(progress.get("chapter_key") or "").strip()
+            if progress_key:
+                cached_ref = self.chapter_ref_store.get(progress_key) or {}
+                cached_title = str(cached_ref.get("chapter_title") or cached_ref.get("local_chapter_name") or "").strip()
+                if cached_title:
+                    return cached_title
         return str(progress.get("chapter") or "").strip()
 
     def _refresh_last_read_label(self, progress: dict | None = None) -> None:
@@ -1103,13 +1162,17 @@ class DetailPage(QWidget):
         set_selector_visibility(row, select_btn, force=self._remote_chapter_selection_visible())
         layout.addWidget(select_slot)
 
+        progress = self._remote_entry_progress(entry)
+        is_last_read = self._is_remote_entry_last_read(entry)
+        color = ACCENT if is_last_read else TEXT_SOFT
+
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
 
         display_name = entry.get("display_name") or entry.get("local_name") or t("library.detail.new_chapter")
         name_lbl = QLabel(display_name)
-        name_lbl.setStyleSheet(chapter_name_style(TEXT_SOFT))
+        name_lbl.setStyleSheet(chapter_name_style(color))
         title_row.addWidget(name_lbl)
 
         if not self._is_remote_library_title():
@@ -1122,6 +1185,39 @@ class DetailPage(QWidget):
         title_row.addStretch()
         layout.addLayout(title_row, 1)
 
+        scene_count = self._remote_entry_scene_count(entry)
+        if scene_count > 0:
+            scene_btn = QToolButton(row)
+            scene_btn.setText(t("library.detail.scenes"))
+            scene_btn.setCursor(Qt.PointingHandCursor)
+            scene_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
+            scene_btn.clicked.connect(lambda checked=False, payload=dict(entry): self._open_remote_scene_bookmarks(payload))
+            layout.addWidget(scene_btn)
+
+        bookmark_btn = QToolButton(row)
+        bookmark_btn.setCursor(Qt.PointingHandCursor)
+        bookmark_btn.setAutoRaise(True)
+        bookmark_btn.setCheckable(True)
+        bookmark_btn.setChecked(self._is_remote_entry_bookmarked(entry))
+        bookmark_btn.setIconSize(QSize(14, 14))
+        bookmark_btn.setStyleSheet(CHAPTER_TOOL_BUTTON_STYLE)
+        self._apply_bookmark_icon(bookmark_btn, bookmark_btn.isChecked())
+        bookmark_btn.clicked.connect(
+            lambda checked, payload=dict(entry), btn=bookmark_btn: self._toggle_remote_chapter_bookmark(payload, btn)
+        )
+
+        percent = self._remote_entry_percent(progress)
+        if percent > 0:
+            circle = ProgressCircle()
+            circle.set_percent(percent)
+            layout.addWidget(circle)
+
+        if is_last_read:
+            last_read_icon = QLabel()
+            last_read_icon.setPixmap(qta.icon("fa5s.bookmark", color=ACCENT).pixmap(QSize(14, 14)))
+            last_read_icon.setStyleSheet(LAST_READ_ICON_STYLE)
+            layout.addWidget(last_read_icon)
+
         download_btn = QToolButton(row)
         download_btn.setText(t("library.detail.download"))
         download_btn.setCursor(Qt.PointingHandCursor)
@@ -1130,6 +1226,7 @@ class DetailPage(QWidget):
             lambda checked=False, url=chapter_url: self._download_remote_chapters([url])
         )
         layout.addWidget(download_btn)
+        layout.addWidget(bookmark_btn)
 
         row.enterEvent = lambda event, btn=select_btn, widget=row: self._on_remote_chapter_row_hover(widget, btn, True, event)
         row.leaveEvent = lambda event, btn=select_btn, widget=row: self._on_remote_chapter_row_hover(widget, btn, False, event)
@@ -1219,6 +1316,10 @@ class DetailPage(QWidget):
                 entry for entry in chapters
                 if not SPECIAL_CHAPTER_RE.search(entry.get("display_name", "") or entry.get("local_name", ""))
             ]
+        if self.show_only_bookmarked:
+            chapters = [entry for entry in chapters if self._is_remote_entry_bookmarked(entry)]
+        if self.show_only_scene_marks:
+            chapters = [entry for entry in chapters if self._remote_entry_scene_count(entry) > 0]
         return chapters
 
     def _update_chapter_count_label(self):
@@ -1230,11 +1331,16 @@ class DetailPage(QWidget):
             total_count = len(self._new_remote_chapters)
             visible_count = len(self._filtered_new_remote_chapters())
             hidden_specials = max(0, total_count - visible_count) if self.hide_specials else 0
-            if self.hide_specials and hidden_specials > 0:
+            if self.show_only_bookmarked or self.show_only_scene_marks:
+                parts = [t("library.detail.chapters_shown", count=visible_count)]
+            elif self.hide_specials and hidden_specials > 0:
                 parts = [t("library.detail.chapters_count", count=visible_count)]
-                parts.append(t("library.detail.special_hidden", count=hidden_specials))
             else:
                 parts = [t("library.detail.chapters_count", count=total_count)]
+            if self.hide_specials and hidden_specials > 0:
+                parts.append(t("library.detail.special_hidden", count=hidden_specials))
+            if self.show_only_bookmarked:
+                parts.append(t("library.detail.bookmarked_count", count=self._remote_bookmarked_count()))
             self.chapter_count_label.setText(" | ".join(parts))
             return
 
@@ -1263,11 +1369,14 @@ class DetailPage(QWidget):
 
         self.chapter_count_label.setText(" | ".join(parts))
 
+    def _remote_bookmarked_count(self) -> int:
+        return sum(1 for entry in self._new_remote_chapters if self._is_remote_entry_bookmarked(entry))
+
     def _begin_remote_series_lookup(self):
         self._remote_request_id += 1
         self._remote_series = None
         self._new_remote_chapters = []
-        source_url = self.settings_store.get_source_url(self.webtoon.name) if self.webtoon else None
+        source_url = self._remote_source_url() if self.webtoon else None
         if not source_url:
             self._remote_status = ""
             self._sync_remote_chapter_state(rebuild_chapter_list=False)
@@ -1288,8 +1397,8 @@ class DetailPage(QWidget):
 
         self._remote_status = t("library.detail.checking_new")
         self._sync_remote_chapter_state(rebuild_chapter_list=False)
-        source_site = self.settings_store.get_source_site(self.webtoon.name) or getattr(scraper, "site_name", "") or ""
-        source_config = self.settings_store.get_source_config(self.webtoon.name) or load_scraper_default_config(source_site)
+        source_site = str(self._hybrid_track_row().get("site_name") or self.settings_store.get_source_site(self.webtoon.name) or getattr(scraper, "site_name", "") or "").strip()
+        source_config = self._remote_source_config() or load_scraper_default_config(source_site)
         self._remote_series_loader.load(self._remote_request_id, source_url, source_config)
 
     def _on_remote_series_loaded(self, request_id: int, series, error: str):
@@ -1300,7 +1409,7 @@ class DetailPage(QWidget):
             return
 
         if error:
-            source_url = self.settings_store.get_source_url(self.webtoon.name)
+            source_url = self._remote_source_url()
             scraper = None
             if source_url:
                 try:
@@ -1366,9 +1475,16 @@ class DetailPage(QWidget):
         new_remote = []
         seen = set()
         remote_mode = self._is_remote_library_title()
-        tracked_row = self._tracked_library_row() if remote_mode else {}
+        tracked_row = self._hybrid_track_row()
         site_name = str(tracked_row.get("site_name") or getattr(self._remote_series, "site", "") or "").strip()
         series_id = str(tracked_row.get("series_id") or getattr(self._remote_series, "series_id", "") or getattr(self._remote_series, "url", "") or "").strip()
+        track_id = str(tracked_row.get("track_id") or "").strip()
+        cached_by_key = {}
+        if track_id:
+            for ref in self.chapter_ref_store.list_cached_for_owner("tracked", track_id):
+                cache_path = str(ref.get("cache_path") or "").strip()
+                if cache_path and os.path.exists(cache_path):
+                    cached_by_key[str(ref.get("chapter_key") or "").strip()] = dict(ref)
         for chapter in getattr(self._remote_series, "chapters", []) or []:
             local_name = self._format_remote_chapter_dir_name(chapter)
             if not local_name:
@@ -1379,13 +1495,17 @@ class DetailPage(QWidget):
             display_name = getattr(chapter, "title", "") or local_name
             chapter_url = getattr(chapter, "url", "") or ""
             chapter_id = str(getattr(chapter, "id", "") or "").strip()
+            chapter_key = build_remote_chapter_key(site_name, series_id, chapter_id, chapter_url)
+            cached_ref = cached_by_key.get(chapter_key, {})
             new_remote.append(
                 {
                     "url": chapter_url,
                     "local_name": local_name,
                     "display_name": display_name,
-                    "chapter_key": build_remote_chapter_key(site_name, series_id, chapter_id, chapter_url),
+                    "chapter_key": chapter_key,
                     "chapter_obj": chapter,
+                    "is_cached": bool(cached_ref),
+                    "cache_path": str(cached_ref.get("cache_path") or "").strip(),
                 }
             )
         new_remote.sort(key=lambda entry: chapter_sort_key(entry["local_name"]), reverse=self.sort_latest_first)
@@ -1409,7 +1529,6 @@ class DetailPage(QWidget):
         if rebuild_chapter_list and (remote_changed or previous_visible_count != count or status_changed):
             progress = self._detail_progress()
             self._build_chapter_list(progress)
-
     def _sync_webtoon_bookmark_button(self):
         if self.webtoon_bookmarked:
             self.bookmark_btn.setText(t("library.detail.bookmarked_active"))
@@ -1494,6 +1613,118 @@ class DetailPage(QWidget):
             progress = self._detail_progress()
             self._build_chapter_list(progress)
 
+    def _remote_entry_bookmark_key(self, entry: dict) -> str:
+        return str(entry.get("chapter_key") or entry.get("url") or entry.get("local_name") or "").strip()
+
+    def _is_remote_entry_bookmarked(self, entry: dict) -> bool:
+        bookmark_key = self._remote_entry_bookmark_key(entry)
+        return bool(bookmark_key) and bookmark_key in self.bookmarked_chapters
+
+    def _toggle_remote_chapter_bookmark(self, entry: dict, button: QToolButton):
+        if self.webtoon is None:
+            return
+        bookmark_key = self._remote_entry_bookmark_key(entry)
+        if not bookmark_key:
+            return
+        is_bookmarked = self.settings_store.toggle_bookmarked_chapter(self.webtoon.name, bookmark_key)
+        if is_bookmarked:
+            self.bookmarked_chapters.add(bookmark_key)
+        else:
+            self.bookmarked_chapters.discard(bookmark_key)
+
+        button.blockSignals(True)
+        button.setChecked(is_bookmarked)
+        button.blockSignals(False)
+        self._apply_bookmark_icon(button, is_bookmarked)
+        self._update_chapter_count_label()
+
+        if self.show_only_bookmarked or self.show_only_scene_marks:
+            progress = self._detail_progress()
+            self._build_chapter_list(progress)
+
+    def _remote_entry_progress(self, entry: dict) -> dict | None:
+        if self.progress_store is None:
+            return None
+        chapter_key = str(entry.get("chapter_key") or "").strip()
+        if not chapter_key:
+            return None
+        return self.progress_store.get_by_chapter_key(chapter_key)
+
+    def _remote_entry_percent(self, progress: dict | None) -> int:
+        if not progress:
+            return 0
+        return self._calc_percent(float(progress.get("scroll") or 0.0), int(progress.get("total_images") or 0))
+
+    def _is_remote_entry_last_read(self, entry: dict) -> bool:
+        progress = self._detail_progress()
+        if not progress:
+            return False
+        return str(progress.get("chapter_key") or "").strip() == str(entry.get("chapter_key") or "").strip()
+
+    def _remote_entry_cached_chapter_name(self, entry: dict) -> str:
+        cached_path = str(entry.get("cache_path") or "").strip()
+        if not cached_path:
+            return ""
+        return str(Path(cached_path).name or "").strip()
+
+    def _remote_entry_scene_count(self, entry: dict) -> int:
+        chapter_name = self._remote_entry_cached_chapter_name(entry)
+        if not chapter_name:
+            return 0
+        return int(self.scene_bookmark_counts.get(chapter_name, 0) or 0)
+
+    def _open_remote_scene_bookmarks(self, entry: dict) -> None:
+        chapter_name = self._remote_entry_cached_chapter_name(entry)
+        if not chapter_name:
+            return
+        self._open_scene_bookmarks_for_chapter(chapter_name)
+
+    def _remote_entry_for_cached_chapter(self, chapter: str) -> dict | None:
+        normalized = str(chapter or "").strip()
+        if not normalized:
+            return None
+        for entry in self._new_remote_chapters:
+            if self._remote_entry_cached_chapter_name(entry) == normalized:
+                return dict(entry)
+        return None
+
+    def _open_cached_remote_entry(self, entry: dict, *, start_scroll: float = 0.0) -> bool:
+        if self.webtoon is None:
+            return False
+        cached_path = str(entry.get("cache_path") or "").strip()
+        chapter_key = str(entry.get("chapter_key") or "").strip()
+        if not cached_path or not os.path.exists(cached_path) or not chapter_key:
+            return False
+        owner = SimpleNamespace(
+            title=self.webtoon.name,
+            thumbnail=str(getattr(self.webtoon, "thumbnail", "") or "").strip(),
+            cover_url=str(getattr(self.webtoon, "thumbnail", "") or "").strip(),
+            content_type=str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+            track_id=str(self._hybrid_track_row().get("track_id") or "").strip(),
+            source_url=self._remote_source_url(),
+        )
+        setattr(owner, "_viewer_return", self._return_from_remote_viewer)
+        source = ViewerChapterSource(
+            chapter_key=chapter_key,
+            title=str(entry.get("display_name") or entry.get("local_name") or "Chapter").strip(),
+            content_type=str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+            source_kind="cached_remote",
+            storage_path=cached_path,
+            remote_url=str(entry.get("url") or "").strip(),
+            local_chapter_name=str(Path(cached_path).name or "").strip() or str(entry.get("local_name") or chapter_key),
+        )
+        self.main_window.set_window_context_title(self.webtoon.name)
+        self.main_window.stack.setCurrentWidget(self.main_window.viewer)
+        self.main_window.sidebar_controller.set_target(self._detail_origin_target())
+        self.main_window.viewer.load_hybrid_title(
+            self.webtoon.name,
+            owner,
+            [source],
+            start_chapter_key=chapter_key,
+            start_scroll=float(start_scroll or 0.0),
+        )
+        return True
+
     def _clear_chapter_selection(self):
         self.selected_chapters.clear()
         progress = self._detail_progress()
@@ -1571,12 +1802,48 @@ class DetailPage(QWidget):
         self._download_remote_chapters(ordered_urls)
 
     def _open_remote_chapter(self, entry: dict):
-        if self.webtoon is None or self._remote_series is None:
+        if self.webtoon is None:
+            return
+        cached_path = str(entry.get("cache_path") or "").strip()
+        chapter_key = str(entry.get("chapter_key") or "").strip()
+        if cached_path and os.path.exists(cached_path) and chapter_key:
+            owner = SimpleNamespace(
+                title=self.webtoon.name,
+                thumbnail=str(getattr(self.webtoon, "thumbnail", "") or "").strip(),
+                cover_url=str(getattr(self.webtoon, "thumbnail", "") or "").strip(),
+                content_type=str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+                track_id=str(self._hybrid_track_row().get("track_id") or "").strip(),
+                source_url=self._remote_source_url(),
+            )
+            setattr(owner, "_viewer_return", self._return_from_remote_viewer)
+            source = ViewerChapterSource(
+                chapter_key=chapter_key,
+                title=str(entry.get("display_name") or entry.get("local_name") or "Chapter").strip(),
+                content_type=str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+                source_kind="cached_remote",
+                storage_path=cached_path,
+                remote_url=str(entry.get("url") or "").strip(),
+                local_chapter_name=str(Path(cached_path).name or "").strip() or str(entry.get("local_name") or chapter_key),
+            )
+            progress = self.progress_store.get_by_chapter_key(chapter_key) if self.progress_store is not None else None
+            start_scroll = float((progress or {}).get("scroll") or 0.0)
+            self.main_window.set_window_context_title(self.webtoon.name)
+            self.main_window.stack.setCurrentWidget(self.main_window.viewer)
+            self.main_window.sidebar_controller.set_target(self._detail_origin_target())
+            self.main_window.viewer.load_hybrid_title(
+                self.webtoon.name,
+                owner,
+                [source],
+                start_chapter_key=chapter_key,
+                start_scroll=start_scroll,
+            )
+            return
+        if self._remote_series is None:
             return
         chapter = entry.get("chapter_obj")
         if chapter is None:
             return
-        source_url = self.settings_store.get_source_url(self.webtoon.name)
+        source_url = self._remote_source_url()
         if not source_url:
             QMessageBox.warning(self, t("library.detail.download_new_title"), t("library.detail.no_source_url"))
             return
@@ -1586,7 +1853,7 @@ class DetailPage(QWidget):
         self.remote_status_label.show()
         self.main_window.set_window_context_title(self.webtoon.name)
         self.main_window.stack.setCurrentWidget(self.main_window.viewer)
-        self.main_window.sidebar_controller.set_target("library")
+        self.main_window.sidebar_controller.set_target(self._detail_origin_target())
         self.main_window.chapter_overlay.show(self.webtoon.name, chapter_label)
         self._remote_read_loader.load(self._remote_read_request_id, source_url, self._remote_series, chapter)
 
@@ -1597,28 +1864,33 @@ class DetailPage(QWidget):
             self.main_window.chapter_overlay.hide()
             self.main_window.set_window_context_title(self.webtoon.name)
             self.main_window.stack.setCurrentWidget(self)
-            self.main_window.sidebar_controller.set_target("library")
+            self.main_window.sidebar_controller.set_target(self._detail_origin_target())
             QMessageBox.warning(self, t("library.detail.download_new_title"), error)
             return
         if not payload:
             self.main_window.chapter_overlay.hide()
             self.main_window.set_window_context_title(self.webtoon.name)
             self.main_window.stack.setCurrentWidget(self)
-            self.main_window.sidebar_controller.set_target("library")
+            self.main_window.sidebar_controller.set_target(self._detail_origin_target())
             return
-        webtoon, chapter_index = payload
-        setattr(webtoon, "_viewer_return", self._return_from_remote_viewer)
+        owner, chapter_sources, start_chapter_key = payload
+        setattr(owner, "_viewer_return", self._return_from_remote_viewer)
         self.main_window.set_window_context_title(self.webtoon.name)
         self.main_window.stack.setCurrentWidget(self.main_window.viewer)
-        self.main_window.sidebar_controller.set_target("library")
-        self.main_window.viewer.load_webtoon(webtoon, start_chapter=int(chapter_index), start_scroll=float(start_scroll or 0.0))
-
+        self.main_window.sidebar_controller.set_target(self._detail_origin_target())
+        self.main_window.viewer.load_hybrid_title(
+            self.webtoon.name,
+            owner,
+            chapter_sources,
+            start_chapter_key=start_chapter_key,
+            start_scroll=float(start_scroll or 0.0),
+        )
     def _return_from_remote_viewer(self):
         if self.webtoon is None:
             return
         self.main_window.set_window_context_title(self.webtoon.name)
         self.main_window.stack.setCurrentWidget(self)
-        self.main_window.sidebar_controller.set_target("library")
+        self.main_window.sidebar_controller.set_target(self._detail_origin_target())
         updated_row = self._tracked_library_row()
         chapter_key = str(updated_row.get("last_read_chapter_key") or "").strip()
         if chapter_key and self.progress_store is not None:
@@ -1670,7 +1942,7 @@ class DetailPage(QWidget):
         ]
         if not urls:
             return
-        source_url = self.settings_store.get_source_url(self.webtoon.name)
+        source_url = self._remote_source_url()
         if not source_url:
             QMessageBox.warning(self, t("library.detail.download_new_title"), t("library.detail.no_source_url"))
             return
@@ -1849,8 +2121,8 @@ class DetailPage(QWidget):
         self.section_caption_label.setText("" if manga else t("library.detail.chapters"))
         self.sort_btn.setVisible(not manga)
         self.hide_specials_btn.setVisible(not manga)
-        self.bookmarks_filter_btn.setVisible((not manga) and (not remote_mode))
-        self.scene_marks_filter_btn.setVisible(not remote_mode)
+        self.bookmarks_filter_btn.setVisible(not manga)
+        self.scene_marks_filter_btn.setVisible(not manga)
 
     def _scene_counts_for_preview_chapter(self, chapter: str) -> dict[int, int]:
         if self.webtoon is None or chapter not in self.webtoon.chapters:
@@ -2106,7 +2378,7 @@ class DetailPage(QWidget):
         self._build_chapter_list(progress)
 
     def _open_scene_bookmarks_for_chapter(self, chapter: str):
-        if self.webtoon is None or chapter not in self.webtoon.chapters:
+        if self.webtoon is None:
             return
         dialog = SceneBookmarksDialog(
             self.webtoon,
@@ -2124,7 +2396,12 @@ class DetailPage(QWidget):
         self._build_chapter_list(progress)
 
     def _open_scene_bookmark(self, chapter: str, packed: float):
-        if self.webtoon is None or chapter not in self.webtoon.chapters:
+        if self.webtoon is None:
+            return
+        if chapter not in self.webtoon.chapters:
+            remote_entry = self._remote_entry_for_cached_chapter(chapter)
+            if remote_entry is not None and self._open_cached_remote_entry(remote_entry, start_scroll=float(packed)):
+                return
             return
         idx = self.webtoon.chapters.index(chapter)
         self.main_window.open_chapter(self.webtoon, idx, float(packed))
@@ -2367,7 +2644,7 @@ class DetailPage(QWidget):
             logger.info("Leaving inline manga preview for %s", self.webtoon.name if self.webtoon else "<none>")
             self._hide_manga_page_preview()
             return
-        logger.info("Returning from detail page to library")
+        logger.info("Returning from detail page to %s", self._detail_origin_target())
         self.main_window.open_library()
 
     def apply_theme(self):
@@ -2464,7 +2741,7 @@ class DetailPage(QWidget):
             logger.info("Detail page update blocked for completed webtoon %s", self.webtoon.name)
             self._sync_update_button()
             return
-        source_url = self.settings_store.get_source_url(self.webtoon.name)
+        source_url = self._remote_source_url()
         if not source_url:
             return
         if self._cooldown_remaining() > 0:
@@ -2510,7 +2787,7 @@ class DetailPage(QWidget):
             self.update_progress_label.hide()
             self.update_progress_circle.hide()
             return
-        source_url = self.settings_store.get_source_url(self.webtoon.name)
+        source_url = self._remote_source_url()
         if not source_url:
             self.update_btn.hide()
             self.update_progress_label.hide()
@@ -2652,3 +2929,10 @@ class DetailPage(QWidget):
                 self._open_remote_chapter(remote_entries[0])
             return
         self.main_window.open_chapter(self.webtoon, 0)
+
+
+
+
+
+
+

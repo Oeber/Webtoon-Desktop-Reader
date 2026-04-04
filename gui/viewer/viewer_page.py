@@ -1,7 +1,8 @@
-import json
+﻿import json
 import os
 import time
 import inspect
+from types import SimpleNamespace
 from pathlib import Path
 from bisect import bisect_right
 from functools import wraps
@@ -9,6 +10,7 @@ from functools import wraps
 import qtawesome as qta
 from bs4 import BeautifulSoup
 from core.app_logging import get_logger
+from core.hybrid_models import ViewerChapterSource
 from core.chapter_storage import chapter_cache_token, chapter_content_path, chapter_has_text_payload, list_chapter_image_paths
 from core.app_paths import data_path
 from PySide6.QtWidgets import (
@@ -581,7 +583,7 @@ class ViewerPage(QWidget):
 
         self._remote_library_btn = QPushButton("Add to Library")
         self._remote_library_btn.setFocusPolicy(Qt.NoFocus)
-        self._remote_library_btn.setToolTip("Add this tracked remote title to the library page without downloading it")
+        self._remote_library_btn.setToolTip("Add this remote title to the library page without downloading it")
         self._remote_library_btn.setStyleSheet(VIEWER_ZOOM_BUTTON_STYLE)
         self._remote_library_btn.clicked.connect(self._add_current_remote_title_to_library)
         self._remote_library_btn.hide()
@@ -953,6 +955,60 @@ class ViewerPage(QWidget):
         self.current_chapter_index = start_chapter
         self._load_chapter_no_prompt(start_chapter)
 
+    def load_hybrid_title(self, display_title: str, owner, chapter_sources: list[ViewerChapterSource], *, start_chapter_key: str = "", start_scroll: float = 0.0):
+        sources = [source for source in (chapter_sources or []) if str(getattr(source, "storage_path", "") or "").strip()]
+        if not sources:
+            raise ValueError("Hybrid title requires at least one stored chapter source.")
+
+        base_dirs = []
+        for source in sources:
+            storage_path = Path(str(source.storage_path or "")).resolve()
+            base_dirs.append(str(storage_path.parent if storage_path.name else storage_path))
+        common_root = os.path.commonpath(base_dirs) if base_dirs else os.path.abspath(os.getcwd())
+        content_type = str(getattr(owner, "content_type", "") or getattr(sources[0], "content_type", "webtoon") or "webtoon").strip() or "webtoon"
+
+        chapters = []
+        chapter_keys = {}
+        chapter_display_names = {}
+        chapter_names_seen = set()
+        start_index = 0
+        normalized_start_key = str(start_chapter_key or "").strip()
+        for index, source in enumerate(sources):
+            storage_path = Path(str(source.storage_path or "")).resolve()
+            chapter_name = str(source.local_chapter_name or storage_path.name or f"Chapter {index + 1}").strip() or f"Chapter {index + 1}"
+            original_name = chapter_name
+            suffix = 2
+            while chapter_name in chapter_names_seen:
+                chapter_name = f"{original_name} ({suffix})"
+                suffix += 1
+            chapter_names_seen.add(chapter_name)
+            chapters.append(chapter_name)
+            chapter_key = str(source.chapter_key or "").strip()
+            chapter_keys[chapter_name] = chapter_key
+            chapter_display_names[chapter_name] = str(source.title or chapter_name).strip() or chapter_name
+            if chapter_key and chapter_key == normalized_start_key:
+                start_index = index
+
+        webtoon = SimpleNamespace(
+            name=str(display_title or getattr(owner, "title", "") or "Hybrid Title").strip() or "Hybrid Title",
+            path=str(common_root),
+            chapters=chapters,
+            chapter_keys=chapter_keys,
+            chapter_display_names=chapter_display_names,
+            thumbnail=str(getattr(owner, "thumbnail", "") or getattr(owner, "cover_url", "") or "").strip(),
+            content_type=content_type,
+            is_remote=any(str(getattr(source, "source_kind", "local") or "local").strip() != "local" for source in sources),
+            remote_track_id=str(getattr(owner, "track_id", "") or "").strip(),
+            remote_site_name=str(getattr(owner, "site_name", "") or "").strip(),
+            remote_series_id=str(getattr(owner, "series_id", "") or "").strip(),
+            remote_title=str(getattr(owner, "title", "") or display_title or "").strip(),
+            remote_cover_url=str(getattr(owner, "cover_url", "") or getattr(owner, "thumbnail", "") or "").strip(),
+            remote_series_url=str(getattr(owner, "source_url", "") or "").strip(),
+        )
+        viewer_return = getattr(owner, "_viewer_return", None)
+        if callable(viewer_return):
+            setattr(webtoon, "_viewer_return", viewer_return)
+        self.load_webtoon(webtoon, start_chapter=start_index, start_scroll=start_scroll)
     def _apply_reader_session_state(self, *, persist: bool = True):
         self._apply_toolbar_visibility()
         preview = getattr(self, "preview", None)
@@ -1256,9 +1312,30 @@ class ViewerPage(QWidget):
             return None
         return self.tracked_titles_store.get(track_id)
 
+    def _remote_library_payload(self) -> dict | None:
+        if self.webtoon is None or not bool(getattr(self.webtoon, "is_remote", False)):
+            return None
+        track_id = str(getattr(self.webtoon, "remote_track_id", "") or "").strip()
+        site_name = str(getattr(self.webtoon, "remote_site_name", "") or "").strip()
+        series_id = str(getattr(self.webtoon, "remote_series_id", "") or "").strip()
+        source_url = str(getattr(self.webtoon, "remote_series_url", "") or "").strip()
+        title = str(getattr(self.webtoon, "remote_title", "") or getattr(self.webtoon, "name", "") or "").strip()
+        if not track_id or not site_name or not series_id or not source_url or not title:
+            return None
+        return {
+            "track_id": track_id,
+            "site_name": site_name,
+            "series_id": series_id,
+            "source_url": source_url,
+            "title": title,
+            "content_type": str(getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+            "cover_url": str(getattr(self.webtoon, "remote_cover_url", "") or getattr(self.webtoon, "thumbnail", "") or "").strip(),
+        }
+
     def _sync_remote_library_button(self) -> None:
-        row = self._remote_track_row()
-        visible = bool(row)
+        payload = self._remote_library_payload()
+        row = self._remote_track_row() or {}
+        visible = bool(payload)
         self._remote_library_btn.setVisible(visible)
         if not visible:
             return
@@ -1269,11 +1346,33 @@ class ViewerPage(QWidget):
         self._remote_library_btn.setText("In Library" if already_added else "Add to Library")
 
     def _add_current_remote_title_to_library(self) -> None:
-        row = self._remote_track_row()
-        if not row:
+        payload = self._remote_library_payload()
+        if not payload:
             return
-        if self.main_window.tracked.add_title_to_library(row):
-            self._sync_remote_library_button()
+        row = self._remote_track_row() or {}
+        track_id = str(payload.get("track_id") or "").strip()
+        existing_status = str(row.get("status") or "").strip() or "library"
+        existing_cache_status = str(row.get("cache_status") or "").strip() or "none"
+        existing_last_read = str(row.get("last_read_chapter_key") or "").strip()
+        self.tracked_titles_store.upsert_title(
+            track_id=track_id,
+            site_name=str(payload.get("site_name") or "").strip(),
+            series_id=str(payload.get("series_id") or "").strip(),
+            title=str(payload.get("title") or "").strip(),
+            source_url=str(payload.get("source_url") or "").strip(),
+            content_type=str(payload.get("content_type") or "webtoon").strip() or "webtoon",
+            cover_url=str(payload.get("cover_url") or "").strip(),
+            status=existing_status,
+            cache_status=existing_cache_status,
+            last_read_chapter_key=existing_last_read,
+        )
+        self.tracked_titles_store.add_to_library(track_id)
+        cover_url = str(payload.get("cover_url") or "").strip()
+        title = str(payload.get("title") or "").strip()
+        if cover_url and title and not self.main_window.library.settings_store.get(title):
+            self.main_window.library.settings_store.set_from_url(title, cover_url)
+        self.main_window.library.load_library()
+        self._sync_remote_library_button()
 
     def _chapter_key_for(self, chapter: str) -> str:
         chapter_keys = getattr(self.webtoon, "chapter_keys", None)
@@ -3761,6 +3860,10 @@ for _name, _value in list(globals().items()):
                 setattr(_value, _attr_name, _trace_viewer_callable(f"{_value.__name__}.{_attr_name}", _attr_value))
     elif inspect.isfunction(_value) and getattr(_value, "__module__", "") == __name__:
         globals()[_name] = _trace_viewer_callable(_name, _value)
+
+
+
+
 
 
 

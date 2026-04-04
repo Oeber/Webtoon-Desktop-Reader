@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -283,6 +283,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         14: _migration_14_remove_notifications,
         15: _migration_15_add_chapter_keys,
         16: _migration_16_create_tracked_titles,
+        17: _migration_17_add_chapter_refs,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -380,12 +381,15 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
             series_id              TEXT NOT NULL,
             title                  TEXT NOT NULL,
             source_url             TEXT NOT NULL DEFAULT '',
+            source_config          TEXT NOT NULL DEFAULT '{}',
             content_type           TEXT NOT NULL DEFAULT 'webtoon',
             cover_url              TEXT NOT NULL DEFAULT '',
+            cover_headers          TEXT NOT NULL DEFAULT '{}',
             status                 TEXT NOT NULL DEFAULT 'tracked',
             cache_status           TEXT NOT NULL DEFAULT 'none',
             local_webtoon_name     TEXT NOT NULL DEFAULT '',
             last_read_chapter_key  TEXT NOT NULL DEFAULT '',
+            last_checked_at        INTEGER,
             created_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             updated_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
@@ -395,6 +399,29 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_tracked_titles_updated_at
             ON tracked_titles(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS chapter_refs (
+            chapter_key        TEXT PRIMARY KEY,
+            owner_kind         TEXT NOT NULL,
+            owner_id           TEXT NOT NULL,
+            site_name          TEXT NOT NULL DEFAULT '',
+            series_id          TEXT NOT NULL DEFAULT '',
+            remote_chapter_id  TEXT NOT NULL DEFAULT '',
+            remote_url         TEXT NOT NULL DEFAULT '',
+            local_chapter_name TEXT NOT NULL DEFAULT '',
+            chapter_title      TEXT NOT NULL DEFAULT '',
+            chapter_number     REAL,
+            cache_path         TEXT NOT NULL DEFAULT '',
+            cache_state        TEXT NOT NULL DEFAULT 'none',
+            created_at         INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at         INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_refs_remote_identity
+            ON chapter_refs(site_name, series_id, remote_chapter_id);
+
+        CREATE INDEX IF NOT EXISTS idx_chapter_refs_owner
+            ON chapter_refs(owner_kind, owner_id);
 
         """
     )
@@ -585,12 +612,15 @@ def _migration_16_create_tracked_titles(conn: sqlite3.Connection) -> None:
             series_id              TEXT NOT NULL,
             title                  TEXT NOT NULL,
             source_url             TEXT NOT NULL DEFAULT '',
+            source_config          TEXT NOT NULL DEFAULT '{}',
             content_type           TEXT NOT NULL DEFAULT 'webtoon',
             cover_url              TEXT NOT NULL DEFAULT '',
+            cover_headers          TEXT NOT NULL DEFAULT '{}',
             status                 TEXT NOT NULL DEFAULT 'tracked',
             cache_status           TEXT NOT NULL DEFAULT 'none',
             local_webtoon_name     TEXT NOT NULL DEFAULT '',
             last_read_chapter_key  TEXT NOT NULL DEFAULT '',
+            last_checked_at        INTEGER,
             created_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
             updated_at             INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
         );
@@ -600,5 +630,66 @@ def _migration_16_create_tracked_titles(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_tracked_titles_updated_at
             ON tracked_titles(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS chapter_refs (
+            chapter_key        TEXT PRIMARY KEY,
+            owner_kind         TEXT NOT NULL,
+            owner_id           TEXT NOT NULL,
+            site_name          TEXT NOT NULL DEFAULT '',
+            series_id          TEXT NOT NULL DEFAULT '',
+            remote_chapter_id  TEXT NOT NULL DEFAULT '',
+            remote_url         TEXT NOT NULL DEFAULT '',
+            local_chapter_name TEXT NOT NULL DEFAULT '',
+            chapter_title      TEXT NOT NULL DEFAULT '',
+            chapter_number     REAL,
+            cache_path         TEXT NOT NULL DEFAULT '',
+            cache_state        TEXT NOT NULL DEFAULT 'none',
+            created_at         INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at         INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_refs_remote_identity
+            ON chapter_refs(site_name, series_id, remote_chapter_id);
+
+        CREATE INDEX IF NOT EXISTS idx_chapter_refs_owner
+            ON chapter_refs(owner_kind, owner_id);
         """
     )
+
+
+
+
+
+def _migration_17_add_chapter_refs(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "tracked_titles", "source_config", "TEXT NOT NULL DEFAULT '{}'" )
+    _add_column_if_missing(conn, "tracked_titles", "cover_headers", "TEXT NOT NULL DEFAULT '{}'" )
+    _add_column_if_missing(conn, "tracked_titles", "last_checked_at", "INTEGER")
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS chapter_refs (
+            chapter_key        TEXT PRIMARY KEY,
+            owner_kind         TEXT NOT NULL,
+            owner_id           TEXT NOT NULL,
+            site_name          TEXT NOT NULL DEFAULT '',
+            series_id          TEXT NOT NULL DEFAULT '',
+            remote_chapter_id  TEXT NOT NULL DEFAULT '',
+            remote_url         TEXT NOT NULL DEFAULT '',
+            local_chapter_name TEXT NOT NULL DEFAULT '',
+            chapter_title      TEXT NOT NULL DEFAULT '',
+            chapter_number     REAL,
+            cache_path         TEXT NOT NULL DEFAULT '',
+            cache_state        TEXT NOT NULL DEFAULT 'none',
+            created_at         INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
+            updated_at         INTEGER NOT NULL DEFAULT (strftime('%s', 'now'))
+        );
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_chapter_refs_remote_identity
+            ON chapter_refs(site_name, series_id, remote_chapter_id);
+
+        CREATE INDEX IF NOT EXISTS idx_chapter_refs_owner
+            ON chapter_refs(owner_kind, owner_id);
+        """
+    )
+
+
+

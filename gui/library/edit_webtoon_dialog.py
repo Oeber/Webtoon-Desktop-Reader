@@ -50,6 +50,7 @@ from stores.settings_store import (
 )
 from library.library_categories import load_custom_categories, save_custom_categories
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
+from stores.tracked_titles_store import get_instance as get_tracked_titles_store
 
 
 CARD_W = 140
@@ -93,6 +94,8 @@ class EditWebtoonDialog(QDialog):
         self._zoom_dirty = False
         self._initial_zoom_value = load_setting(VIEWER_ZOOM_KEY, 0.5)
         self.scene_bookmark_store = get_scene_bookmark_store()
+        self.tracked_titles_store = get_tracked_titles_store()
+        self._tracked_row = dict(getattr(self.webtoon, "_tracked_row", {}) or {})
         self._pending_source_config = dict(self.settings_store.get_source_config(self.webtoon.name) or {})
         self._pending_source_site = str(self.settings_store.get_source_site(self.webtoon.name) or "").strip()
 
@@ -219,10 +222,10 @@ class EditWebtoonDialog(QDialog):
         delete_layout.setContentsMargins(16, 14, 16, 14)
         delete_layout.setSpacing(12)
 
-        delete_text = QLabel(t("edit_webtoon.delete_text"))
-        delete_text.setWordWrap(True)
-        delete_text.setStyleSheet(EDIT_DIALOG_DELETE_TEXT_STYLE)
-        delete_layout.addWidget(delete_text, 1)
+        self.delete_text_label = QLabel(t("edit_webtoon.delete_text"))
+        self.delete_text_label.setWordWrap(True)
+        self.delete_text_label.setStyleSheet(EDIT_DIALOG_DELETE_TEXT_STYLE)
+        delete_layout.addWidget(self.delete_text_label, 1)
 
         self.delete_btn = QPushButton(t("edit_webtoon.delete_button"))
         self.delete_btn.setIcon(qta.icon("fa5s.trash-alt", color="#ffffff"))
@@ -246,9 +249,17 @@ class EditWebtoonDialog(QDialog):
         cancel_btn.setIcon(qta.icon("fa5s.times", color="#d8d8d8"))
         root.addWidget(buttons)
 
+    def _is_remote_library_title(self) -> bool:
+        return bool(getattr(self.webtoon, "_tracked_library_placeholder", False))
+
     def _load_values(self):
         self.name_input.setText(self.webtoon.name)
-        self.url_input.setText(self.settings_store.get_source_url(self.webtoon.name) or "")
+        source_url = self.settings_store.get_source_url(self.webtoon.name) or str(self._tracked_row.get("source_url") or "")
+        self.url_input.setText(source_url)
+        self.name_input.setEnabled(not self._is_remote_library_title())
+        if self._is_remote_library_title():
+            self.delete_text_label.setText("Remove this remote title from the library and keep its cached chapter data available for later relinking.")
+            self.delete_btn.setText("Remove from Library")
 
         zoom_override = self.settings_store.get_zoom_override(self.webtoon.name)
         base_zoom = float(zoom_override) if zoom_override is not None else float(load_setting(VIEWER_ZOOM_KEY, 0.5))
@@ -380,14 +391,17 @@ class EditWebtoonDialog(QDialog):
             return
 
         old_path = self.webtoon.path
-        new_path = os.path.join(os.path.dirname(old_path), new_name)
+        new_path = os.path.join(os.path.dirname(old_path), new_name) if old_path else ""
 
-        if new_name != old_name and os.path.exists(new_path):
+        if not self._is_remote_library_title() and new_name != old_name and os.path.exists(new_path):
             QMessageBox.warning(self, t("edit_webtoon.name_exists_title"), t("edit_webtoon.name_exists_text"))
             return
 
         try:
-            if new_name != old_name:
+            if self._is_remote_library_title() and new_name != old_name:
+                QMessageBox.information(self, t("edit_webtoon.window"), "Rename remote titles from their source instead of the library settings.")
+                return
+            if (not self._is_remote_library_title()) and new_name != old_name:
                 logger.info("Renaming webtoon from %s to %s", old_name, new_name)
                 os.makedirs(os.path.dirname(new_path), exist_ok=True)
                 os.rename(old_path, new_path)
@@ -401,19 +415,42 @@ class EditWebtoonDialog(QDialog):
                 self.webtoon.thumbnail = custom_thumb or auto_thumb
 
             source_url = self.url_input.text().strip()
+            normalized_source_config = {}
+            source_site_name = ""
             if source_url:
                 self.settings_store.set_source_url(self.webtoon.name, source_url)
                 source_scraper = self._scraper_for_url(source_url)
                 source_site_name = str(getattr(source_scraper, "site_name", "") or "").strip() if source_scraper is not None else ""
                 if source_scraper is not None and source_scraper.get_source_config_fields() and source_site_name == self._pending_source_site:
-                    self.settings_store.set_source_config(self.webtoon.name, source_scraper.normalize_source_config(self._pending_source_config))
+                    normalized_source_config = source_scraper.normalize_source_config(self._pending_source_config)
+                    self.settings_store.set_source_config(self.webtoon.name, normalized_source_config)
                 elif source_scraper is not None and source_scraper.get_source_config_fields():
-                    self.settings_store.set_source_config(self.webtoon.name, source_scraper.normalize_source_config(load_scraper_default_config(source_site_name)))
+                    normalized_source_config = source_scraper.normalize_source_config(load_scraper_default_config(source_site_name))
+                    self.settings_store.set_source_config(self.webtoon.name, normalized_source_config)
                 else:
                     self.settings_store.clear_source_config(self.webtoon.name)
             else:
                 self.settings_store.clear_source_url(self.webtoon.name)
                 self.settings_store.clear_source_config(self.webtoon.name)
+
+            if self._is_remote_library_title():
+                track_id = str(self._tracked_row.get("track_id") or "").strip()
+                if track_id:
+                    self.tracked_titles_store.upsert_title(
+                        track_id=track_id,
+                        site_name=str(self._tracked_row.get("site_name") or source_site_name or "").strip(),
+                        series_id=str(self._tracked_row.get("series_id") or "").strip(),
+                        title=str(self._tracked_row.get("title") or self.webtoon.name).strip(),
+                        source_url=source_url,
+                        content_type=str(self._tracked_row.get("content_type") or getattr(self.webtoon, "content_type", "webtoon") or "webtoon").strip() or "webtoon",
+                        cover_url=str(self._tracked_row.get("cover_url") or getattr(self.webtoon, "thumbnail", "") or "").strip(),
+                        source_config=normalized_source_config if source_url else {},
+                        status=str(self._tracked_row.get("status") or "library").strip() or "library",
+                        cache_status=str(self._tracked_row.get("cache_status") or "none").strip() or "none",
+                        local_webtoon_name=str(self._tracked_row.get("local_webtoon_name") or "").strip(),
+                        last_read_chapter_key=str(self._tracked_row.get("last_read_chapter_key") or "").strip(),
+                        last_checked_at=self._tracked_row.get("last_checked_at"),
+                    )
 
             self.settings_store.set_hide_filler(
                 self.webtoon.name,
@@ -473,11 +510,19 @@ class EditWebtoonDialog(QDialog):
 
         try:
             logger.info("Deleting webtoon %s from edit dialog", self.webtoon.name)
-            if os.path.isdir(self.webtoon.path):
-                shutil.rmtree(self.webtoon.path)
-            self.progress_store.clear(self.webtoon.name)
-            self.scene_bookmark_store.clear(self.webtoon.name)
-            self.settings_store.delete_webtoon(self.webtoon.name)
+            if self._is_remote_library_title():
+                track_id = str(self._tracked_row.get("track_id") or "").strip()
+                if track_id:
+                    self.tracked_titles_store.remove_from_library(track_id)
+                self.progress_store.clear(self.webtoon.name)
+                self.scene_bookmark_store.clear(self.webtoon.name)
+                self.settings_store.delete_webtoon(self.webtoon.name)
+            else:
+                if os.path.isdir(self.webtoon.path):
+                    shutil.rmtree(self.webtoon.path)
+                self.progress_store.clear(self.webtoon.name)
+                self.scene_bookmark_store.clear(self.webtoon.name)
+                self.settings_store.delete_webtoon(self.webtoon.name)
         except Exception as e:
             logger.error("Failed to delete webtoon %s", self.webtoon.name, exc_info=e)
             QMessageBox.critical(self, t("edit_webtoon.delete_failed"), str(e))
