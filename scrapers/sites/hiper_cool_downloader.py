@@ -2,7 +2,7 @@ import re
 from urllib.parse import urljoin, urlparse
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, SoupStrainer
 
 from core.app_logging import get_logger
 from core.site_session import apply_site_cookies, load_site_user_agent
@@ -10,6 +10,13 @@ from ..base import BaseScraper, ScraperError
 from ..models import ChapterInfo, PageInfo, SeriesInfo
 
 logger = get_logger(__name__)
+
+_CHAPTER_IMG_TAG_RE = re.compile(
+    r"<img\b[^>]*class=[\"'][^\"']*wp-manga-chapter-img[^\"']*[\"'][^>]*>",
+    re.IGNORECASE,
+)
+_IMAGE_ATTR_RE = re.compile(r"\b(data-src|src)=[\"']([^\"']+)[\"']", re.IGNORECASE)
+_IMAGE_TAG_STRAINER = SoupStrainer("img")
 
 
 class HiperCoolScraper(BaseScraper):
@@ -27,6 +34,7 @@ class HiperCoolScraper(BaseScraper):
         "wp-settings-1",
         "wp-settings-time-1",
     )
+    asset_download_workers = 10
 
     BASE = "https://hiper.cool"
 
@@ -59,7 +67,7 @@ class HiperCoolScraper(BaseScraper):
         if response.status_code != 200:
             raise ScraperError(f"Failed to load page: {series_url} (HTTP {response.status_code})")
 
-        soup = BeautifulSoup(response.text, "html.parser")
+        soup = BeautifulSoup(response.text, "lxml")
         title = self._extract_title(soup)
         slug = self._extract_series_slug(series_url)
         chapters = self._extract_chapters(soup)
@@ -91,13 +99,10 @@ class HiperCoolScraper(BaseScraper):
         if response.status_code != 200:
             raise ScraperError(f"Failed to load chapter page: {chapter_url} (HTTP {response.status_code})")
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        image_urls = []
-
-        for image in soup.select("img.wp-manga-chapter-img"):
-            src = self._normalize_image_url(image.get("data-src") or image.get("src") or "")
-            if src:
-                image_urls.append(src)
+        image_urls = self._extract_chapter_image_urls(response.text)
+        if not image_urls:
+            soup = BeautifulSoup(response.text, "lxml", parse_only=_IMAGE_TAG_STRAINER)
+            image_urls = self._extract_chapter_image_urls_from_soup(soup)
 
         image_urls = self._dedupe(image_urls)
         if not image_urls:
@@ -227,6 +232,35 @@ class HiperCoolScraper(BaseScraper):
             value = urljoin(self.BASE, value)
         return value
 
+    def _extract_chapter_image_urls(self, html: str) -> list[str]:
+        image_urls = []
+        for match in _CHAPTER_IMG_TAG_RE.finditer(html or ""):
+            attrs = match.group(0)
+            preferred = ""
+            fallback = ""
+            for attr_match in _IMAGE_ATTR_RE.finditer(attrs):
+                attr_name = str(attr_match.group(1) or "").casefold()
+                value = self._normalize_image_url(attr_match.group(2) or "")
+                if not value:
+                    continue
+                if attr_name == "data-src":
+                    preferred = value
+                    break
+                if not fallback:
+                    fallback = value
+            chosen = preferred or fallback
+            if chosen:
+                image_urls.append(chosen)
+        return image_urls
+
+    def _extract_chapter_image_urls_from_soup(self, soup: BeautifulSoup) -> list[str]:
+        image_urls = []
+        for image in soup.select("img.wp-manga-chapter-img"):
+            src = self._normalize_image_url(image.get("data-src") or image.get("src") or "")
+            if src:
+                image_urls.append(src)
+        return image_urls
+
     def _dedupe(self, items: list[str]) -> list[str]:
         seen = set()
         result = []
@@ -255,3 +289,4 @@ class HiperCoolScraper(BaseScraper):
         headers = dict(self.HEADERS)
         headers["User-Agent"] = load_site_user_agent(self.site_name, headers["User-Agent"])
         return headers
+

@@ -12,6 +12,14 @@ from scrapers.models import CatalogPage, CatalogSeries
 
 logger = get_logger(__name__)
 
+_LATEST_CHAPTER_RE = re.compile(r"(cap\S*tulo\s+\d+(?:\.\d+)?)", re.IGNORECASE)
+_LATEST_EN_CHAPTER_RE = re.compile(r"(chapter\s+\d+(?:\.\d+)?)", re.IGNORECASE)
+_TOTAL_CHAPTERS_RE = re.compile(r"(\d+)\s+cap\S*tulos\b", re.IGNORECASE)
+_TOTAL_EN_CHAPTERS_RE = re.compile(r"(\d+)\s+chapters?\b", re.IGNORECASE)
+_PAGE_LINK_RE = re.compile(r"/page/(\d+)/", re.IGNORECASE)
+
+
+
 
 class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
 
@@ -114,7 +122,7 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         return candidates
 
     def _catalog_page_from_html(self, page: int, html: str, *, source_url: str) -> CatalogPage:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = BeautifulSoup(html, "lxml")
         entries = []
         seen_urls = set()
 
@@ -132,7 +140,7 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
             site=self.site_name,
             page=page,
             entries=entries,
-            has_next_page=self._soup_has_next_page(soup, page),
+            has_next_page=self._page_has_navigation(html, page) or self._soup_has_next_page(soup, page),
         )
 
     def _catalog_entry_nodes(self, soup: BeautifulSoup) -> list:
@@ -272,7 +280,11 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
     def _extract_description(self, node) -> str | None:
         if node is None:
             return None
-        for selector in (".post-content_item", ".summary__content", ".tab-summary .summary_content"):
+        for selector in (
+            ".summary__content",
+            ".tab-summary .summary_content",
+            ".post-content_item",
+        ):
             description = node.select_one(selector)
             if description is None:
                 continue
@@ -284,11 +296,18 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
     def _extract_latest_chapter(self, node) -> str | None:
         if node is None:
             return None
+        for selector in (".chapter-item", ".list-chapter a", ".chapter", ".post-on"):
+            label = node.select_one(selector)
+            if label is not None:
+                text = " ".join(label.get_text(" ", strip=True).split())
+                match = _LATEST_CHAPTER_RE.search(text) or _LATEST_EN_CHAPTER_RE.search(text)
+                if match:
+                    return match.group(1)
         text = " ".join(node.get_text(" ", strip=True).split())
-        match = re.search(r"(cap\S*tulo\s+\d+(?:\.\d+)?)", text, re.IGNORECASE)
+        match = _LATEST_CHAPTER_RE.search(text)
         if match:
             return match.group(1)
-        match = re.search(r"(chapter\s+\d+(?:\.\d+)?)", text, re.IGNORECASE)
+        match = _LATEST_EN_CHAPTER_RE.search(text)
         if match:
             return match.group(1)
         return None
@@ -296,10 +315,21 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
     def _extract_total_chapters(self, node) -> int | None:
         if node is None:
             return None
+        for selector in (".font-meta", ".post-total-rating", ".list-chapter", ".chapter-item"):
+            label = node.select_one(selector)
+            if label is None:
+                continue
+            text = " ".join(label.get_text(" ", strip=True).split())
+            match = _TOTAL_CHAPTERS_RE.search(text) or _TOTAL_EN_CHAPTERS_RE.search(text)
+            if match is not None:
+                try:
+                    return int(match.group(1))
+                except ValueError:
+                    return None
         text = " ".join(node.get_text(" ", strip=True).split())
-        match = re.search(r"(\d+)\s+cap\S*tulos\b", text, re.IGNORECASE)
+        match = _TOTAL_CHAPTERS_RE.search(text)
         if match is None:
-            match = re.search(r"(\d+)\s+chapters?\b", text, re.IGNORECASE)
+            match = _TOTAL_EN_CHAPTERS_RE.search(text)
         if match is None:
             return None
         try:
@@ -354,10 +384,18 @@ class HiperCoolDiscoveryProvider(BaseDiscoveryProvider):
         )
 
     def _page_has_navigation(self, html: str, page: int) -> bool:
-        return bool(re.search(rf"/page/{page + 1}/", html))
+        for match in _PAGE_LINK_RE.finditer(html or ""):
+            try:
+                if int(match.group(1)) >= page + 1:
+                    return True
+            except ValueError:
+                continue
+        return False
 
     def _looks_like_cloudflare_block(self, html: str, status_code: int) -> bool:
         if status_code == 403:
             return True
         text = (html or "").casefold()
         return "just a moment" in text and "cloudflare" in text
+
+
