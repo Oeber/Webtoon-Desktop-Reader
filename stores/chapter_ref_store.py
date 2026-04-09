@@ -193,6 +193,62 @@ class ChapterRefStore:
         )
         conn.commit()
 
+    def merge_webtoons(
+        self,
+        target_name: str,
+        source_names: list[str],
+        *,
+        chapter_name_maps: dict[str, dict[str, str]] | None = None,
+    ) -> None:
+        normalized_target = str(target_name or "").strip()
+        normalized_sources = [
+            str(name or "").strip()
+            for name in (source_names or [])
+            if str(name or "").strip() and str(name or "").strip() != normalized_target
+        ]
+        if not normalized_target or not normalized_sources:
+            return
+
+        chapter_maps = {
+            str(name or "").strip(): {str(old or ""): str(new or "") for old, new in (mapping or {}).items()}
+            for name, mapping in (chapter_name_maps or {}).items()
+            if str(name or "").strip()
+        }
+        now = int(time.time() * 1000)
+        conn = get_connection()
+        payload = []
+        for source_name in normalized_sources:
+            mapping = chapter_maps.get(source_name, {})
+            rows = conn.execute(
+                """
+                SELECT chapter_key, local_chapter_name
+                FROM chapter_refs
+                WHERE owner_kind = 'local' AND owner_id = ?
+                """,
+                (source_name,),
+            ).fetchall()
+            payload.extend(
+                (
+                    normalized_target,
+                    mapping.get(str(row["local_chapter_name"] or ""), str(row["local_chapter_name"] or "")),
+                    now,
+                    str(row["chapter_key"] or "").strip(),
+                )
+                for row in rows
+                if str(row["chapter_key"] or "").strip()
+            )
+        if not payload:
+            return
+        conn.executemany(
+            """
+            UPDATE chapter_refs
+            SET owner_id = ?, local_chapter_name = ?, updated_at = ?
+            WHERE chapter_key = ?
+            """,
+            payload,
+        )
+        conn.commit()
+
     def bind_series_to_local(self, track_id: str, local_webtoon_name: str, series, *, local_name_builder) -> dict[str, str]:
         rows = self.list_for_owner("tracked", track_id)
         if not rows:

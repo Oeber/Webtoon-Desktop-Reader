@@ -1,4 +1,4 @@
-﻿import os
+import os
 import re
 import threading
 import time
@@ -883,6 +883,12 @@ class DetailPage(QWidget):
         self._hide_manga_page_preview()
         self.webtoon        = webtoon
         self.webtoon.path = os.path.abspath(webtoon.path)
+        local_refs = self.chapter_ref_store.list_for_owner("local", webtoon.name)
+        self.webtoon.chapter_display_names = {
+            str(ref.get("local_chapter_name") or "").strip(): str(ref.get("chapter_title") or "").strip()
+            for ref in local_refs
+            if str(ref.get("local_chapter_name") or "").strip() and str(ref.get("chapter_title") or "").strip()
+        }
         self.progress_store = progress_store
         self.progress_map   = progress_store.get_progress_map(webtoon.name)
         self.bookmarked_chapters = self.settings_store.get_bookmarked_chapters(webtoon.name)
@@ -1060,7 +1066,8 @@ class DetailPage(QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
 
-        name_lbl = QLabel(chapter)
+        display_name = str(getattr(self.webtoon, "chapter_display_names", {}) or {}).get(chapter, chapter)
+        name_lbl = QLabel(display_name)
         name_lbl.setStyleSheet(chapter_name_style(color))
         title_row.addWidget(name_lbl)
 
@@ -2407,7 +2414,7 @@ class DetailPage(QWidget):
         self.main_window.open_chapter(self.webtoon, idx, float(packed))
 
     def _ordered_chapters_for_display(self, chapters: list[str]) -> list[str]:
-        base = sorted(chapters, key=chapter_sort_key)
+        base = list(chapters)
         if self.sort_latest_first:
             base.reverse()
         return base
@@ -2449,7 +2456,10 @@ class DetailPage(QWidget):
         if os.path.isfile(storage_path):
             chapter_dirs = [os.path.basename(storage_path)]
         else:
-            chapter_dirs = sorted(list_series_chapters(self.webtoon.path), key=chapter_sort_key)
+            chapter_dirs = self.settings_store.order_chapters(
+                self.webtoon.name,
+                sorted(list_series_chapters(self.webtoon.path), key=chapter_sort_key),
+            )
         self._chapter_dir_cache = (cache_path, mtime_ns, chapter_dirs)
         return list(chapter_dirs)
 

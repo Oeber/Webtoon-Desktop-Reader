@@ -53,7 +53,7 @@ def scan_library(library_path: str, settings_store) -> list[Webtoon]:
     library_entries = list_library_entries(library_path)
     settings_rows = settings_store.get_rows(
         library_entries,
-        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type"),
+        columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type", "chapter_order"),
     )
 
     webtoons = []
@@ -117,10 +117,18 @@ def build_webtoon_from_folder(
 
     if os.path.isdir(storage_path):
         webtoon_path = storage_path
-        chapters = sorted(list_series_chapters(webtoon_path), key=natural_sort_key)
+        chapters = settings_store.order_chapters(
+            webtoon_name,
+            sorted(list_series_chapters(webtoon_path), key=natural_sort_key),
+            settings_row=settings_row,
+        )
     elif os.path.isfile(storage_path):
         webtoon_path = os.path.dirname(storage_path)
-        chapters = [os.path.basename(storage_path)]
+        chapters = settings_store.order_chapters(
+            webtoon_name,
+            [os.path.basename(storage_path)],
+            settings_row=settings_row,
+        )
     else:
         return None
     if not chapters:
@@ -131,7 +139,7 @@ def build_webtoon_from_folder(
         settings_row.update(
             settings_store.get_rows(
                 [webtoon_name],
-                columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type"),
+                columns=("custom_thumbnail", "category", "bookmarked", "latest_new_chapter", "content_type", "chapter_order"),
             ).get(webtoon_name, {})
         )
     stored_content_type = normalize_content_type(settings_row.get("content_type"), default="")

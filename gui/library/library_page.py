@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from PySide6.QtCore import QEvent, QMimeData, QPoint, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -48,6 +49,7 @@ from gui.common.styles import (
     library_scale_slider_style,
     section_empty_state_style,
 )
+from gui.library.merge_webtoons_dialog import MergeWebtoonsDialog
 from gui.library.webtoon_card import WebtoonCard, CARD_WIDTH
 from gui.search.global_search import rank_webtoons
 from stores.settings_store import (
@@ -71,6 +73,7 @@ from library.library_categories import (
 from library.library_manager import build_webtoon_from_folder, scan_library
 from stores.progress_store import get_instance as get_progress_store
 from stores.scene_bookmark_store import get_instance as get_scene_bookmark_store
+from stores.chapter_ref_store import get_instance as get_chapter_ref_store
 from core.update_utils import cooldown_remaining
 from stores.webtoon_settings_store import get_instance as get_webtoon_settings
 from stores.tracked_titles_store import get_instance as get_tracked_titles_store
@@ -455,6 +458,7 @@ class LibraryPage(QWidget):
         self.main_window = main_window
         self.progress_store = get_progress_store()
         self.scene_bookmark_store = get_scene_bookmark_store()
+        self.chapter_ref_store = get_chapter_ref_store()
         self.settings_store = get_webtoon_settings()
         self.tracked_titles_store = get_tracked_titles_store()
         self._webtoons = []
@@ -1571,21 +1575,22 @@ class LibraryPage(QWidget):
             QMessageBox.warning(self, t("library.merge.invalid_title"), t("library.merge.invalid_types"))
             return
 
-        names = sorted(webtoon.name for webtoon in selected)
-        target_name, ok = QInputDialog.getItem(
-            self,
-            t("library.merge.choose_title"),
-            t("library.merge.choose_prompt"),
-            names,
-            0,
-            False,
-        )
-        if not ok or not str(target_name or "").strip():
+        selected_by_name = {webtoon.name: webtoon for webtoon in selected}
+        names = sorted(selected_by_name)
+        dialog = MergeWebtoonsDialog(names, self)
+        if dialog.exec() != QDialog.Accepted:
             return
-        target_name = str(target_name).strip()
-        source_names = [name for name in names if name != target_name]
+        target_name = dialog.target_name()
+        ordered_names = dialog.ordered_names()
+        source_names = [name for name in ordered_names if name != target_name]
         if not source_names:
             return
+        chapter_sequences = {
+            name: list(getattr(selected_by_name.get(name), "chapters", []) or [])
+            for name in ordered_names
+            if name in selected_by_name
+        }
+        merge_content_type = str(getattr(selected[0], "content_type", "") or "webtoon").strip() or "webtoon"
 
         answer = QMessageBox.question(
             self,
@@ -1598,18 +1603,28 @@ class LibraryPage(QWidget):
             return
 
         self._merge_in_progress = True
-        self._block_interaction_temporarily(1.5)
+        self._block_library_input(1.5)
         worker = threading.Thread(
             target=self._merge_webtoons_worker,
-            args=(target_name, source_names, load_library_path()),
+            args=(target_name, source_names, ordered_names, chapter_sequences, merge_content_type, load_library_path()),
             daemon=True,
         )
         worker.start()
 
-    def _merge_webtoons_worker(self, target_name: str, source_names: list[str], library_path: str):
+    def _merge_webtoons_worker(
+        self,
+        target_name: str,
+        source_names: list[str],
+        ordered_names: list[str],
+        chapter_sequences: dict[str, list[str]],
+        merge_content_type: str,
+        library_path: str,
+    ):
         payload = {
             "target_name": target_name,
             "source_names": list(source_names),
+            "ordered_names": list(ordered_names),
+            "chapter_sequences": dict(chapter_sequences or {}),
             "merged_names": [],
             "failed_names": [],
             "chapter_name_maps": {},
@@ -1620,9 +1635,16 @@ class LibraryPage(QWidget):
                 library_path,
                 target_name,
                 settings_store=self.settings_store,
+                content_type=merge_content_type,
             )
             if not target_storage:
-                raise FileNotFoundError(target_name)
+                target_storage = resolve_webtoon_path(
+                    library_path,
+                    target_name,
+                    settings_store=self.settings_store,
+                    content_type=merge_content_type,
+                    create_parent=True,
+                )
             target_dir = self._ensure_merge_target_directory(target_name, target_storage)
             for source_name in source_names:
                 try:
@@ -1643,10 +1665,12 @@ class LibraryPage(QWidget):
             logger.error("Failed to prepare merge into %s", target_name, exc_info=exc)
             payload["error"] = str(exc or "")
         self.merge_finished.emit(payload)
-
     def _ensure_merge_target_directory(self, target_name: str, storage_path: str) -> str:
         path = Path(storage_path)
         if path.is_dir():
+            return str(path)
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=True)
             return str(path)
         if not path.is_file():
             raise FileNotFoundError(storage_path)
@@ -1703,6 +1727,8 @@ class LibraryPage(QWidget):
     def _on_merge_finished(self, payload: object):
         payload = payload if isinstance(payload, dict) else {}
         target_name = str(payload.get("target_name") or "").strip()
+        ordered_names = [str(name or "").strip() for name in (payload.get("ordered_names") or []) if str(name or "").strip()]
+        chapter_sequences = payload.get("chapter_sequences") if isinstance(payload.get("chapter_sequences"), dict) else {}
         merged_names = [str(name or "").strip() for name in (payload.get("merged_names") or []) if str(name or "").strip()]
         failed_names = [str(name or "").strip() for name in (payload.get("failed_names") or []) if str(name or "").strip()]
         chapter_name_maps = payload.get("chapter_name_maps") if isinstance(payload.get("chapter_name_maps"), dict) else {}
@@ -1712,7 +1738,16 @@ class LibraryPage(QWidget):
             if target_name and merged_names:
                 self.progress_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
                 self.scene_bookmark_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
+                self.chapter_ref_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
                 self.settings_store.merge_webtoons(target_name, merged_names, chapter_name_maps=chapter_name_maps)
+                merged_order = self._merged_chapter_order(
+                    target_name,
+                    ordered_names,
+                    chapter_sequences,
+                    chapter_name_maps,
+                )
+                if merged_order:
+                    self.settings_store.set_chapter_order(target_name, merged_order)
             self.load_library()
             self._apply_filter()
             self._selected_webtoons = {target_name} if target_name else set()
@@ -1735,6 +1770,31 @@ class LibraryPage(QWidget):
                 6000,
             )
 
+    def _merged_chapter_order(
+        self,
+        target_name: str,
+        ordered_names: list[str],
+        chapter_sequences: dict[str, list[str]],
+        chapter_name_maps: dict[str, dict[str, str]],
+    ) -> list[str]:
+        normalized_target = str(target_name or "").strip()
+        ordered = []
+        seen = set()
+        for name in ordered_names or []:
+            normalized_name = str(name or "").strip()
+            if not normalized_name:
+                continue
+            if normalized_name != normalized_target and normalized_name not in chapter_name_maps:
+                continue
+            source_chapters = list(chapter_sequences.get(normalized_name) or [])
+            name_map = chapter_name_maps.get(normalized_name, {}) if normalized_name != normalized_target else {}
+            for chapter in source_chapters:
+                mapped = str(name_map.get(chapter, chapter) or "").strip()
+                if not mapped or mapped in seen:
+                    continue
+                seen.add(mapped)
+                ordered.append(mapped)
+        return ordered
     def _delete_selected(self):
         selected = sorted(self._selected_webtoons)
         if not selected:

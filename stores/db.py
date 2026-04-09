@@ -1,4 +1,4 @@
-﻿import sqlite3
+import sqlite3
 import threading
 import time
 from contextlib import suppress
@@ -11,7 +11,7 @@ logger = get_logger(__name__)
 
 DB_PATH = data_path("reader.db")
 SQLITE_BUSY_TIMEOUT_MS = 5000
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 _thread_state = threading.local()
 _init_lock = threading.Lock()
@@ -284,6 +284,7 @@ def _apply_migration(conn: sqlite3.Connection, version: int) -> None:
         15: _migration_15_add_chapter_keys,
         16: _migration_16_create_tracked_titles,
         17: _migration_17_add_chapter_refs,
+        18: _migration_18_add_chapter_order_to_webtoon_settings,
     }
     migration = migrations.get(int(version))
     if migration is None:
@@ -329,7 +330,8 @@ def _create_latest_schema(conn: sqlite3.Connection) -> None:
             manga_fit_mode      TEXT,
             text_font_size      INTEGER,
             text_page_color     TEXT,
-            text_color          TEXT
+            text_color          TEXT,
+            chapter_order       TEXT
         );
 
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -690,6 +692,13 @@ def _migration_17_add_chapter_refs(conn: sqlite3.Connection) -> None:
             ON chapter_refs(owner_kind, owner_id);
         """
     )
+
+
+
+def _migration_18_add_chapter_order_to_webtoon_settings(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "webtoon_settings", "chapter_order", "TEXT")
+
+
 
 
 

@@ -1,5 +1,6 @@
 import io
 import json
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -43,6 +44,16 @@ def _custom_thumb_path(webtoon_name: str) -> Path:
 
 def _auto_thumb_path(webtoon_name: str) -> Path:
     return THUMBNAILS_DIR / f"{webtoon_name}.jpg"
+
+
+def _chapter_sort_key(name: str):
+    match = re.search(r"(\d+(?:\.\d+)?)", str(name or ""))
+    if match:
+        try:
+            return (0, float(match.group(1)), str(name or "").lower())
+        except Exception:
+            pass
+    return (1, float("inf"), str(name or "").lower())
 
 
 def _copy_local_image(src: str, dest: Path) -> bool:
@@ -164,6 +175,7 @@ class WebtoonSettingsStore:
                 "update_mode",
                 "auto_download_limit",
                 "content_type",
+                "chapter_order",
             )
 
         conn = get_connection()
@@ -312,6 +324,74 @@ class WebtoonSettingsStore:
     def get_content_type(self, webtoon_name: str) -> str | None:
         return self._get_scalar(webtoon_name, "content_type", default=None, coerce=str)
 
+    def get_chapter_order(self, webtoon_name: str, *, settings_row: dict | None = None) -> list[str]:
+        payload = (settings_row or {}).get("chapter_order")
+        if payload is None:
+            payload = self._get_scalar(webtoon_name, "chapter_order", default=None, coerce=str)
+        if not payload:
+            return []
+        try:
+            parsed = json.loads(payload)
+        except (TypeError, json.JSONDecodeError):
+            return []
+        if not isinstance(parsed, list):
+            return []
+        ordered = []
+        seen = set()
+        for chapter in parsed:
+            normalized = str(chapter or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
+
+    def set_chapter_order(self, webtoon_name: str, chapters: list[str] | tuple[str, ...] | set[str]):
+        ordered = []
+        seen = set()
+        for chapter in chapters or []:
+            normalized = str(chapter or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        if not ordered:
+            self._clear_scalar(webtoon_name, "chapter_order", log_message="Clearing chapter order for %s")
+            return
+        self._set_scalar(
+            webtoon_name,
+            "chapter_order",
+            json.dumps(ordered, ensure_ascii=True),
+            log_message="Saving chapter order for %s: %s",
+        )
+
+    def order_chapters(
+        self,
+        webtoon_name: str,
+        chapters: list[str],
+        *,
+        settings_row: dict | None = None,
+    ) -> list[str]:
+        available = []
+        seen = set()
+        for chapter in chapters or []:
+            normalized = str(chapter or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            available.append(normalized)
+        if len(available) <= 1:
+            return available
+
+        configured = self.get_chapter_order(webtoon_name, settings_row=settings_row)
+        if not configured:
+            return sorted(available, key=_chapter_sort_key)
+
+        available_set = set(available)
+        ordered = [chapter for chapter in configured if chapter in available_set]
+        ordered_set = set(ordered)
+        extras = sorted((chapter for chapter in available if chapter not in ordered_set), key=_chapter_sort_key)
+        return ordered + extras
     def get_manga_view_mode(self, webtoon_name: str) -> str | None:
         return self._get_scalar(webtoon_name, "manga_view_mode", default=None, coerce=str)
 
@@ -562,8 +642,8 @@ class WebtoonSettingsStore:
 
         conn.execute(
             """INSERT OR REPLACE INTO webtoon_settings
-               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, source_config, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type, manga_view_mode, manga_fit_mode, text_font_size, text_page_color, text_color)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               (webtoon_name, hide_filler, completed, bookmarked, zoom_override, custom_thumbnail, source_url, source_site, source_series_id, source_title, source_config, category, bookmarked_chapters, last_update_at, latest_new_chapter, remote_update_count, update_mode, auto_download_limit, content_type, manga_view_mode, manga_fit_mode, text_font_size, text_page_color, text_color, chapter_order)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 new_name,
                 row["hide_filler"],
@@ -589,6 +669,7 @@ class WebtoonSettingsStore:
                 row["text_font_size"],
                 row["text_page_color"],
                 row["text_color"],
+                row["chapter_order"],
             ),
         )
         conn.execute(
@@ -647,6 +728,7 @@ class WebtoonSettingsStore:
             "text_font_size",
             "text_page_color",
             "text_color",
+            "chapter_order",
         )
         rows = self.get_rows([normalized_target, *normalized_sources], columns=columns)
         target_row = dict(rows.get(normalized_target, {}))
@@ -659,10 +741,25 @@ class WebtoonSettingsStore:
 
         preferred_custom = self.get(normalized_target)
         target_bookmarked_chapters = set(self.get_bookmarked_chapters(normalized_target))
+        source_identities = set()
+
+        def _identity_for(row: dict) -> tuple[str, str, str]:
+            return (
+                str(row.get("source_site") or "").strip(),
+                str(row.get("source_series_id") or "").strip(),
+                str(row.get("source_url") or "").strip(),
+            )
+
+        target_identity = _identity_for(target_row)
+        if any(target_identity):
+            source_identities.add(target_identity)
         for source_name in normalized_sources:
             row = dict(rows.get(source_name, {}))
             if not row:
                 continue
+            identity = _identity_for(row)
+            if any(identity):
+                source_identities.add(identity)
             if not preferred_custom:
                 source_custom = self.get(source_name)
                 if source_custom and Path(source_custom).exists():
@@ -696,6 +793,7 @@ class WebtoonSettingsStore:
             target_row["text_font_size"] = target_row.get("text_font_size") if target_row.get("text_font_size") is not None else row.get("text_font_size")
             target_row["text_page_color"] = target_row.get("text_page_color") or row.get("text_page_color")
             target_row["text_color"] = target_row.get("text_color") or row.get("text_color")
+            target_row["chapter_order"] = target_row.get("chapter_order") or row.get("chapter_order")
 
             current_mode = str(target_row.get("update_mode") or "notify").strip().lower()
             source_mode = str(row.get("update_mode") or "notify").strip().lower()
@@ -711,6 +809,15 @@ class WebtoonSettingsStore:
                 target_row["latest_new_chapter"] = chapter_map.get(source_latest, source_latest)
 
         target_row["bookmarked_chapters"] = json.dumps(sorted(target_bookmarked_chapters))
+        target_row["remote_update_count"] = 0
+        target_row["latest_new_chapter"] = None
+        target_row["last_update_at"] = None
+        if len(source_identities) > 1:
+            target_row["source_url"] = None
+            target_row["source_site"] = None
+            target_row["source_series_id"] = None
+            target_row["source_title"] = None
+            target_row["source_config"] = None
 
         conn = get_connection()
         self._ensure_row(conn, normalized_target)
@@ -739,7 +846,8 @@ class WebtoonSettingsStore:
                 manga_fit_mode = ?,
                 text_font_size = ?,
                 text_page_color = ?,
-                text_color = ?
+                text_color = ?,
+                chapter_order = ?
             WHERE webtoon_name = ?
             """,
             (
@@ -766,6 +874,7 @@ class WebtoonSettingsStore:
                 target_row.get("text_font_size"),
                 target_row.get("text_page_color"),
                 target_row.get("text_color"),
+                target_row.get("chapter_order"),
                 normalized_target,
             ),
         )
@@ -818,6 +927,7 @@ class WebtoonSettingsStore:
 
     def _persist_custom_thumbnail(self, webtoon_name: str, path: str):
         self._set_scalar(webtoon_name, "custom_thumbnail", path)
+
 
 
 
