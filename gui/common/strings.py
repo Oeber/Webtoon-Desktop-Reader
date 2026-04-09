@@ -4,11 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from core.app_paths import resource_path
+
 
 DEFAULT_LOCALE = "en"
 _current_locale = DEFAULT_LOCALE
 _cache: dict[str, dict[str, str]] = {}
-_i18n_dir = Path(__file__).resolve().parent.parent / "i18n"
+_i18n_dir = resource_path("gui", "i18n")
 
 
 def _locale_path(locale: str) -> Path:

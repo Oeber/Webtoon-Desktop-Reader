@@ -4,6 +4,7 @@ from PyInstaller.utils.hooks import collect_submodules
 
 datas = [
     ("imgs", "imgs"),
+    ("gui/i18n", "gui/i18n"),
     ("data/app_version.txt", "data"),
 ]
 
