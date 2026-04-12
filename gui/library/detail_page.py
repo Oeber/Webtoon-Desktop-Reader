@@ -1066,7 +1066,7 @@ class DetailPage(QWidget):
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(6)
 
-        display_name = str(getattr(self.webtoon, "chapter_display_names", {}) or {}).get(chapter, chapter)
+        display_name = (getattr(self.webtoon, "chapter_display_names", {}) or {}).get(chapter, chapter)
         name_lbl = QLabel(display_name)
         name_lbl.setStyleSheet(chapter_name_style(color))
         title_row.addWidget(name_lbl)
